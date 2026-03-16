@@ -48,19 +48,13 @@ On Windows:
 
 ---
 
-## Install Battlecode Dependencies
-
-```
-uv pip install cambc
-```
-
-## Add dependencies from uv.lock
+Add dependencies from uv.lock
 
 ```
 uv sync 
 ```
 
-## Install pre-commit
+Install pre-commit
 
 ```
 pre-commit install

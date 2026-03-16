@@ -46,8 +46,6 @@ On Windows:
 .venv\Scripts\activate
 ```
 
----
-
 Add dependencies from uv.lock
 
 ```

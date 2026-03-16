@@ -54,6 +54,18 @@ On Windows:
 uv pip install cambc
 ```
 
+## Add dependencies from uv.lock
+
+```
+uv sync 
+```
+
+## Install pre-commit
+
+```
+pre-commit install
+```
+
 ---
 
 ## Getting Started

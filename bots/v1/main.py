@@ -1,20 +1,26 @@
 """ 
 V1 Bot:
-- Core: Spawn 8 bots (on random adjacent tiles?)
-- Builder bot: Designate half to exploring and building turrets at enemy core
-               Designate half to harvest ores and build conveyer belt back to own core
+- Core: Spawn 8 bots on random adjacent tiles
+- Builder Bot: Designate half to harvest ores and build conveyer belt back to our core
+               Designate half to exploring and building turrets at enemy core
+
+Test code runs with: cambc run starter v1
 """
 
+import sys      # For print(f'...', file=sys.stderr)
 import random
 
 from cambc import Controller, Direction, EntityType, Environment, Position
 
 # Non-centre directions
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
+BUILDER_COUNT = 8
 
 class Player:
     def __init__(self):
         self.builders_spawned = 0
+        self.harvest_builder_ids = set()
+        self.attack_builder_ids  = set()
 
     """
     Units are entities which run an independent instance of run(), this includes: 
@@ -22,66 +28,89 @@ class Player:
     - Builder bots
     - Turrets (Gunner, Sentinel, Breach, Launcher)
     """
-    def unit_core():
-        if self.builders_spawned < 3:
-            # if we haven't spawned 3 builder bots yet, try to spawn one on a random tile
-            spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
-            if ct.can_spawn(spawn_pos):
-                ct.spawn_builder(spawn_pos)
+    def unit_core(self, c: Controller):
+        if self.builders_spawned < BUILDER_COUNT:
+            spawn_pos = c.get_position().add(random.choice(DIRECTIONS))
+            if c.can_spawn(spawn_pos):
+                c.spawn_builder(spawn_pos)      # Try to spawn builder on random adjacent tile
                 self.builders_spawned += 1
 
-    def unit_builder_bot():
-        # if we are adjacent to an ore tile, build a harvester on it
-        for d in Direction:
-            check_pos = ct.get_position().add(d)
-            if ct.can_build_harvester(check_pos):
-                ct.build_harvester(check_pos)
-                break
-        
-        # move in a random direction
-        move_dir = random.choice(DIRECTIONS)
-        move_pos = ct.get_position().add(move_dir)
-        # we need to place a conveyor or road to stand on, before we can move onto a tile
-        if ct.can_build_road(move_pos):
-            ct.build_road(move_pos)
-        if ct.can_move(move_dir):
-            ct.move(move_dir)
-
-        # place a marker on an adjacent tile with the current round number
-        marker_pos = ct.get_position().add(random.choice(DIRECTIONS))
-        if ct.can_place_marker(marker_pos):
-            ct.place_marker(marker_pos, ct.get_current_round())
+    def unit_builder_bot(self, c: Controller):
+        # TODO: Fix hacky way of assigning half of builder bots to each role
+        #
+        # Implemented like this because:
+        # > id is not incremented consistently so cannot use odd/even
+        # > c.spawn_builder() does not return id to assign role on spawning (developers said they will add this :D)
+        id = c.get_id()
+        if id not in self.harvest_builder_ids and len(self.harvest_builder_ids) < BUILDER_COUNT / 2:
+            self.harvest_builder_ids.add(id)
+        elif id not in self.attack_builder_ids and len(self.attack_builder_ids) < BUILDER_COUNT / 2:
+            self.attack_builder_ids.add(id)
+            
+        if id in self.harvest_builder_ids:
+            self.harvest_builder(c)
+        elif id in self.attack_builder_ids:
+            self.attack_builder(c)
 
     # Turret unit can be one of {Gunner, Sentinel, Breach, Launcher}
-    def unit_turret(turret_etype: EntityType):
+    def unit_turret(self, c: Controller, turret_etype: EntityType):
         match turret_etype:
             case EntityType.GUNNER:
-                turret_gunner()
+                self.turret_gunner()
             case EntityType.SENTINEL:
-                turret_sentinel()
+                self.turret_sentinel()
             case EntityType.BREACH:
-                turret_breach()
+                self.turret_breach()
             case EntityType.LAUNCHER:
-                turret_launcher()
+                self.turret_launcher()
 
-    def turret_gunner():
+    def turret_gunner(self, c: Controller):
         pass
     
-    def turret_sentinel():
+    def turret_sentinel(self, c: Controller):
         pass
     
-    def turret_breach():
+    def turret_breach(self, c: Controller):
         pass
     
-    def turret_launcher():
+    def turret_launcher(self, c: Controller):
         pass
 
-    def run(self, ct: Controller) -> None:
-        unit_etype = ct.get_entity_type()
+    # TODO: Implement conveyor path from harvesters back to core
+    #       (this is currently just the starter bot code)
+    def harvest_builder(self, c: Controller):
+        # If we are adjacent to an ore tile, build a harvester on it
+        for d in Direction:
+            check_pos = c.get_position().add(d)
+            if c.can_build_harvester(check_pos):
+                c.build_harvester(check_pos)
+                return
+        
+        # Move in a random direction
+        move_dir = random.choice(DIRECTIONS)
+        move_pos = c.get_position().add(move_dir)
+        
+        # We need to place a conveyor or road to stand on, before we can move onto a tile
+        if c.can_build_road(move_pos):
+            c.build_road(move_pos)
+        if c.can_move(move_dir):
+            c.move(move_dir)
+
+        # Place a marker on an adjacent tile with the current round number
+        marker_pos = c.get_position().add(random.choice(DIRECTIONS))
+        if c.can_place_marker(marker_pos):
+            c.place_marker(marker_pos, c.get_current_round())
+
+    # TODO: Implement enemy core finding and turret placing
+    def attack_builder(self, c: Controller):
+        pass
+
+    def run(self, c: Controller) -> None:
+        unit_etype = c.get_entity_type()
         match unit_etype:
             case EntityType.CORE: 
-                unit_core()
+                self.unit_core(c)
             case EntityType.BUILDER_BOT:
-                unit_builder_bot()
+                self.unit_builder_bot(c)
             case _:
-                unit_turret(unit_etype)
+                self.unit_turret(c, unit_etype)

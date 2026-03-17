@@ -31,7 +31,7 @@ uv python install 3.12.3
 ## Create Virtual Environment
 
 ```
-uv venv
+uv sync
 ```
 
 On Linux/MacOS:
@@ -44,18 +44,6 @@ On Windows:
 
 ```
 .venv\Scripts\activate
-```
-
-Add dependencies from uv.lock
-
-```
-uv sync 
-```
-
-Install pre-commit
-
-```
-pre-commit install
 ```
 
 ---
@@ -73,6 +61,8 @@ cambc starter
 ```
 cambc run starter starter --watch
 ```
+Note: Running local match does not enforce 2ms timing and 1GB memory limit.
+Use `cambc test-run` to run on same machines that are used in the ladder matches.
 
 ### Watch Replay
 

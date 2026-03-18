@@ -9,52 +9,69 @@ Test code runs with: cambc run starter v1
 
 import sys      # For print(f'...', file=sys.stderr)
 import random
+from enum import Enum, auto
 
-from cambc import Controller, Direction, EntityType, Environment, Position
+from cambc import Controller, Direction, EntityType, Environment, Position, Team
+from movement import get_direction_4, get_direction_8, random_direction_4, random_direction_8, reached_core
 
-# Non-centre directions
-DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 BUILDER_COUNT = 8
 
+class BuilderRole(Enum):
+    HARVESTER = auto()
+    ATTACKER = auto()
+
+class HarvestState(Enum):
+    NOT_PLACED = auto()
+    JUST_PLACED = auto()
+    RETURNING_TO_CORE = auto()
+
+"""
+Units are entities which run an independent instance of Player.run(), this includes: 
+- Core
+- Builder bots
+- Turrets (Gunner, Sentinel, Breach, Launcher)
+"""
 class Player:
     def __init__(self):
+        # Core Attributes
         self.builders_spawned = 0
-        self.harvest_builder_ids = set()
-        self.attack_builder_ids  = set()
+
+        # Builder Bot Attributes
+        self.role = None
+        self.core_pos = None
+        self.harvest_state = HarvestState.NOT_PLACED
         self.core_pos = None
         self.candidates = []  # [rotational, horizontal, vertical] enemy core candidates
         self.candidate_idx = 0
         self.enemy_pos = None
     
-    """
-    Units are entities which run an independent instance of run(), this includes: 
-    - Core
-    - Builder bots
-    - Turrets (Gunner, Sentinel, Breach, Launcher)
-    """
+        # Turret Attributes
+        # ...
+    
     def unit_core(self, c: Controller):
+        if self.core_pos is None:
+            self.core_pos = c.get_position()
+
         if self.builders_spawned < BUILDER_COUNT:
-            spawn_pos = c.get_position().add(random.choice(DIRECTIONS))
+            spawn_pos = c.get_position().add(random_direction_8())
             if c.can_spawn(spawn_pos):
                 c.spawn_builder(spawn_pos)      # Try to spawn builder on random adjacent tile
                 self.builders_spawned += 1
 
     def unit_builder_bot(self, c: Controller):
-        # TODO: Fix hacky way of assigning half of builder bots to each role
-        #
-        # Implemented like this because:
-        # > id is not incremented consistently so cannot use odd/even
-        # > c.spawn_builder() does not return id to assign role on spawning (developers said they will add this :D)
-        id = c.get_id()
-        if id not in self.harvest_builder_ids and len(self.harvest_builder_ids) < BUILDER_COUNT / 2:
-            self.harvest_builder_ids.add(id)
-        elif id not in self.attack_builder_ids and len(self.attack_builder_ids) < BUILDER_COUNT / 2:
-            self.attack_builder_ids.add(id)
-            
-        if id in self.harvest_builder_ids:
-            self.harvest_builder(c)
-        elif id in self.attack_builder_ids:
-            self.attack_builder(c)
+        if self.core_pos is None:
+            for eid in c.get_nearby_buildings():
+                if (c.get_entity_type(eid) == EntityType.CORE and c.get_team(eid) == c.get_team()):
+                    self.core_pos = c.get_position(eid)    
+
+        if self.role is None:
+            self.role = random.choice(list(BuilderRole))
+
+        match self.role:
+            case BuilderRole.HARVESTER:
+                self.harvest_builder(c)
+            case BuilderRole.ATTACKER:
+                self.attack_builder(c)
 
     # Turret unit can be one of {Gunner, Sentinel, Breach, Launcher}
     def unit_turret(self, c: Controller, turret_etype: EntityType):
@@ -80,21 +97,57 @@ class Player:
     def turret_launcher(self, c: Controller):
         pass
 
-    # TODO: Implement conveyor path from harvesters back to core
-    #       (this is currently just the starter bot code)
     def harvest_builder(self, c: Controller):
-        # If we are adjacent to an ore tile, build a harvester on it
-        for d in Direction:
-            check_pos = c.get_position().add(d)
-            if c.can_build_harvester(check_pos):
-                c.build_harvester(check_pos)
-                return
-        
-        # Move in a random direction
-        move_dir = random.choice(DIRECTIONS)
+        id = c.get_id()
+        current_pos = c.get_position()
+
+        # If builder has just placed harvester, replace stood on road with conveyor
+        if self.harvest_state == HarvestState.JUST_PLACED:
+            move_dir = get_direction_4(current_pos, self.core_pos)
+
+            if c.get_entity_type(c.get_tile_building_id(current_pos)) == EntityType.ROAD and c.can_destroy(current_pos):
+                c.destroy(current_pos)
+
+            if c.can_build_conveyor(current_pos, move_dir):
+                c.build_conveyor(current_pos, move_dir)
+
+            self.harvest_state = HarvestState.RETURNING_TO_CORE
+            return
+
+        # If builder has placed harvester, lay conveyor path back to core
+        if self.harvest_state == HarvestState.RETURNING_TO_CORE:
+            move_dir = get_direction_4(current_pos, self.core_pos)
+            move_pos = current_pos.add(move_dir)
+
+            entity_type = c.get_entity_type(c.get_tile_building_id(move_pos))
+            if entity_type == EntityType.ROAD and c.can_destroy(move_pos):
+                c.destroy(move_pos)
+
+            next_move_dir = get_direction_4(move_pos, self.core_pos)    # Needed for conveyors to turn corners
+
+            if c.can_build_conveyor(move_pos, next_move_dir):
+                c.build_conveyor(move_pos, next_move_dir)
+                
+                if c.can_move(move_dir):
+                    c.move(move_dir)
+
+            if reached_core(c.get_position(), self.core_pos):
+                self.harvest_state = HarvestState.NOT_PLACED
+
+            return
+
+        # If we are adjacent to an ore tile in first half of the game, build a harvester on it
+        if c.get_current_round() < 1000:
+            for d in Direction:
+                ore_pos = current_pos.add(d)
+                if c.can_build_harvester(ore_pos):
+                    c.build_harvester(ore_pos)
+                    self.harvest_state = HarvestState.JUST_PLACED
+                    return
+                
+        # Else keep exploring, place a road to stand on before we move onto a tile
+        move_dir = random_direction_8()
         move_pos = c.get_position().add(move_dir)
-        
-        # We need to place a conveyor or road to stand on, before we can move onto a tile
         if c.can_build_road(move_pos):
             c.build_road(move_pos)
         if c.can_move(move_dir):

@@ -21,7 +21,10 @@ class Player:
         self.builders_spawned = 0
         self.harvest_builder_ids = set()
         self.attack_builder_ids  = set()
-
+        self.core_pos = None
+        self.candidates = []  # [rotational, horizontal, vertical] enemy core candidates
+        # TODO: we can keep an index of which candidate we are currently scouting 
+    
     """
     Units are entities which run an independent instance of run(), this includes: 
     - Core
@@ -96,14 +99,23 @@ class Player:
         if c.can_move(move_dir):
             c.move(move_dir)
 
-        # Place a marker on an adjacent tile with the current round number
-        marker_pos = c.get_position().add(random.choice(DIRECTIONS))
-        if c.can_place_marker(marker_pos):
-            c.place_marker(marker_pos, c.get_current_round())
-
     # TODO: Implement enemy core finding and turret placing
     def attack_builder(self, c: Controller):
-        pass
+        # extracts the core position and the 3 symmetry candidates
+        if self.core_pos is None:
+            for eid in c.get_nearby_buildings():
+                if (c.get_entity_type(eid) == EntityType.CORE
+                        and c.get_team(eid) == c.get_team()):
+                    self.core_pos = c.get_position(eid)
+                    cx, cy = self.core_pos.x, self.core_pos.y
+                    W, H = c.get_map_width(), c.get_map_height()
+                    self.candidates = [
+                        Position(W - 1 - cx, H - 1 - cy),  # rotational (180°)
+                        Position(W - 1 - cx, cy),            # horizontal reflection
+                        Position(cx, H - 1 - cy),            # vertical reflection
+                    ]
+                    break
+        
 
     def run(self, c: Controller) -> None:
         unit_etype = c.get_entity_type()

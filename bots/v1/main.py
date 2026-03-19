@@ -42,7 +42,8 @@ class Player:
         self.harvest_state = HarvestState.NOT_PLACED
         self.debug = False
         self.candidates = []  # [rotational, horizontal, vertical] enemy core candidates
-        # TODO: we can keep an index of which candidate we are currently scouting 
+        self.candidate_idx = 0
+        self.enemy_pos = None
     
         # Turret Attributes
         # ...
@@ -153,7 +154,6 @@ class Player:
             c.move(move_dir)
 
     def attack_builder(self, c: Controller):
-        # extracts the core position and the 3 symmetry candidates
         if self.core_pos is None:
             for eid in c.get_nearby_buildings():
                 if (c.get_entity_type(eid) == EntityType.CORE
@@ -166,8 +166,45 @@ class Player:
                         Position(W - 1 - cx, cy),            # horizontal reflection
                         Position(cx, H - 1 - cy),            # vertical reflection
                     ]
+                    self.candidate_idx = c.get_current_round() % 3
+                    return
+
+        # TODO: use markers to broadcast confirmed enemy position to other builders
+
+        # does a check on the enemy core to confirm we are going to the correct one
+        if self.enemy_pos is None:
+            for eid in c.get_nearby_buildings():
+                if (c.get_entity_type(eid) == EntityType.CORE
+                        and c.get_team(eid) != c.get_team()):
+                    self.enemy_pos = c.get_position(eid)
                     break
-        
+
+        # if we have confirmed the enemy core, navigate to it
+        if self.enemy_pos is not None:
+            self._navigate(c, self.enemy_pos)
+            return
+
+        # visit different candidates in order based on spawn turn
+        pos = c.get_position()
+        if pos.distance_squared(self.candidates[self.candidate_idx]) <= 20:
+            self.candidate_idx = (self.candidate_idx + 1) % 3
+
+        self._navigate(c, self.candidates[self.candidate_idx])
+
+    def _navigate(self, c: Controller, target: Position):
+        if c.get_move_cooldown() > 0:
+            return
+        pos = c.get_position()
+        direction = pos.direction_to(target)
+        for _ in range(8):
+            next_pos = pos.add(direction)
+            if not c.is_tile_passable(next_pos) and c.get_action_cooldown() == 0:
+                if c.can_build_road(next_pos):
+                    c.build_road(next_pos)
+            if c.can_move(direction):
+                c.move(direction)
+                return
+            direction = direction.rotate_right()
 
     def run(self, c: Controller) -> None:
         unit_etype = c.get_entity_type()

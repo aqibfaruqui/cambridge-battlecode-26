@@ -25,6 +25,11 @@ class HarvestState(Enum):
     JUST_PLACED = auto()
     RETURNING_TO_CORE = auto()
 
+class AttackPhase(Enum):
+    NAVIGATE = auto()
+    PLACE_GUNNER = auto()
+    DONE = auto()
+
 """
 Units are entities which run an independent instance of Player.run(), this includes: 
 - Core
@@ -36,14 +41,20 @@ class Player:
         # Core Attributes
         self.builders_spawned = 0
 
-        # Builder Bot Attributes
+        # General Builder Bot Attributes
         self.role = None
         self.core_pos = None
+        
+        # Harvest Builder Bot Attributes
         self.harvest_state = HarvestState.NOT_PLACED
-        self.debug = False
-        self.candidates = []  # [rotational, horizontal, vertical] enemy core candidates
-        self.candidate_idx = 0
+        
+        # Attack Builder Bot Attributes
+        self.enemy_core_candidates = []
+        self.enemy_core_candidate_idx = 0
         self.enemy_pos = None
+        self.attack_target = None
+        self.gunners_placed = 0
+        self.attack_state = AttackPhase.NAVIGATE
     
         # Turret Attributes
         # ...
@@ -86,7 +97,9 @@ class Player:
                 self.turret_launcher()
 
     def turret_gunner(self, c: Controller):
-        pass
+        target = c.get_gunner_target()
+        if target is not None and c.can_fire(target):
+            c.fire(target)
     
     def turret_sentinel(self, c: Controller):
         pass
@@ -154,21 +167,22 @@ class Player:
             c.move(move_dir)
 
     def attack_builder(self, c: Controller):
+        # First time we see the enemy core, we need to calculate the candidates
         if self.core_pos is None:
             for eid in c.get_nearby_buildings():
                 if (c.get_entity_type(eid) == EntityType.CORE and c.get_team(eid) == c.get_team()):
                     self.core_pos = c.get_position(eid)
 
-        if self.candidates is None or self.candidate_idx == 0:
+        if self.enemy_core_candidates is None or self.enemy_core_candidate_idx == 0:
             cx, cy = self.core_pos.x, self.core_pos.y
             W, H = c.get_map_width(), c.get_map_height()
-            self.candidates = [
+            self.enemy_core_candidates = [
                 Position(W - 1 - cx, H - 1 - cy),    # Rotational (180°)
                 Position(W - 1 - cx, cy),            # Horizontal reflection
                 Position(cx, H - 1 - cy),            # Vertical reflection
             ]
 
-            self.candidate_idx = c.get_current_round() % 3
+            self.enemy_core_candidate_idx = c.get_current_round() % 3
             return
 
         # TODO: use markers to broadcast confirmed enemy position to other builders
@@ -178,6 +192,13 @@ class Player:
             for eid in c.get_nearby_buildings():
                 if (c.get_entity_type(eid) == EntityType.CORE and c.get_team(eid) != c.get_team()):
                     self.enemy_pos = c.get_position(eid)
+                    # Navigates to two tiles outside the enemy core
+                    approach = self.core_pos.direction_to(self.enemy_pos)
+                    adx, ady = approach.delta()
+                    self.attack_target = Position(
+                        self.enemy_pos.x - adx * 2,
+                        self.enemy_pos.y - ady * 2,
+                    )
                     break
 
         # If we confirm enemy core, navigate to it
@@ -187,10 +208,40 @@ class Player:
 
         # Visit different candidates in order based on spawn turn
         pos = c.get_position()
-        if pos.distance_squared(self.candidates[self.candidate_idx]) <= 20:
-            self.candidate_idx = (self.candidate_idx + 1) % 3
 
-        self._navigate(c, self.candidates[self.candidate_idx])
+        if self.attack_state == AttackPhase.NAVIGATE:
+            if self.enemy_pos is not None:
+                # TODO: change this to whatever turret you use
+                if pos.distance_squared(self.attack_target) <= 4: 
+                    self.attack_state = AttackPhase.PLACE_GUNNER
+                else:
+                    self._navigate(c, self.attack_target)
+            else:
+                # Cycle through candidates
+                if pos.distance_squared(self.enemy_core_candidates[self.enemy_core_candidate_idx]) <= 20:
+                    self.enemy_core_candidate_idx = (self.enemy_core_candidate_idx + 1) % 3
+                self._navigate(c, self.enemy_core_candidates[self.enemy_core_candidate_idx])
+
+        elif self.attack_state == AttackPhase.PLACE_GUNNER:
+            if c.get_action_cooldown() == 0:
+                for d in DIRECTIONS:
+                    adj = pos.add(d)
+                    # Clear allied roads to make room for gunner
+                    bid = c.get_tile_building_id(adj)
+                    if bid is not None and c.get_team(bid) == c.get_team():
+                        if c.get_entity_type(bid) in (EntityType.ROAD, EntityType.CONVEYOR):
+                            c.destroy(adj)
+                    facing = adj.direction_to(self.enemy_pos)
+                    if c.can_build_gunner(adj, facing):
+                        c.build_gunner(adj, facing)
+                        self.gunners_placed += 1
+                        if self.gunners_placed >= 2:
+                            self.attack_state = AttackPhase.DONE
+                        return
+            self._navigate(c, self.attack_target)
+
+        elif self.attack_state == AttackPhase.DONE:
+            pass  # TODO: heal gunners, supply ammo
 
     def _navigate(self, c: Controller, target: Position):
         if c.get_move_cooldown() > 0:

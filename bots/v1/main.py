@@ -156,35 +156,36 @@ class Player:
     def attack_builder(self, c: Controller):
         if self.core_pos is None:
             for eid in c.get_nearby_buildings():
-                if (c.get_entity_type(eid) == EntityType.CORE
-                        and c.get_team(eid) == c.get_team()):
+                if (c.get_entity_type(eid) == EntityType.CORE and c.get_team(eid) == c.get_team()):
                     self.core_pos = c.get_position(eid)
-                    cx, cy = self.core_pos.x, self.core_pos.y
-                    W, H = c.get_map_width(), c.get_map_height()
-                    self.candidates = [
-                        Position(W - 1 - cx, H - 1 - cy),  # rotational (180°)
-                        Position(W - 1 - cx, cy),            # horizontal reflection
-                        Position(cx, H - 1 - cy),            # vertical reflection
-                    ]
-                    self.candidate_idx = c.get_current_round() % 3
-                    return
+
+        if self.candidates is None or self.candidate_idx == 0:
+            cx, cy = self.core_pos.x, self.core_pos.y
+            W, H = c.get_map_width(), c.get_map_height()
+            self.candidates = [
+                Position(W - 1 - cx, H - 1 - cy),    # Rotational (180°)
+                Position(W - 1 - cx, cy),            # Horizontal reflection
+                Position(cx, H - 1 - cy),            # Vertical reflection
+            ]
+
+            self.candidate_idx = c.get_current_round() % 3
+            return
 
         # TODO: use markers to broadcast confirmed enemy position to other builders
 
-        # does a check on the enemy core to confirm we are going to the correct one
+        # Check we are targetting correct enemy core
         if self.enemy_pos is None:
             for eid in c.get_nearby_buildings():
-                if (c.get_entity_type(eid) == EntityType.CORE
-                        and c.get_team(eid) != c.get_team()):
+                if (c.get_entity_type(eid) == EntityType.CORE and c.get_team(eid) != c.get_team()):
                     self.enemy_pos = c.get_position(eid)
                     break
 
-        # if we have confirmed the enemy core, navigate to it
+        # If we confirm enemy core, navigate to it
         if self.enemy_pos is not None:
             self._navigate(c, self.enemy_pos)
             return
 
-        # visit different candidates in order based on spawn turn
+        # Visit different candidates in order based on spawn turn
         pos = c.get_position()
         if pos.distance_squared(self.candidates[self.candidate_idx]) <= 20:
             self.candidate_idx = (self.candidate_idx + 1) % 3
@@ -194,6 +195,7 @@ class Player:
     def _navigate(self, c: Controller, target: Position):
         if c.get_move_cooldown() > 0:
             return
+
         pos = c.get_position()
         direction = pos.direction_to(target)
         for _ in range(8):
@@ -204,6 +206,7 @@ class Player:
             if c.can_move(direction):
                 c.move(direction)
                 return
+
             direction = direction.rotate_right()
 
     def run(self, c: Controller) -> None:

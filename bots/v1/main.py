@@ -12,7 +12,7 @@ import random
 from enum import Enum, auto
 
 from cambc import Controller, Direction, EntityType, Environment, Position, Team
-from movement import get_direction_4, get_direction_8, random_direction_4, random_direction_8, reached_core
+from movement import DIRECTIONS_8, get_direction_4, get_direction_8, random_direction_4, random_direction_8, reached_core
 
 BUILDER_COUNT = 8
 
@@ -88,13 +88,13 @@ class Player:
     def unit_turret(self, c: Controller, turret_etype: EntityType):
         match turret_etype:
             case EntityType.GUNNER:
-                self.turret_gunner()
+                self.turret_gunner(c)
             case EntityType.SENTINEL:
-                self.turret_sentinel()
+                self.turret_sentinel(c)
             case EntityType.BREACH:
-                self.turret_breach()
+                self.turret_breach(c)
             case EntityType.LAUNCHER:
-                self.turret_launcher()
+                self.turret_launcher(c)
 
     def turret_gunner(self, c: Controller):
         target = c.get_gunner_target()
@@ -173,7 +173,8 @@ class Player:
                 if (c.get_entity_type(eid) == EntityType.CORE and c.get_team(eid) == c.get_team()):
                     self.core_pos = c.get_position(eid)
 
-        if self.enemy_core_candidates is None or self.enemy_core_candidate_idx == 0:
+        # Calculate enemy core candidates once
+        if len(self.enemy_core_candidates) == 0:
             cx, cy = self.core_pos.x, self.core_pos.y
             W, H = c.get_map_width(), c.get_map_height()
             self.enemy_core_candidates = [
@@ -181,7 +182,6 @@ class Player:
                 Position(W - 1 - cx, cy),            # Horizontal reflection
                 Position(cx, H - 1 - cy),            # Vertical reflection
             ]
-
             self.enemy_core_candidate_idx = c.get_current_round() % 3
             return
 
@@ -201,18 +201,11 @@ class Player:
                     )
                     break
 
-        # If we confirm enemy core, navigate to it
-        if self.enemy_pos is not None:
-            self._navigate(c, self.enemy_pos)
-            return
-
-        # Visit different candidates in order based on spawn turn
         pos = c.get_position()
 
         if self.attack_state == AttackPhase.NAVIGATE:
             if self.enemy_pos is not None:
-                # TODO: change this to whatever turret you use
-                if pos.distance_squared(self.attack_target) <= 4: 
+                if pos.distance_squared(self.attack_target) <= 4:
                     self.attack_state = AttackPhase.PLACE_GUNNER
                 else:
                     self._navigate(c, self.attack_target)
@@ -224,7 +217,7 @@ class Player:
 
         elif self.attack_state == AttackPhase.PLACE_GUNNER:
             if c.get_action_cooldown() == 0:
-                for d in DIRECTIONS:
+                for d in DIRECTIONS_8:
                     adj = pos.add(d)
                     # Clear allied roads to make room for gunner
                     bid = c.get_tile_building_id(adj)
@@ -248,7 +241,7 @@ class Player:
             return
 
         pos = c.get_position()
-        direction = pos.direction_to(target)
+        direction = get_direction_8(pos, target)
         for _ in range(8):
             next_pos = pos.add(direction)
             if not c.is_tile_passable(next_pos) and c.get_action_cooldown() == 0:

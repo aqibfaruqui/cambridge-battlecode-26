@@ -1,11 +1,12 @@
 from enum import Enum
-from cambc import Controller, Direction, EntityType, Position
+from cambc import Controller, Direction, EntityType, Environment, Position
 from utils.movement import (
     get_direction_4,
     random_direction_8,
     reached_core,
     is_diagonal,
     split_diagonal,
+    on_map,
 )
 
 
@@ -27,9 +28,25 @@ class Harvester:
     def _not_placed(self, c: Controller):
         """Randomly explore and build harvesters (in first 100 turns)"""
         if self.state == HarvestState.NOT_PLACED:
-            if c.get_current_round() < 100:
+            ti, _ = c.get_harvester_cost()
+            if ti < 1000 and c.get_current_round() < 1500:
                 for d in Direction:
                     ore_pos = self.current_pos.add(d)
+                    if not on_map(c, ore_pos):
+                        continue
+
+                    next_to_ore = (
+                        c.get_tile_env(ore_pos) == Environment.ORE_AXIONITE
+                        or c.get_tile_env(ore_pos) == Environment.ORE_TITANIUM
+                    )
+                    next_to_road = (
+                        c.get_entity_type(c.get_tile_building_id(ore_pos))
+                        == EntityType.ROAD
+                    )
+
+                    if next_to_ore and next_to_road and c.can_destroy(ore_pos):
+                        c.destroy(ore_pos)
+
                     if c.can_build_harvester(ore_pos):
                         c.build_harvester(ore_pos)
                         self.state = HarvestState.JUST_PLACED

@@ -108,10 +108,11 @@ def _can_progress(c: Controller, current: Position, direction: Direction):
 def _state_key(current: Position, target: Position, obstacle_pos: Position | None, obstacle_on_right: bool):
     reference = obstacle_pos if obstacle_pos is not None else target
     reference_dir = current.direction_to(reference)
-    try:
-        dir_idx = DIRECTIONS_8.index(reference_dir)
-    except ValueError:
-        dir_idx = 0
+    dir_idx = 0
+    for idx, direction in enumerate(DIRECTIONS_8):
+        if direction == reference_dir:
+            dir_idx = idx
+            break
     return (current.x, current.y, dir_idx, 1 if obstacle_on_right else 0)
 
 def bug_nav(

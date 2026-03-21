@@ -117,10 +117,11 @@ def _state_key(
 ):
     reference = obstacle_pos if obstacle_pos is not None else target
     reference_dir = current.direction_to(reference)
-    try:
-        dir_idx = DIRECTIONS_8.index(reference_dir)
-    except ValueError:
-        dir_idx = 0
+    dir_idx = 0
+    for idx, direction in enumerate(DIRECTIONS_8):
+        if direction == reference_dir:
+            dir_idx = idx
+            break
     return (current.x, current.y, dir_idx, 1 if obstacle_on_right else 0)
 
 

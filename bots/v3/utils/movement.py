@@ -1,5 +1,5 @@
 import random
-from cambc import Direction, Position
+from cambc import Controller, Direction, Position
 
 DIRECTIONS_4 = [
     Direction.NORTH,
@@ -83,3 +83,7 @@ def split_diagonal(current: Position, target: Position):
             return (Direction.NORTH, Direction.WEST)
         case _:
             return (None, None)
+
+
+def on_map(c: Controller, pos: Position):
+    return 0 <= pos.x < c.get_map_width() and 0 <= pos.y < c.get_map_height()

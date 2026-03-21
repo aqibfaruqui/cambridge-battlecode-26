@@ -27,6 +27,8 @@ def on_map(c: Controller, pos: Position):
 def _manhattan(a: Position, b: Position):
     return abs(a.x - b.x) + abs(a.y - b.y)
 
+def _chebyshev(a: Position, b: Position):
+    return max(abs(a.x - b.x), abs(a.y - b.y))
 
 def get_direction_4(current: Position, target: Position):
     best_dir = None
@@ -88,36 +90,119 @@ def split_diagonal(current: Position, target: Position):
         case _:
             return (None, None)
 
-def bug_nav(c: Controller, current: Position, target: Position, follow_dir: Direction = None):
-    # current_dir is the direction the bot is currently following along wall
-    # Returns the move direction and the direction the bot should be following along wall
-    preferred_move = get_direction_4(current, target) # only move in cardinal directions as conveyors need to be placed
-    
-    if follow_dir is None:
-        if c.can_move(preferred_move):
-            return preferred_move, follow_dir
-        
-        # Hit a wall, pick side closer to target
 
-        left_side = preferred_move.rotate_left().rotate_left() # 90 degrees left
-        right_side = preferred_move.rotate_right().rotate_right() # 90 degrees right
+def _is_hard_blocked(c: Controller, pos: Position):
+    if not on_map(c, pos):
+        return True
+    # Empty tiles are not passable but can be paved; don't treat those as hard walls.
+    if c.is_tile_empty(pos) and c.can_build_road(pos):
+        return False
+    return not c.is_tile_passable(pos)
 
-        if _manhattan(current.add(left_side), target) < _manhattan(current.add(right_side), target):
-            follow_dir = left_side
+
+def _can_progress(c: Controller, current: Position, direction: Direction):
+    next_pos = current.add(direction)
+    return c.can_move(direction) or (on_map(c, next_pos) and c.is_tile_empty(next_pos) and c.can_build_road(next_pos))
+
+
+def _state_key(current: Position, target: Position, obstacle_pos: Position | None, obstacle_on_right: bool):
+    reference = obstacle_pos if obstacle_pos is not None else target
+    reference_dir = current.direction_to(reference)
+    try:
+        dir_idx = DIRECTIONS_8.index(reference_dir)
+    except ValueError:
+        dir_idx = 0
+    return (current.x, current.y, dir_idx, 1 if obstacle_on_right else 0)
+
+def bug_nav(
+    c: Controller,
+    current: Position,
+    target: Position,
+    follow_state: dict | None = None,
+):
+    # Adapted from CamelCase v21 final Battlecode bug navigator.
+    if follow_state is None or follow_state.get("target") != target:
+        follow_state = {
+            "target": target,
+            "min_dist": float("inf"),
+            "obstacle_on_right": True,
+            "obstacle_pos": None,
+            "visited": set(),
+        }
+
+    has_options = any(_can_progress(c, current, d) for d in DIRECTIONS_8)
+    if not has_options:
+        return None, follow_state
+
+    distance = _chebyshev(current, target)
+    if distance < follow_state["min_dist"]:
+        follow_state["min_dist"] = distance
+        follow_state["obstacle_pos"] = None
+        follow_state["visited"].clear()
+
+    obstacle_pos = follow_state["obstacle_pos"]
+    if obstacle_pos is not None and not _is_hard_blocked(c, obstacle_pos):
+        follow_state["obstacle_pos"] = None
+        follow_state["visited"].clear()
+        obstacle_pos = None
+
+    key = _state_key(current, target, obstacle_pos, follow_state["obstacle_on_right"])
+    if key in follow_state["visited"]:
+        follow_state["obstacle_pos"] = None
+        follow_state["visited"].clear()
+        obstacle_pos = None
+    else:
+        follow_state["visited"].add(key)
+
+    if obstacle_pos is None:
+        forward = current.direction_to(target)
+        if _can_progress(c, current, forward):
+            return forward, follow_state
+
+        left = forward
+        for _ in range(8):
+            left = left.rotate_left()
+            if _can_progress(c, current, left):
+                break
+
+        right = forward
+        for _ in range(8):
+            right = right.rotate_right()
+            if _can_progress(c, current, right):
+                break
+
+        left_dist = _chebyshev(current.add(left), target)
+        right_dist = _chebyshev(current.add(right), target)
+        if left_dist < right_dist:
+            follow_state["obstacle_on_right"] = True
+        elif right_dist < left_dist:
+            follow_state["obstacle_on_right"] = False
         else:
-            follow_dir = right_side
-    
-    # Exit wall-hugging as soon as direct path clears (keep follow_dir to prevent oscillation)
-    if c.can_move(preferred_move):
-        return preferred_move, follow_dir
-    
-    for d in (
-        follow_dir,
-        follow_dir.rotate_left().rotate_left(),
-        follow_dir.rotate_right().rotate_right(),
-        follow_dir.rotate_right().rotate_right().rotate_right().rotate_right(),
-    ):
-        if c.can_move(d):
-            return d, d
-    
-    return None, follow_dir # completely surrounded
+            follow_state["obstacle_on_right"] = True
+
+        if follow_state["obstacle_on_right"]:
+            follow_state["obstacle_pos"] = current.add(left.rotate_right())
+        else:
+            follow_state["obstacle_pos"] = current.add(right.rotate_left())
+
+    for can_rotate in (True, False):
+        direction = current.direction_to(follow_state["obstacle_pos"])
+        for _ in range(8):
+            direction = (
+                direction.rotate_left()
+                if follow_state["obstacle_on_right"]
+                else direction.rotate_right()
+            )
+
+            if _can_progress(c, current, direction):
+                return direction, follow_state
+
+            location = current.add(direction)
+            if can_rotate and not on_map(c, location):
+                follow_state["obstacle_on_right"] = not follow_state["obstacle_on_right"]
+                break
+
+            if _is_hard_blocked(c, location):
+                follow_state["obstacle_pos"] = location
+
+    return None, follow_state

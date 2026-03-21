@@ -1,6 +1,7 @@
 from cambc import Controller, EntityType
 from turrets.gunner import Gunner
 
+
 class Turret:
     def __init__(self, turret_etype: EntityType):
         self.role = turret_etype
@@ -19,4 +20,4 @@ class Turret:
                 # self.role = Launcher()
                 pass
 
-        self.role.run()
+        self.role.run(c)

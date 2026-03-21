@@ -19,8 +19,10 @@ DIRECTIONS_8 = [
     Direction.NORTHWEST,
 ]
 
+
 def _manhattan(a: Position, b: Position):
     return abs(a.x - b.x) + abs(a.y - b.y)
+
 
 def get_direction_4(current: Position, target: Position):
     best_dir = None
@@ -36,6 +38,7 @@ def get_direction_4(current: Position, target: Position):
 
     return best_dir
 
+
 def get_direction_8(current: Position, target: Position):
     best_dir = None
     best_dist = float("inf")
@@ -50,26 +53,27 @@ def get_direction_8(current: Position, target: Position):
 
     return best_dir
 
+
 def random_direction_4():
     return random.choice(DIRECTIONS_4)
+
 
 def random_direction_8():
     return random.choice(DIRECTIONS_8)
 
+
 def reached_core(current_pos: Position, core_pos: Position):
-    if current_pos.x == core_pos.x and abs(current_pos.y - current_pos.y) <= 1:
-        return True
-    if current_pos.y == core_pos.y and abs(current_pos.x - current_pos.x) <= 1:
-        return True
-    return False
+    return current_pos.distance_squared(core_pos) <= 1
+
 
 # Both *_diagonal() functions are intended for 2x2 square scenarios
 def is_diagonal(current: Position, target: Position):
     return False if current.direction_to(target) in DIRECTIONS_4 else True
 
+
 def split_diagonal(current: Position, target: Position):
     match current.direction_to(target):
-        case Direction.NORTHEAST: 
+        case Direction.NORTHEAST:
             return (Direction.NORTH, Direction.EAST)
         case Direction.SOUTHEAST:
             return (Direction.SOUTH, Direction.EAST)

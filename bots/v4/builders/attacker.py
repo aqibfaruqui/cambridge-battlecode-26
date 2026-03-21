@@ -1,16 +1,18 @@
 from enum import Enum
-from cambc import Controller, Direction, EntityType, Position
+from cambc import Controller, EntityType, Position
 from utils.movement import (
     DIRECTIONS_8,
     get_direction_8,
 )
 
+
 class AttackState(Enum):
     __slots__ = ()
-    
+
     NAVIGATE = "navigate"
     PLACE_GUNNER = "place_gunner"
     DONE = "done"
+
 
 class Attacker:
     def __init__(self, core_pos: Position):
@@ -50,7 +52,12 @@ class Attacker:
                 self._search(c, self.attack_target)
         else:
             # Cycle through candidates
-            if self.current_pos.distance_squared(self.enemy_core_candidates[self.enemy_core_candidate_idx]) <= 20:
+            if (
+                self.current_pos.distance_squared(
+                    self.enemy_core_candidates[self.enemy_core_candidate_idx]
+                )
+                <= 20
+            ):
                 self.enemy_core_candidate_idx = (self.enemy_core_candidate_idx + 1) % 3
             self._search(c, self.enemy_core_candidates[self.enemy_core_candidate_idx])
 
@@ -71,7 +78,7 @@ class Attacker:
                     if self.gunners_placed >= 2:
                         self.attack_state = AttackState.DONE
                     return
-                
+
         self._search(c, self.attack_target)
 
     def _done(self, c: Controller):
@@ -84,9 +91,9 @@ class Attacker:
             cx, cy = self.core_pos.x, self.core_pos.y
             W, H = c.get_map_width(), c.get_map_height()
             self.enemy_core_candidates = [
-                Position(W - 1 - cx, H - 1 - cy),    # Rotational (180°)
-                Position(W - 1 - cx, cy),            # Horizontal reflection
-                Position(cx, H - 1 - cy),            # Vertical reflection
+                Position(W - 1 - cx, H - 1 - cy),  # Rotational (180°)
+                Position(W - 1 - cx, cy),  # Horizontal reflection
+                Position(cx, H - 1 - cy),  # Vertical reflection
             ]
             self.enemy_core_candidate_idx = c.get_current_round() % 3
             return
@@ -96,7 +103,10 @@ class Attacker:
         # Check we are targetting correct enemy core
         if self.enemy_pos is None:
             for eid in c.get_nearby_buildings():
-                if (c.get_entity_type(eid) == EntityType.CORE and c.get_team(eid) != c.get_team()):
+                if (
+                    c.get_entity_type(eid) == EntityType.CORE
+                    and c.get_team(eid) != c.get_team()
+                ):
                     self.enemy_pos = c.get_position(eid)
                     # Navigates to two tiles outside the enemy core
                     approach = self.core_pos.direction_to(self.enemy_pos)

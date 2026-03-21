@@ -3,6 +3,7 @@ from utils.movement import (
     random_direction_8,
 )
 
+
 class Core:
     def __init__(self):
         self.builders_spawned = 0

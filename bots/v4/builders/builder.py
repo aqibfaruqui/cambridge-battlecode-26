@@ -4,11 +4,13 @@ from cambc import Controller, EntityType
 from builders.harvester import Harvester
 from builders.attacker import Attacker
 
+
 class BuilderRole(Enum):
     __slots__ = ()
 
     HARVESTER = "harvester"
     ATTACKER = "attacker"
+
 
 class Builder:
     def __init__(self):
@@ -18,7 +20,10 @@ class Builder:
     def run(self, c: Controller):
         if self.core_pos is None:
             for eid in c.get_nearby_buildings():
-                if (c.get_entity_type(eid) == EntityType.CORE and c.get_team(eid) == c.get_team()):
+                if (
+                    c.get_entity_type(eid) == EntityType.CORE
+                    and c.get_team(eid) == c.get_team()
+                ):
                     self.core_pos = c.get_position(eid)
 
         if self.role is None:

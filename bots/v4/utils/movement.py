@@ -1,5 +1,5 @@
 import random
-from cambc import Controller, Direction, Position
+from cambc import Direction, Position, Controller
 
 DIRECTIONS_4 = [
     Direction.NORTH,
@@ -18,6 +18,10 @@ DIRECTIONS_8 = [
     Direction.WEST,
     Direction.NORTHWEST,
 ]
+
+
+def on_map(c: Controller, pos: Position):
+    return 0 <= pos.x < c.get_map_width() and 0 <= pos.y < c.get_map_height()
 
 
 def _manhattan(a: Position, b: Position):

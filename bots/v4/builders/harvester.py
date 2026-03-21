@@ -1,119 +1,109 @@
 from enum import Enum
-from cambc import Controller, Direction, EntityType, Position
+from cambc import Controller, Direction, EntityType, Position, Environment
 from utils.movement import (
-    get_direction_4,
-    random_direction_8,
-    reached_core,
-    is_diagonal,
-    split_diagonal,
+    random_direction_4,
 )
 
 
 class HarvestState(Enum):
     __slots__ = ()
 
-    NOT_PLACED = "not_placed"
-    JUST_PLACED = "just_placed"
-    RETURNING_TO_CORE = "returning_to_core"
+    BUILDING_OUTWARD = "building_outward"
+    SEARCHING_ORES = "searching_ores"
 
 
 class Harvester:
     def __init__(self, core_pos: Position):
-        self.state = HarvestState.NOT_PLACED
+        self.state = HarvestState.BUILDING_OUTWARD
         self.core_pos = core_pos
         self.current_pos = None
-        self.harvester_pos = None
 
-    def _not_placed(self, c: Controller):
-        """Randomly explore and build harvesters (in first 100 turns)"""
-        if self.state == HarvestState.NOT_PLACED:
-            if c.get_current_round() < 100:
-                for d in Direction:
-                    ore_pos = self.current_pos.add(d)
-                    if c.can_build_harvester(ore_pos):
-                        c.build_harvester(ore_pos)
-                        self.state = HarvestState.JUST_PLACED
-                        self.harvester_pos = ore_pos
-                        return
+    def _nearest_ore_tile(self, c: Controller, pos: Position):
+        for tile in c.get_nearby_tiles():
+            env = c.get_tile_env(tile)
+            if env == Environment.ORE_TITANIUM or env == Environment.ORE_AXIONITE:
+                build_id = c.get_tile_building_id(tile)
+                if not build_id:
+                    return tile
+        return None
 
-            move_dir = random_direction_8()
-            move_pos = self.current_pos.add(move_dir)
+    def _build_and_move(self, c: Controller, pos: Position, move_dir: Direction):
+        if move_dir == Direction.CENTRE:
+            move_dir = random_direction_4()
 
-            if c.can_build_road(move_pos):
-                c.build_road(move_pos)
+        if move_dir in (
+            Direction.NORTHEAST,
+            Direction.NORTHWEST,
+            Direction.SOUTHEAST,
+            Direction.SOUTHWEST,
+        ):
+            move_dir = move_dir.rotate_left()
 
-            if c.can_move(move_dir):
-                c.move(move_dir)
+        next_pos = pos.add(move_dir)
+        conveyor_dir = move_dir.opposite()
 
-    def _just_placed(self, c: Controller):
-        """If builder has just placed harvester, build first connecting conveyor"""
-        move_pos = self.current_pos
+        next_bid = c.get_tile_building_id(next_pos)
+        if (
+            next_bid is not None
+            and c.get_entity_type(next_bid) == EntityType.ROAD
+            and c.can_destroy(next_pos)
+        ):
+            c.destroy(next_pos)
 
-        if self.harvester_pos and is_diagonal(self.current_pos, self.harvester_pos):
-            ns, ew = split_diagonal(self.current_pos, self.harvester_pos)
-            m1 = self.current_pos.add(ns)
-            m2 = self.current_pos.add(ew)
-            move_pos = (
-                m1
-                if m1.distance_squared(self.core_pos)
-                < m2.distance_squared(self.core_pos)
-                else m2
+        if c.can_build_conveyor(next_pos, conveyor_dir):
+            c.build_conveyor(next_pos, conveyor_dir)
+
+        if c.can_move(move_dir):
+            c.move(move_dir)
+
+    def _building_outward(self, c: Controller):
+        """Build conveyors outward from core, place harvesters on adjacent ore"""
+        pos = self.current_pos
+        built_harvester = False
+
+        # Place harvesters on all adjacent ore tiles
+        for d in (Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST):
+            ore_pos = pos.add(d)
+            if c.can_build_harvester(ore_pos):
+                c.build_harvester(ore_pos)
+                built_harvester = True
+
+        if built_harvester:
+            self.state = HarvestState.SEARCHING_ORES
+
+        target_pos = self._nearest_ore_tile(c, pos)
+        if target_pos is not None:
+            move_dir = pos.direction_to(target_pos)
+        else:
+            outward_dir = self.core_pos.direction_to(pos)
+            move_dir = (
+                outward_dir if outward_dir != Direction.CENTRE else random_direction_4()
             )
 
-        conveyor_dir = get_direction_4(move_pos, self.core_pos)
+        self._build_and_move(c, pos, move_dir)
 
-        if c.get_entity_type(
-            c.get_tile_building_id(move_pos)
-        ) == EntityType.ROAD and c.can_destroy(move_pos):
-            c.destroy(move_pos)
+    def _searching_ores(self, c: Controller):
+        """After first ore, roam to find more ores while extending conveyor network"""
+        pos = self.current_pos
 
-        if c.can_build_conveyor(move_pos, conveyor_dir):
-            c.build_conveyor(move_pos, conveyor_dir)
+        for d in (Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST):
+            ore_pos = pos.add(d)
+            if c.can_build_harvester(ore_pos):
+                c.build_harvester(ore_pos)
 
-        if self.current_pos != move_pos:
-            step_to_first_conveyor = get_direction_4(self.current_pos, move_pos)
-            if c.can_move(step_to_first_conveyor):
-                c.move(step_to_first_conveyor)
-            else:
-                return
+        target_pos = self._nearest_ore_tile(c, pos)
+        if target_pos is not None:
+            move_dir = pos.direction_to(target_pos)
+        else:
+            move_dir = random_direction_4()
 
-        self.state = HarvestState.RETURNING_TO_CORE
-
-    def _returning_to_core(self, c: Controller):
-        """If builder has placed harvester, lay conveyor path back to core"""
-        if self.state == HarvestState.RETURNING_TO_CORE:
-            if self.current_pos == self.core_pos:
-                self.state = HarvestState.NOT_PLACED
-                return
-
-            move_dir = get_direction_4(self.current_pos, self.core_pos)
-
-            move_pos = self.current_pos.add(move_dir)
-
-            entity_type = c.get_entity_type(c.get_tile_building_id(move_pos))
-            if entity_type == EntityType.ROAD and c.can_destroy(move_pos):
-                c.destroy(move_pos)
-
-            next_move_dir = get_direction_4(
-                move_pos, self.core_pos
-            )  # For conveyors to turn corners
-
-            if c.can_build_conveyor(move_pos, next_move_dir):
-                c.build_conveyor(move_pos, next_move_dir)
-
-            if c.can_move(move_dir):
-                c.move(move_dir)
-
-            if reached_core(c.get_position(), self.core_pos):
-                self.state = HarvestState.NOT_PLACED
+        self._build_and_move(c, pos, move_dir)
 
     def run(self, c: Controller):
         self.current_pos = c.get_position()
 
         match self.state:
-            case HarvestState.NOT_PLACED:
-                self._not_placed(c)
-            case HarvestState.JUST_PLACED:
-                self._just_placed(c)
-            case HarvestState.RETURNING_TO_CORE:
-                self._returning_to_core(c)
+            case HarvestState.BUILDING_OUTWARD:
+                self._building_outward(c)
+            case HarvestState.SEARCHING_ORES:
+                self._searching_ores(c)

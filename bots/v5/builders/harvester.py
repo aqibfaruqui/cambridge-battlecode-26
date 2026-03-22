@@ -2,6 +2,7 @@ from enum import Enum
 from cambc import Controller, Direction, EntityType, Position, Environment
 from utils.movement import (
     random_direction_4,
+    on_map,
     bug_nav,
 )
 
@@ -20,8 +21,14 @@ class Harvester:
         self.current_pos = None
         self._bug_follow_state: dict | None = None
 
+    def _clear_if_road(self, c: Controller, pos: Position):
+        build_id = c.get_tile_building_id(pos)
+        if build_id is not None and c.get_entity_type(build_id) == EntityType.ROAD:
+            if c.can_destroy(pos):
+                c.destroy(pos)
+
     def _is_ore_tile(self, c: Controller, pos: Position) -> bool:
-        if not (0 <= pos.x < c.get_map_width() and 0 <= pos.y < c.get_map_height()):
+        if not on_map(c, pos):
             return False
         env = c.get_tile_env(pos)
         return env in (Environment.ORE_TITANIUM, Environment.ORE_AXIONITE)
@@ -30,17 +37,26 @@ class Harvester:
         built_harvester = False
         for d in (Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST):
             ore_pos = pos.add(d)
-            if self._is_ore_tile(c, ore_pos) and c.can_build_harvester(ore_pos):
-                c.build_harvester(ore_pos)
-                built_harvester = True
+            if self._is_ore_tile(c, ore_pos):
+                self._clear_if_road(c, ore_pos)
+                if c.can_build_harvester(ore_pos):
+                    c.build_harvester(ore_pos)
+                    built_harvester = True
+
         return built_harvester
 
     def _nearest_ore_tile(self, c: Controller, pos: Position):
         for tile in c.get_nearby_tiles():
-            if self._is_ore_tile(c, tile):
-                build_id = c.get_tile_building_id(tile)
-                if not build_id:
-                    return tile
+            if not self._is_ore_tile(c, tile):
+                continue
+
+            build_id = c.get_tile_building_id(tile)
+            if build_id is not None:
+                if c.get_entity_type(build_id) == EntityType.HARVESTER:
+                    continue
+
+            return tile
+
         return None
 
     def _build_and_move(self, c: Controller, pos: Position, move_dir: Direction):
@@ -74,6 +90,19 @@ class Harvester:
         if c.can_move(move_dir):
             c.move(move_dir)
 
+    def _navigate(self, c: Controller, target: Position) -> None:
+        pos = self.current_pos
+
+        if pos == target:
+            self._bug_follow_state = None
+            return
+
+        move_dir, self._bug_follow_state = bug_nav(
+            c, pos, target, self._bug_follow_state
+        )
+        if move_dir is not None:
+            self._build_and_move(c, pos, move_dir)
+
     def _building_outward(self, c: Controller):
         """Build conveyors outward from core, place harvesters on adjacent ore"""
         pos = self.current_pos
@@ -103,19 +132,6 @@ class Harvester:
             self._navigate(c, target_pos)
         else:
             self._navigate(c, pos.add(random_direction_4()))
-
-    def _navigate(self, c: Controller, target: Position) -> None:
-        pos = self.current_pos
-
-        if pos == target:
-            self._bug_follow_state = None
-            return
-
-        move_dir, self._bug_follow_state = bug_nav(
-            c, pos, target, self._bug_follow_state
-        )
-        if move_dir is not None:
-            self._build_and_move(c, pos, move_dir)
 
     def run(self, c: Controller):
         self.current_pos = c.get_position()

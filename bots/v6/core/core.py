@@ -8,7 +8,7 @@ from utils.movement import (
 class Core:
     def __init__(self):
         self.builders_spawned = 0
-        self.builders_max = 7
+        self.builders_max = 8
 
     def run(self, c: Controller):
         if self.builders_spawned < self.builders_max:
@@ -19,8 +19,17 @@ class Core:
                 spawn_dir = direction_to_centre(c, core_pos)  # ATTACKER
                 if spawn_dir in DIRECTIONS_4:
                     spawn_dir = spawn_dir.rotate_right()
+        
+        # temporary suicide attack every 50 rounds
+        elif c.get_current_round() % 50 == 0:
+            core_pos = c.get_position()
+            spawn_dir = direction_to_centre(c, core_pos)
+            if spawn_dir in DIRECTIONS_4:
+                spawn_dir = spawn_dir.rotate_right()
+        else:
+            return
 
-            spawn_pos = c.get_position().add(spawn_dir)
-            if c.can_spawn(spawn_pos):
-                c.spawn_builder(spawn_pos)
-                self.builders_spawned += 1
+        spawn_pos = core_pos.add(spawn_dir)
+        if c.can_spawn(spawn_pos):
+            c.spawn_builder(spawn_pos)
+            self.builders_spawned += 1

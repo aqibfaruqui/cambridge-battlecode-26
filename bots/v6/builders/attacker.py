@@ -10,7 +10,7 @@ class AttackState(Enum):
     __slots__ = ()
 
     NAVIGATE = "navigate"
-    PLACE_GUNNER = "place_gunner"
+    PLACE_SELF_DESTRUCT = "place_self_destruct"
     DONE = "done"
 
 
@@ -47,7 +47,7 @@ class Attacker:
         """Navigate towards {self.attack_target} next to enemy core"""
         if self.enemy_pos is not None:
             if self.current_pos.distance_squared(self.attack_target) <= 4:
-                self.attack_state = AttackState.PLACE_GUNNER
+                self.state = AttackState.PLACE_SELF_DESTRUCT
             else:
                 self._search(c, self.attack_target)
         else:
@@ -61,25 +61,35 @@ class Attacker:
                 self.enemy_core_candidate_idx = (self.enemy_core_candidate_idx + 1) % 3
             self._search(c, self.enemy_core_candidates[self.enemy_core_candidate_idx])
 
-    def _place_gunner(self, c: Controller):
-        """Place gunner next to enemy core"""
-        if c.get_action_cooldown() == 0:
-            for d in DIRECTIONS_8:
-                adj = self.current_pos.add(d)
-                bid = c.get_tile_building_id(adj)
-                if bid is not None and c.get_team(bid) == c.get_team():
-                    if c.get_entity_type(bid) in (EntityType.ROAD, EntityType.CONVEYOR):
-                        c.destroy(adj)
+    def _place_self_destruct(self, c: Controller):
+        """Look for enemy logistics near the enemy core and self destruct"""
+        target_pos = None
+        best_dist = float("inf")
 
-                facing = adj.direction_to(self.enemy_pos)
-                if c.can_build_gunner(adj, facing):
-                    c.build_gunner(adj, facing)
-                    self.gunners_placed += 1
-                    if self.gunners_placed >= 2:
-                        self.attack_state = AttackState.DONE
-                    return
+        for eid in c.get_nearby_entities():
+            if c.get_team(eid) == c.get_team():
+                continue
+            if c.get_entity_type(eid) not in (
+                EntityType.CONVEYOR,
+                EntityType.BRIDGE
+            ):
+                continue
 
-        self._search(c, self.attack_target)
+            pos = c.get_position(eid)
+            dist = pos.distance_squared(self.enemy_pos)
+            if dist < best_dist:
+                best_dist = dist
+                target_pos = pos
+
+        if target_pos is not None:
+            if self.current_pos == target_pos:
+                c.self_destruct()
+                return
+
+            self._search(c, target_pos)
+            return
+
+        self._search(c, self.enemy_pos)
 
     def _done(self, c: Controller):
         """TODO: Heal gunners & Supply ammo"""
@@ -122,7 +132,7 @@ class Attacker:
         match self.state:
             case AttackState.NAVIGATE:
                 self._navigate(c)
-            case AttackState.PLACE_GUNNER:
-                self._place_gunner(c)
+            case AttackState.PLACE_SELF_DESTRUCT:
+                self._place_self_destruct(c)
             case AttackState.DONE:
                 self._done(c)

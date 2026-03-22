@@ -1,8 +1,7 @@
 from enum import Enum
 from cambc import Controller, EntityType, Position
 from utils.movement import (
-    DIRECTIONS_8,
-    get_direction_8,
+    bug_nav,
 )
 
 
@@ -24,24 +23,27 @@ class Attacker:
         self.gunners_placed = 0
         self.enemy_core_candidate_idx = 0
         self.enemy_core_candidates = []
+        self._bug_follow_state: dict | None = None
 
     def _search(self, c: Controller, target: Position):
-        """Helper: Attempts to move bot towards target"""
+        """Helper: navigate towards target with bug nav and pave if needed."""
         if c.get_move_cooldown() > 0:
             return
 
         pos = c.get_position()
-        direction = get_direction_8(pos, target)
-        for _ in range(8):
-            next_pos = pos.add(direction)
-            if not c.is_tile_passable(next_pos) and c.get_action_cooldown() == 0:
-                if c.can_build_road(next_pos):
-                    c.build_road(next_pos)
-            if c.can_move(direction):
-                c.move(direction)
-                return
+        direction, self._bug_follow_state = bug_nav(
+            c, pos, target, self._bug_follow_state
+        )
+        if direction is None:
+            return
 
-            direction = direction.rotate_right()
+        next_pos = pos.add(direction)
+        if c.can_move(direction):
+            c.move(direction)
+            return
+
+        if c.get_action_cooldown() == 0 and c.can_build_road(next_pos):
+            c.build_road(next_pos)
 
     def _navigate(self, c: Controller):
         """Navigate towards {self.attack_target} next to enemy core"""
@@ -125,6 +127,7 @@ class Attacker:
                         self.enemy_pos.x - adx * 2,
                         self.enemy_pos.y - ady * 2,
                     )
+                    self._bug_follow_state = None
                     break
 
         self.current_pos = c.get_position()

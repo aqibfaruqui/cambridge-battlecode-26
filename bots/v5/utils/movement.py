@@ -74,6 +74,16 @@ def reached_core(current_pos: Position, core_pos: Position):
     return current_pos.distance_squared(core_pos) <= 1
 
 
+def direction_from_centre(c: Controller, pos: Position):
+    centre = Position(c.get_map_width() // 2, c.get_map_height() // 2)
+    return centre.direction_to(pos)
+
+
+def direction_to_centre(c: Controller, pos: Position):
+    centre = Position(c.get_map_width() // 2, c.get_map_height() // 2)
+    return pos.direction_to(centre)
+
+
 # Both *_diagonal() functions are intended for 2x2 square scenarios
 def is_diagonal(current: Position, target: Position):
     return False if current.direction_to(target) in DIRECTIONS_4 else True

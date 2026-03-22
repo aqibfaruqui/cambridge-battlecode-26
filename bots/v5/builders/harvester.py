@@ -31,7 +31,7 @@ class Harvester:
         if not on_map(c, pos):
             return False
         env = c.get_tile_env(pos)
-        return env in (Environment.ORE_TITANIUM, Environment.ORE_AXIONITE)
+        return env == Environment.ORE_TITANIUM
 
     def _try_build_adjacent_harvesters(self, c: Controller, pos: Position) -> bool:
         built_harvester = False
@@ -51,11 +51,14 @@ class Harvester:
                 continue
 
             build_id = c.get_tile_building_id(tile)
-            if build_id is not None:
-                if c.get_entity_type(build_id) == EntityType.HARVESTER:
-                    continue
+            if build_id is None:
+                return tile
 
-            return tile
+            etype = c.get_entity_type(build_id)
+            if etype == EntityType.ROAD and c.can_destroy(tile):
+                return tile
+
+            continue
 
         return None
 

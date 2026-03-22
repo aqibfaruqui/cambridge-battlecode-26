@@ -1,8 +1,10 @@
-import random
 from enum import Enum
 from cambc import Controller, EntityType
 from builders.harvester import Harvester
 from builders.attacker import Attacker
+from utils.movement import (
+    DIRECTIONS_4,
+)
 
 
 class BuilderRole(Enum):
@@ -27,7 +29,11 @@ class Builder:
                     self.core_pos = c.get_position(eid)
 
         if self.role is None:
-            self.role = random.choice(list(BuilderRole))
+            spawn_dir = self.core_pos.direction_to(c.get_position())
+            if spawn_dir in DIRECTIONS_4:
+                self.role = BuilderRole.HARVESTER
+            else:
+                self.role = BuilderRole.ATTACKER
 
         match self.role:
             case BuilderRole.HARVESTER:

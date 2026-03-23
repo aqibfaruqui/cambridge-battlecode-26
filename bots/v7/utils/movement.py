@@ -1,5 +1,5 @@
 import random
-from cambc import Direction, Position, Controller
+from cambc import Controller, Direction, Position
 
 DIRECTIONS_4 = [
     Direction.NORTH,

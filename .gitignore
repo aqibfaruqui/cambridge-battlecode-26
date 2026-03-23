@@ -1,3 +1,4 @@
 replay.replay*
 .venv
 __pycache__/
+tmp/

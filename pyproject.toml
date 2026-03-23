@@ -5,6 +5,6 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12.3"
 dependencies = [
-    "cambc==1.4.0",
+    "cambc==1.4.2",
     "pre-commit>=4.5.1",
 ]

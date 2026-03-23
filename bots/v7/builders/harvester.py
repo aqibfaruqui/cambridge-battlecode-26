@@ -64,18 +64,67 @@ class Harvester:
 
         return None
 
+    def _is_diagonal_direction(self, direction: Direction) -> bool:
+        return direction in (
+            Direction.NORTHEAST,
+            Direction.NORTHWEST,
+            Direction.SOUTHEAST,
+            Direction.SOUTHWEST,
+        )
+
+    def _handle_diagonal_step(
+        self, c: Controller, pos: Position, move_dir: Direction
+    ) -> Position:
+        move_pos = pos.add(move_dir)
+
+        if c.get_tile_env(move_pos) == Environment.EMPTY:
+            if c.can_build_road(move_pos):
+                c.build_road(move_pos)
+
+        if c.can_move(move_dir):
+            c.move(move_dir)
+        return pos
+
+    def _handle_pending_bridge(self, c: Controller, pos: Position, move_dir: Direction):
+        if c.get_entity_type(
+            c.get_tile_building_id(pos)
+        ) == EntityType.ROAD and c.can_destroy(pos):
+            c.destroy(pos)
+
+        if c.can_build_bridge(pos, self.bridge_target):
+            c.build_bridge(pos, self.bridge_target)
+
+        if c.can_move(move_dir):
+            c.move(move_dir)
+
+    def _handle_conveyor_step(
+        self, c: Controller, next_pos: Position, move_dir: Direction
+    ):
+        conveyor_dir = move_dir.opposite()
+        next_is_ore = self._is_ore_tile(c, next_pos)
+        next_bid = c.get_tile_building_id(next_pos)
+
+        if (
+            not next_is_ore
+            and next_bid is not None
+            and c.get_entity_type(next_bid) == EntityType.ROAD
+            and c.can_destroy(next_pos)
+        ):
+            c.destroy(next_pos)
+
+        if (not next_is_ore) and c.can_build_conveyor(next_pos, conveyor_dir):
+            c.build_conveyor(next_pos, conveyor_dir)
+
+        if c.can_move(move_dir):
+            c.move(move_dir)
+
     def _build_and_move(self, c: Controller, pos: Position, move_dir: Direction):
         if move_dir == Direction.CENTRE:
             move_dir = random_direction_4()
 
         bridge_target = None
 
-        if move_dir in (
-            Direction.NORTHEAST,
-            Direction.NORTHWEST,
-            Direction.SOUTHEAST,
-            Direction.SOUTHWEST,
-        ):
+        if self._is_diagonal_direction(move_dir):
             left_pos = pos.add(move_dir.rotate_left())
             right_pos = pos.add(move_dir.rotate_right())
             if (
@@ -88,64 +137,15 @@ class Harvester:
 
         next_pos = pos.add(move_dir)
 
-        if move_dir in (
-            Direction.NORTHEAST,
-            Direction.NORTHWEST,
-            Direction.SOUTHEAST,
-            Direction.SOUTHWEST,
-        ):
-            # move diagonally, not placing anything (bridge placed on next turn)
-
-            # build road in new place
-            move_pos = pos.add(move_dir)
-
-            if c.get_tile_env(move_pos) == Environment.EMPTY:
-                # build road
-                if c.can_build_road(move_pos):
-                    c.build_road(move_pos)
-
-            # move to new place
-            if c.can_move(move_dir):
-                c.move(move_dir)
-
-            bridge_target = pos
+        if self._is_diagonal_direction(move_dir):
+            bridge_target = self._handle_diagonal_step(c, pos, move_dir)
         else:
             if self.bridge_target:
-                # try to place bridge if we built one on the previous diagonal move
-
-                # destroy road at current position
-                if c.get_entity_type(
-                    c.get_tile_building_id(pos)
-                ) == EntityType.ROAD and c.can_destroy(pos):
-                    c.destroy(pos)
-
-                # build bridge to bridge target
-                if c.can_build_bridge(pos, self.bridge_target):
-                    c.build_bridge(pos, self.bridge_target)
-
+                self._handle_pending_bridge(c, pos, move_dir)
                 bridge_target = None
 
             else:
-                # normal conveyer logic
-                conveyor_dir = move_dir.opposite()
-                next_is_ore = self._is_ore_tile(c, next_pos)
-
-                next_bid = c.get_tile_building_id(next_pos)
-
-                if (
-                    not next_is_ore
-                    and next_bid is not None
-                    and c.get_entity_type(next_bid) == EntityType.ROAD
-                    and c.can_destroy(next_pos)
-                ):
-                    c.destroy(next_pos)
-
-                if (not next_is_ore) and c.can_build_conveyor(next_pos, conveyor_dir):
-                    c.build_conveyor(next_pos, conveyor_dir)
-
-            # Always move if possible (whether we built bridge or conveyor)
-            if c.can_move(move_dir):
-                c.move(move_dir)
+                self._handle_conveyor_step(c, next_pos, move_dir)
 
         self.bridge_target = bridge_target
 

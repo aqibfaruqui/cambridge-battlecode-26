@@ -1,25 +1,30 @@
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.battlecode.cam/llms.txt
+> Use this file to discover all available pages before exploring further.
+
 # Types & Enums
 
+> All game types available from `from cambc import *`.
+
 All types are imported from the `cambc` module:
-```python
+
+```python  theme={"dark"}
 from cambc import *
 ```
 
-This gives you: `Team`, `EntityType`, `ResourceType`, `Environment`, `Direction`, `Position`, `GameConstants`, `GameError`, and `Controller`.
-
----
+This gives you: `Team`, `EntityType`, `ResourceType`, `Environment`, `Direction`, `Position`, [`GameConstants`](/api/constants), `GameError`, and [`Controller`](/api/controller).
 
 ## Team
-```python
+
+```python  theme={"dark"}
 class Team(Enum):
     A = "a"
     B = "b"
 ```
 
----
-
 ## EntityType
-```python
+
+```python  theme={"dark"}
 class EntityType(Enum):
     BUILDER_BOT = "builder_bot"
     CORE = "core"
@@ -38,20 +43,18 @@ class EntityType(Enum):
     MARKER = "marker"
 ```
 
----
-
 ## ResourceType
-```python
+
+```python  theme={"dark"}
 class ResourceType(Enum):
     TITANIUM = "titanium"
     RAW_AXIONITE = "raw_axionite"
     REFINED_AXIONITE = "refined_axionite"
 ```
 
----
-
 ## Environment
-```python
+
+```python  theme={"dark"}
 class Environment(Enum):
     EMPTY = "empty"
     WALL = "wall"
@@ -59,10 +62,9 @@ class Environment(Enum):
     ORE_AXIONITE = "ore_axionite"
 ```
 
----
-
 ## Direction
-```python
+
+```python  theme={"dark"}
 class Direction(Enum):
     NORTH = "north"
     NORTHEAST = "northeast"
@@ -75,48 +77,65 @@ class Direction(Enum):
     CENTRE = "centre"
 ```
 
-### Direction Methods
+### Direction methods
 
-| Method | Returns | Description |
-|---|---|---|
-| `delta()` | `tuple[int, int]` | Returns the `(dx, dy)` step for this direction. North is `(0, -1)`, East is `(1, 0)`, etc. |
-| `rotate_left()` | `Direction` | Returns the direction rotated 45° counterclockwise. |
-| `rotate_right()` | `Direction` | Returns the direction rotated 45° clockwise. |
-| `opposite()` | `Direction` | Returns the opposite direction (180°). |
+<ResponseField name="delta()" type="tuple[int, int]">
+  Return the `(dx, dy)` step for this direction. North is `(0, -1)`, East is `(1, 0)`, etc.
+</ResponseField>
 
----
+<ResponseField name="rotate_left()" type="Direction">
+  Return the direction rotated 45° counterclockwise.
+</ResponseField>
+
+<ResponseField name="rotate_right()" type="Direction">
+  Return the direction rotated 45° clockwise.
+</ResponseField>
+
+<ResponseField name="opposite()" type="Direction">
+  Return the opposite direction (180°).
+</ResponseField>
 
 ## Position
 
 A named tuple with `x` and `y` integer fields.
-```python
+
+```python  theme={"dark"}
 class Position(NamedTuple):
     x: int
     y: int
 ```
 
-### Position Methods
+### Position methods
 
-| Method | Returns | Description |
-|---|---|---|
-| `add(direction)` | `Position` | Returns a new position offset by the direction delta. |
-| `distance_squared(other)` | `int` | Returns the squared Euclidean distance to another position. |
-| `direction_to(other)` | `Direction` | Returns the closest 45° Direction approximation toward other. |
+<ResponseField name="add(direction)" type="Position">
+  Return a new position offset by the direction delta.
+</ResponseField>
+
+<ResponseField name="distance_squared(other)" type="int">
+  Return the squared Euclidean distance to another position.
+</ResponseField>
+
+<ResponseField name="direction_to(other)" type="Direction">
+  Return the closest 45° Direction approximation toward other.
+</ResponseField>
 
 ### Usage
-```python
+
+```python  theme={"dark"}
 pos = Position(5, 10)
 new_pos = pos.add(Direction.NORTH)      # Position(5, 9)
 dist = pos.distance_squared(new_pos)    # 1
 dir = pos.direction_to(Position(8, 7))  # Direction.NORTHEAST
 ```
 
----
-
 ## GameError
-```python
+
+```python  theme={"dark"}
 class GameError(Exception):
     pass
 ```
 
 Raised when a player issues an invalid action (e.g., building on an occupied tile, moving with cooldown > 0).
+
+
+Built with [Mintlify](https://mintlify.com).

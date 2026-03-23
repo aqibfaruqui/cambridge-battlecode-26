@@ -1,70 +1,101 @@
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.battlecode.cam/llms.txt
+> Use this file to discover all available pages before exploring further.
+
 # Reference Tables
 
-Quick-reference stat tables for all entities.
+> Quick-reference stat tables for all entities.
 
----
+export const DenseTable = ({children}) => <div className="dense-table">{children}</div>;
 
-## Entity Stats
+## Entity stats
 
-| Entity | HP | Cost | Scale | Notes |
-|--------|-----|------|-------|-------|
-| Core | 500 | — | — | 3×3; spawns builders |
-| Builder bot | 30 | 10 Ti | 10% | Mobile; build, heal, destroy |
-| Conveyor | 20 | 3 Ti | 1% | 3 inputs, 1 output |
-| Splitter | 20 | 6 Ti | 1% | 1 input, 3 rotating outputs |
-| Bridge | 20 | 10 Ti | 1% | Output to tile within dist 3 |
-| Armoured conv. | 50 | 10 Ti, 5 Ax | 1% | Conveyor with more HP |
-| Harvester | 30 | 80 Ti | 10% | Outputs every 4 rounds |
-| Foundry | 50 | 120 Ti | 100% | Ti + raw Ax → refined Ax |
-| Road | 10 | 1 Ti | 0.5% | Walkable |
-| Barrier | 30 | 3 Ti | 1% | Blocks space |
-| Marker | 1 | Free | — | No action cooldown |
-| Gunner | 40 | 10 Ti | 10% | Closest tile in facing dir |
-| Sentinel | 30 | 15 Ti | 10% | Line ±1; Ax stuns +3 cd |
-| Breach | 60 | 30 Ti, 10 Ax | 10% | 180° cone; friendly fire |
-| Launcher | 30 | 20 Ti | 10% | Throws adjacent builders |
+<DenseTable>
+  <table>
+    <thead><tr><th>Entity</th><th>HP</th><th>Cost</th><th>Scale</th><th>Notes</th></tr></thead>
 
----
+    <tbody>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/core.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=a80e75be7e23b7c16f3fd1ef71d7b9a4" alt="" width="1024" height="1024" data-path="images/entities/core.png" />Core</td><td>500</td><td>—</td><td>—</td><td>3×3; spawns builders</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/builder-bot.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=b0b8f534c879d31c95e22691fccade5b" alt="" width="512" height="512" data-path="images/entities/builder-bot.png" />Builder bot</td><td>30</td><td>50 Ti</td><td>20%</td><td>Mobile; build, heal, attack, destroy</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/conveyor.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=487e50d068b9c397ad4c16a993f6a257" alt="" width="512" height="512" data-path="images/entities/conveyor.png" />Conveyor</td><td>20</td><td>3 Ti</td><td>1%</td><td>3 inputs, 1 output</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/splitter.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=4e711af42fbce57a77c38341f7f2da39" alt="" width="512" height="512" data-path="images/entities/splitter.png" />Splitter</td><td>20</td><td>6 Ti</td><td>1%</td><td>1 input, 3 rotating outputs</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/bridge.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=662d002ce068c838da058b5924ed9772" alt="" width="1536" height="512" data-path="images/entities/bridge.png" />Bridge</td><td>20</td><td>20 Ti</td><td>5%</td><td>Output to tile within dist 3</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/armoured-conveyor.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=c706382c9d7e9718c9a2d3e41322a373" alt="" width="512" height="512" data-path="images/entities/armoured-conveyor.png" />Armoured conv.</td><td>50</td><td>10 Ti, 5 Ax</td><td>1%</td><td>Conveyor with more HP</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/harvester.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=992df718cfea7d1bdf21c47ed90faddb" alt="" width="512" height="512" data-path="images/entities/harvester.png" />Harvester</td><td>30</td><td>80 Ti</td><td>10%</td><td>Outputs every 4 rounds</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/foundry.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=9661cc6db96a60c933245749ab6f843a" alt="" width="512" height="512" data-path="images/entities/foundry.png" />Foundry</td><td>50</td><td>120 Ti</td><td>100%</td><td>Ti + raw Ax → refined Ax</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/road.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=62a856e25500d9cca10e041f6c621364" alt="" width="512" height="512" data-path="images/entities/road.png" />Road</td><td>10</td><td>1 Ti</td><td>0.5%</td><td>Walkable</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/barrier.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=5e85d4c7c912ff7bca23755fcf4f2847" alt="" width="512" height="512" data-path="images/entities/barrier.png" />Barrier</td><td>30</td><td>3 Ti</td><td>1%</td><td>Blocks space</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/marker.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=684b25be1be46ae82cb48c7205ad5910" alt="" width="512" height="512" data-path="images/entities/marker.png" />Marker</td><td>1</td><td>Free</td><td>—</td><td>No action cooldown</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/gunner.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=62439f66dff4e5aa36645340d4daad02" alt="" width="512" height="512" data-path="images/entities/gunner.png" />Gunner</td><td>40</td><td>10 Ti</td><td>10%</td><td>Closest tile in facing dir; markers do not shield</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/sentinel.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=d9e59a60e07e843f244324b5a144cb5f" alt="" width="512" height="512" data-path="images/entities/sentinel.png" />Sentinel</td><td>30</td><td>15 Ti</td><td>20%</td><td>Line ±1; refined Ax stuns +2 cd</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/breach.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=f1d1f22a28280a787eb9ef85f4a4f145" alt="" width="512" height="512" data-path="images/entities/breach.png" />Breach</td><td>60</td><td>30 Ti, 10 Ax</td><td>10%</td><td>180° cone; friendly fire</td></tr>
+      <tr><td><img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/launcher.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=0f147103b2279e8b33821454d9377b40" alt="" width="512" height="512" data-path="images/entities/launcher.png" />Launcher</td><td>30</td><td>20 Ti</td><td>10%</td><td>Throws adjacent builders</td></tr>
+    </tbody>
+  </table>
+</DenseTable>
 
-## Unit Combat Stats
+## Unit combat stats
 
-| Unit | Vision r² | Action r² | Attack r² | Damage | Reload | Ammo/shot |
-|------|-----------|-----------|-----------|--------|--------|-----------|
-| Core | 36 | 8 | — | — | — | — |
-| Builder bot | 20 | 2 | — | 20 (self-destruct) | — | — |
-| Gunner | 13 | 2 | 13 | 10 (+10 with Ax) | 1 | 2 |
-| Sentinel | 32 | 2 | 32 | 20 | 4 | 10 |
-| Breach | 10 | 2 | 5 | 40 + 20 splash | 1 | 5 |
-| Launcher | 26 | 2 (pickup) | 26 (throw) | — | 1 | — |
+<DenseTable>
+  <table>
+    <thead><tr><th>Unit</th><th>Vision r²</th><th>Action r²</th><th>Attack r²</th><th>Damage</th><th>Reload</th><th>Ammo/shot</th></tr></thead>
 
----
+    <tbody>
+      <tr><td>Core</td><td>36</td><td>8</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+      <tr><td>Builder bot</td><td>20</td><td>2</td><td>0 (own tile)</td><td>2</td><td>—</td><td>2 Ti</td></tr>
+      <tr><td>Gunner</td><td>13</td><td>2</td><td>13</td><td>10 (+10 with Ax)</td><td>1</td><td>2</td></tr>
+      <tr><td>Sentinel</td><td>32</td><td>2</td><td>32</td><td>10</td><td>2</td><td>5</td></tr>
+      <tr><td>Breach</td><td>13</td><td>2</td><td>5</td><td>40 + 20 splash</td><td>1</td><td>5</td></tr>
+      <tr><td>Launcher</td><td>26</td><td>2 (pickup)</td><td>26 (throw)</td><td>—</td><td>1</td><td>—</td></tr>
+    </tbody>
+  </table>
+</DenseTable>
 
-## Game Constants
+## Game constants
 
-| Constant | Value |
-|----------|-------|
-| Max rounds | 2000 |
-| Stack size | 10 |
-| Starting titanium | 1000 |
-| Starting axionite | 0 |
-| Builder bot heal | 10 HP |
-| Builder bot self-destruct damage | 20 |
-| Harvester output interval | Every 4 rounds |
-| Sentinel stun (refined axionite ammo) | +3 action and move cooldown |
-| CPU time per unit per round | 2ms (+5% buffer) |
+<DenseTable>
+  <table>
+    <thead><tr><th>Constant</th><th>Value</th></tr></thead>
 
----
+    <tbody>
+      <tr><td>Max rounds</td><td>2000</td></tr>
+      <tr><td>Unit cap per team</td><td>50 living units (including the core)</td></tr>
+      <tr><td>Stack size</td><td>10</td></tr>
+      <tr><td>Starting titanium</td><td>1000</td></tr>
+      <tr><td>Starting axionite</td><td>0</td></tr>
+      <tr><td>Builder bot heal</td><td>4 HP for 1 Ti (own tile only)</td></tr>
+      <tr><td>Builder bot attack</td><td>2 damage for 2 Ti (own tile only)</td></tr>
+      <tr><td>Builder bot self-destruct damage</td><td>0</td></tr>
+      <tr><td>Harvester output interval</td><td>Every 4 rounds</td></tr>
+      <tr><td>Sentinel stun (refined axionite ammo)</td><td>+2 action and move cooldown</td></tr>
+      <tr><td>CPU time per unit per round</td><td>2ms (+5% buffer)</td></tr>
+      <tr><td>Memory limit per bot</td><td>1 GB</td></tr>
+    </tbody>
+  </table>
+</DenseTable>
 
-## Cost Scaling
+## Cost scaling
 
-Every entity you build increases the cost multiplier. Scale starts at 1.0x.
+Every entity you build increases the cost multiplier. Scale starts at 1.0x (100%). Increases are **additive** — two gunners at +10% each give 1.2x, not 1.21x.
 
-| Entity | Scale Increase |
-|--------|---------------|
-| Road | +0.5% |
-| Conveyor, splitter, armoured conveyor, bridge, barrier | +1% |
-| Builder bot, harvester, gunner, sentinel, breach, launcher | +10% |
-| Axionite foundry | +100% |
-```
-cost = floor(scale × base cost)
-```
+<DenseTable>
+  <table>
+    <thead><tr><th>Entity</th><th>Scale increase</th></tr></thead>
+
+    <tbody>
+      <tr><td>Road</td><td>+0.5%</td></tr>
+      <tr><td>Conveyor, splitter, armoured conveyor, barrier</td><td>+1%</td></tr>
+      <tr><td>Bridge</td><td>+5%</td></tr>
+      <tr><td>Harvester, gunner, breach, launcher</td><td>+10%</td></tr>
+      <tr><td>Builder bot, sentinel</td><td>+20%</td></tr>
+      <tr><td>Axionite foundry</td><td>+100%</td></tr>
+    </tbody>
+  </table>
+</DenseTable>
+
+$$
+\text{cost} = \lfloor \text{scale} \times \text{base cost} \rfloor
+$$
+
+
+Built with [Mintlify](https://mintlify.com).

@@ -84,10 +84,10 @@ class Attacker:
                 target_pos = pos
 
         if target_pos is not None:
-            if self.current_pos == target_pos:
-                c.self_destruct()
+            if self.current_pos == target_pos and c.can_fire(target_pos):
+                c.fire(target_pos)
                 return
-
+            
             self._search(c, target_pos)
             return
 

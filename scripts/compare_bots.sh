@@ -95,7 +95,7 @@ for r in results:
     entry = by_map[r["map"]]
     if not r["ok"]:
         entry["fails"] += 1
-        entry["matches"].append({"seed": r["seed"], "winner": None, "reason": "failed", "turn": None, "ti_diff": None})
+        entry["matches"].append({"seed": r["seed"], "winner": None, "reason": "failed", "turn": None, "ti_diff": None, "ax_diff": None})
         continue
 
     if r["winner"] == bot_a:

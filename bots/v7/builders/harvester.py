@@ -6,6 +6,11 @@ from utils.movement import (
     bug_nav,
 )
 from utils.board import (
+    action_radius,
+    is_tile_conveyor,
+    is_tile_foundry,
+    is_tile_splitter,
+    replace_with_conveyor,
     is_ore_titanium,
     is_ore_axionite,
     is_ore,
@@ -27,14 +32,26 @@ class Harvester:
         self.state = HarvestState.BUILDING_OUTWARD
         self.core_pos = core_pos
         self.current_pos = None
+        self.ti = 0
+        self.ax = 0
         self.first_conveyor_pos = None
+        self.foundry_prev_placed = False
+        self.foundry_curr_placed = False
+        self.splitter_for_foundry = False
         self.titanium_found = False
         self.axionite_found = False
-        self.foundry_placed = False
         self.cost_scale = 100.0
         self._bug_follow_state: dict | None = None
 
+    def _check_for_foundry(self, c: Controller):
+        """Identify if another builder has built a foundry"""
+        new_cost_scale = c.get_scale_percent()
+        if new_cost_scale >= self.cost_scale + 100.0:
+            self.foundry_prev_placed = True
+        self.cost_scale = new_cost_scale
+
     def _clear_if_road(self, c: Controller, pos: Position):
+        """Safely clear road tiles"""
         build_id = c.get_tile_building_id(pos)
         if (
             build_id is not None
@@ -44,6 +61,7 @@ class Harvester:
             c.destroy(pos)
 
     def _try_build_harvester(self, c: Controller, pos: Position) -> bool:
+        """Check cardinal directions and place a harvester (titanium first)"""
         built_harvester = False
         for d in DIRECTIONS_4:
             ore_pos = pos.add(d)
@@ -60,7 +78,7 @@ class Harvester:
                 is_ore_axionite(c, ore_pos)
                 and self.titanium_found
                 and not self.axionite_found
-                and not self.foundry_placed
+                and not self.foundry_prev_placed
             ):
                 self._clear_if_road(c, ore_pos)
                 if c.can_build_harvester(ore_pos):
@@ -70,15 +88,6 @@ class Harvester:
                     break
 
         return built_harvester
-
-    def _move(self, c: Controller, pos: Position, move_dir):
-        move_pos = pos.add(move_dir)
-
-        if c.can_build_road(move_pos):
-            c.build_road(move_pos)
-
-        if c.can_move(move_dir):
-            c.move(move_dir)
 
     def _build_conveyor_and_move(
         self, c: Controller, pos: Position, move_dir: Direction
@@ -118,10 +127,6 @@ class Harvester:
 
         return move_dir
 
-    def _trace_conveyors(self, c: Controller):
-        """"""
-        pass
-
     def _building_outward(self, c: Controller):
         """Build conveyors outward from core, place harvesters on adjacent ore"""
         pos = self.current_pos
@@ -149,7 +154,7 @@ class Harvester:
         pos = self.current_pos
         self._try_build_harvester(c, pos)
 
-        if self.titanium_found and self.axionite_found and not self.foundry_placed:
+        if self.titanium_found and self.axionite_found and not self.foundry_prev_placed:
             self.state = HarvestState.PLACING_FOUNDRY
             return
 
@@ -167,36 +172,68 @@ class Harvester:
         """Harvesters placed on ti and ax, trace conveyors to core and place foundry on its border"""
         pos = self.current_pos
 
-        build_id = c.get_tile_building_id(pos)
-        if build_id is not None and c.get_entity_type(build_id) == EntityType.CONVEYOR:
-            move_dir = c.get_direction(build_id)
+        # Foundry placed: Wait for axionite then destroy foundry
+        if self.foundry_curr_placed:
+            if self.ax <= 0:
+                return
+            cost = c.get_conveyor_cost()[0]
+            for tile in c.get_nearby_tiles(action_radius["bot"]):
+                if is_tile_splitter(c, tile) and self.ti >= cost:
+                    replace_with_conveyor(c, tile, self.core_pos)
+                    self.splitter_for_foundry = False
+                    if self.foundry_prev_placed:
+                        self.state = HarvestState.BUILDING_OUTWARD
+                    return
+                elif is_tile_foundry(c, tile) and self.ti >= cost:
+                    replace_with_conveyor(c, tile, self.core_pos)
+                    self.foundry_prev_placed = True
+                    if not self.splitter_for_foundry:
+                        self.state = HarvestState.BUILDING_OUTWARD
+                    return
+
+        # Foundry not placed: Trace conveyor path back to core
+        if is_tile_conveyor(c, pos):
+            move_dir = c.get_direction(c.get_tile_building_id(pos))
             move_pos = pos.add(move_dir)
-            ti_r, _ = c.get_global_resources()
-            ti_c, _ = c.get_foundry_cost()
+            cost_s, cost_f = c.get_splitter_cost()[0], c.get_foundry_cost()[0]
+
+            left_pos = move_pos.add(move_dir.rotate_left().rotate_left())
+            right_pos = move_pos.add(move_dir.rotate_right().rotate_right())
+            foundry_pos = (
+                left_pos if on_core_border(left_pos, self.core_pos) else right_pos
+            )
+
             if (
                 on_core_border(move_pos, self.core_pos)
+                and not self.splitter_for_foundry
+                and not is_tile_splitter(c, move_pos)
                 and c.can_destroy(move_pos)
-                and ti_r >= ti_c
+                and self.ti >= cost_s
             ):
                 c.destroy(move_pos)
-                if c.can_build_foundry(move_pos):
-                    c.build_foundry(move_pos)
-                    self.foundry_placed = True
-                    self.state = HarvestState.SEARCHING_ORES
+                if c.can_build_splitter(move_pos, move_dir):
+                    c.build_splitter(move_pos, move_dir)
+                    self.splitter_for_foundry = True
                     return
-            elif c.can_move(move_dir):
+            elif (
+                on_core_border(foundry_pos, self.core_pos)
+                and self.splitter_for_foundry
+                and not is_tile_foundry(c, foundry_pos)
+                and c.can_destroy(foundry_pos)
+                and self.ti >= cost_f
+            ):
+                c.destroy(foundry_pos)
+                if c.can_build_foundry(foundry_pos):
+                    c.build_foundry(foundry_pos)
+                    self.foundry_curr_placed = True
+                    return
+            elif not on_core_border(move_pos, self.core_pos) and c.can_move(move_dir):
                 c.move(move_dir)
 
     def run(self, c: Controller):
         self.current_pos = c.get_position()
-        if c.get_scale_percent() >= self.cost_scale + 100.0:
-            self.foundry_placed = True
-        self.cost_scale = c.get_scale_percent()
-
-        print(f"In state: {self.state}")
-        print(f"Seen titanium (true/false): {self.titanium_found}")
-        print(f"Seen axionite (true/false): {self.axionite_found}")
-        print(f"Foundry cost: {c.get_foundry_cost()}")
+        self.ti, self.ax = c.get_global_resources()
+        self._check_for_foundry(c)
 
         match self.state:
             case HarvestState.BUILDING_OUTWARD:

@@ -1,9 +1,46 @@
 from cambc import Controller, EntityType, Environment, Position
-from utils.movement import on_map
+from utils.movement import DIRECTIONS_4, on_map
 
 action_radius = {
     "bot": 2,
 }
+
+
+def is_tile_conveyor(c: Controller, pos: Position) -> bool:
+    id = c.get_tile_building_id(pos)
+    if id is None:
+        return False
+
+    etype = c.get_entity_type(id)
+    return etype == EntityType.CONVEYOR
+
+
+def is_tile_foundry(c: Controller, pos: Position) -> bool:
+    id = c.get_tile_building_id(pos)
+    if id is None:
+        return False
+
+    etype = c.get_entity_type(id)
+    return etype == EntityType.FOUNDRY
+
+
+def is_tile_splitter(c: Controller, pos: Position) -> bool:
+    id = c.get_tile_building_id(pos)
+    if id is None:
+        return False
+
+    etype = c.get_entity_type(id)
+    return etype == EntityType.SPLITTER
+
+
+def replace_with_conveyor(c: Controller, pos: Position, core_pos: Position):
+    if c.can_destroy(pos):
+        c.destroy(pos)
+        conveyor_dir = pos.direction_to(core_pos)
+        if conveyor_dir not in DIRECTIONS_4:
+            conveyor_dir = conveyor_dir.rotate_left()
+        if c.can_build_conveyor(pos, conveyor_dir):
+            c.build_conveyor(pos, conveyor_dir)
 
 
 def is_ore_titanium(c: Controller, pos: Position) -> bool:
@@ -26,7 +63,7 @@ def is_ore(c: Controller, pos: Position) -> bool:
 
 def nearest_ore_tile(c: Controller, pos: Position):
     for tile in c.get_nearby_tiles():
-        if not is_ore_titanium(c, tile):
+        if not is_ore(c, tile):
             continue
 
         build_id = c.get_tile_building_id(tile)

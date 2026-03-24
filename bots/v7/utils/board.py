@@ -65,7 +65,23 @@ def is_ore(c: Controller, pos: Position) -> bool:
     return is_ore_titanium(c, pos) or is_ore_axionite(c, pos)
 
 
-def nearest_ore_tile(c: Controller, pos: Position):
+def nearby_titanium(c: Controller, pos: Position) -> Position:
+    for tile in c.get_nearby_tiles():
+        if not is_ore_titanium(c, tile):
+            continue
+
+        build_id = c.get_tile_building_id(tile)
+        if build_id is None:
+            return tile
+
+        etype = c.get_entity_type(build_id)
+        if etype == EntityType.ROAD and c.can_destroy(tile):
+            return tile
+
+    return None
+
+
+def nearby_ore(c: Controller, pos: Position) -> Position:
     for tile in c.get_nearby_tiles():
         if not is_ore(c, tile):
             continue

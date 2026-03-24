@@ -15,8 +15,8 @@ from utils.board import (
     replace_with_conveyor,
     is_ore_titanium,
     is_ore_axionite,
-    is_ore,
-    nearest_ore_tile,
+    nearby_titanium,
+    nearby_ore,
     on_core_border,
 )
 
@@ -95,7 +95,7 @@ class Harvester:
         """Move cardinally via conveyor (placed backwards)"""
         conveyor_dir = move_dir.opposite()
 
-        if not is_ore(c, move_pos):
+        if not is_ore_titanium(c, move_pos):
             self._clear_if_road(c, move_pos)
             if c.can_build_conveyor(move_pos, conveyor_dir):
                 c.build_conveyor(move_pos, conveyor_dir)
@@ -118,7 +118,7 @@ class Harvester:
         return pos
 
     def _handle_pending_bridge(self, c: Controller, pos: Position, move_dir: Direction):
-        """Build backwards bridge in place of an earlier call to self._handle_diagonal_step()"""
+        """Build backwards diagonal bridge to follow an earlier call to self._handle_diagonal_step()"""
         if c.get_entity_type(
             c.get_tile_building_id(pos)
         ) == EntityType.ROAD and c.can_destroy(pos):
@@ -182,8 +182,9 @@ class Harvester:
 
         if built_harvester:
             self.state = HarvestState.SEARCHING_ORES
+            return
 
-        target_pos = nearest_ore_tile(c, pos)
+        target_pos = nearby_titanium(c, pos)
         if target_pos is not None:
             move_dir = self._navigate(c, target_pos)
             if move_dir is not None:
@@ -200,13 +201,16 @@ class Harvester:
     def _searching_ores(self, c: Controller):
         """After first ore, roam to find more ores while extending conveyor network"""
         pos = self.current_pos
-        self._try_build_harvester(c, pos)
+        built_harvester = self._try_build_harvester(c, pos)
 
         if self.titanium_found and self.axionite_found and not self.foundry_prev_placed:
             self.state = HarvestState.PLACING_FOUNDRY
             return
 
-        target_pos = nearest_ore_tile(c, pos)
+        if built_harvester:
+            return
+
+        target_pos = nearby_ore(c, pos)
         if target_pos is not None:
             move_dir = self._navigate(c, target_pos)
             if move_dir is not None:

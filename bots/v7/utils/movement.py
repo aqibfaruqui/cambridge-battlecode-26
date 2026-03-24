@@ -19,6 +19,13 @@ DIRECTIONS_8 = [
     Direction.NORTHWEST,
 ]
 
+DIAGONALS = [
+    Direction.NORTHEAST,
+    Direction.NORTHWEST,
+    Direction.SOUTHEAST,
+    Direction.SOUTHWEST,
+]
+
 
 def on_map(c: Controller, pos: Position):
     return 0 <= pos.x < c.get_map_width() and 0 <= pos.y < c.get_map_height()

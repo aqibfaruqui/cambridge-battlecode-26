@@ -2,17 +2,20 @@ from enum import Enum
 from cambc import Controller, Direction, EntityType, Environment, Position
 from utils.movement import (
     DIRECTIONS_4,
+    DIAGONALS,
     random_direction_4,
     bug_nav,
 )
 from utils.board import (
     action_radius,
+    is_wall,
     is_tile_conveyor,
     is_tile_foundry,
     is_tile_splitter,
     replace_with_conveyor,
     is_ore_titanium,
     is_ore_axionite,
+    is_ore,
     nearest_ore_tile,
     on_core_border,
 )
@@ -42,6 +45,33 @@ class Harvester:
         self.cost_scale = 100.0
         self._bug_follow_state: dict | None = None
 
+    def _build_and_move(self, c: Controller, pos: Position, move_dir: Direction):
+        """Place backwards conveyor/bridge in movement direction and move to it"""
+        if move_dir == Direction.CENTRE:
+            move_dir = random_direction_4()
+
+        bridge_target = None
+
+        if move_dir in DIAGONALS:
+            left_pos = pos.add(move_dir.rotate_left())
+            right_pos = pos.add(move_dir.rotate_right())
+            if is_wall(c, left_pos) and is_wall(c, right_pos):
+                bridge_target = pos
+            else:
+                move_dir = move_dir.rotate_left()
+
+        next_pos = pos.add(move_dir)
+
+        if move_dir in DIAGONALS:
+            bridge_target = self._handle_diagonal_step(c, pos, move_dir)
+        elif self.bridge_target:
+            self._handle_pending_bridge(c, pos, move_dir)
+            bridge_target = None
+        else:
+            self._handle_conveyor_step(c, next_pos, move_dir)
+
+        self.bridge_target = bridge_target
+
     def _check_for_foundry(self, c: Controller):
         """Identify if another builder has built a foundry"""
         new_cost_scale = c.get_scale_percent()
@@ -58,6 +88,61 @@ class Harvester:
             and c.can_destroy(pos)
         ):
             c.destroy(pos)
+
+    def _handle_conveyor_step(
+        self, c: Controller, move_pos: Position, move_dir: Direction
+    ):
+        """Move cardinally via conveyor (placed backwards)"""
+        conveyor_dir = move_dir.opposite()
+
+        if not is_ore(c, move_pos):
+            self._clear_if_road(c, move_pos)
+            if c.can_build_conveyor(move_pos, conveyor_dir):
+                c.build_conveyor(move_pos, conveyor_dir)
+
+        if c.can_move(move_dir):
+            c.move(move_dir)
+
+    def _handle_diagonal_step(
+        self, c: Controller, pos: Position, move_dir: Direction
+    ) -> Position:
+        """Move diagonally via road (to place backwards bridge later)"""
+        move_pos = pos.add(move_dir)
+
+        if c.get_tile_env(move_pos) == Environment.EMPTY:
+            if c.can_build_road(move_pos):
+                c.build_road(move_pos)
+
+        if c.can_move(move_dir):
+            c.move(move_dir)
+        return pos
+
+    def _handle_pending_bridge(self, c: Controller, pos: Position, move_dir: Direction):
+        """Build backwards bridge in place of an earlier call to self._handle_diagonal_step()"""
+        if c.get_entity_type(
+            c.get_tile_building_id(pos)
+        ) == EntityType.ROAD and c.can_destroy(pos):
+            c.destroy(pos)
+
+        if c.can_build_bridge(pos, self.bridge_target):
+            c.build_bridge(pos, self.bridge_target)
+
+        if c.can_move(move_dir):
+            c.move(move_dir)
+
+    def _navigate(self, c: Controller, target: Position) -> Direction:
+        """Returns next move direction with bugnav pathfinding"""
+        pos = self.current_pos
+
+        if pos == target:
+            self._bug_follow_state = None
+            return None
+
+        move_dir, self._bug_follow_state = bug_nav(
+            c, pos, target, self._bug_follow_state
+        )
+
+        return move_dir
 
     def _try_build_harvester(self, c: Controller, pos: Position) -> bool:
         """Check cardinal directions and place a harvester (titanium first)"""
@@ -88,121 +173,7 @@ class Harvester:
 
         return built_harvester
 
-    def _nearest_ore_tile(self, c: Controller, pos: Position):
-        for tile in c.get_nearby_tiles():
-            if not self._is_ore_tile(c, tile):
-                continue
-
-            build_id = c.get_tile_building_id(tile)
-            if build_id is None:
-                return tile
-
-            etype = c.get_entity_type(build_id)
-            if etype == EntityType.ROAD and c.can_destroy(tile):
-                return tile
-
-            continue
-
-        return None
-
-    def _is_diagonal_direction(self, direction: Direction) -> bool:
-        return direction in (
-            Direction.NORTHEAST,
-            Direction.NORTHWEST,
-            Direction.SOUTHEAST,
-            Direction.SOUTHWEST,
-        )
-
-    def _handle_diagonal_step(
-        self, c: Controller, pos: Position, move_dir: Direction
-    ) -> Position:
-        move_pos = pos.add(move_dir)
-
-        if c.get_tile_env(move_pos) == Environment.EMPTY:
-            if c.can_build_road(move_pos):
-                c.build_road(move_pos)
-
-        if c.can_move(move_dir):
-            c.move(move_dir)
-        return pos
-
-    def _handle_pending_bridge(self, c: Controller, pos: Position, move_dir: Direction):
-        if c.get_entity_type(
-            c.get_tile_building_id(pos)
-        ) == EntityType.ROAD and c.can_destroy(pos):
-            c.destroy(pos)
-
-        if c.can_build_bridge(pos, self.bridge_target):
-            c.build_bridge(pos, self.bridge_target)
-
-        if c.can_move(move_dir):
-            c.move(move_dir)
-
-    def _handle_conveyor_step(
-        self, c: Controller, next_pos: Position, move_dir: Direction
-    ):
-        conveyor_dir = move_dir.opposite()
-        next_is_ore = self._is_ore_tile(c, next_pos)
-        next_bid = c.get_tile_building_id(next_pos)
-
-        if (
-            not next_is_ore
-            and next_bid is not None
-            and c.get_entity_type(next_bid) == EntityType.ROAD
-            and c.can_destroy(next_pos)
-        ):
-            c.destroy(next_pos)
-
-        if (not next_is_ore) and c.can_build_conveyor(next_pos, conveyor_dir):
-            c.build_conveyor(next_pos, conveyor_dir)
-
-        if c.can_move(move_dir):
-            c.move(move_dir)
-
-    def _build_and_move(self, c: Controller, pos: Position, move_dir: Direction):
-        if move_dir == Direction.CENTRE:
-            move_dir = random_direction_4()
-
-        bridge_target = None
-
-        if self._is_diagonal_direction(move_dir):
-            left_pos = pos.add(move_dir.rotate_left())
-            right_pos = pos.add(move_dir.rotate_right())
-            if (
-                c.get_tile_env(left_pos) == Environment.WALL
-                and c.get_tile_env(right_pos) == Environment.WALL
-            ):
-                bridge_target = pos
-            else:
-                move_dir = move_dir.rotate_left()
-
-        next_pos = pos.add(move_dir)
-
-        if self._is_diagonal_direction(move_dir):
-            bridge_target = self._handle_diagonal_step(c, pos, move_dir)
-        else:
-            if self.bridge_target:
-                self._handle_pending_bridge(c, pos, move_dir)
-                bridge_target = None
-
-            else:
-                self._handle_conveyor_step(c, next_pos, move_dir)
-
-        self.bridge_target = bridge_target
-
-    def _navigate(self, c: Controller, target: Position) -> Direction:
-        """Returns next move direction with bugnav pathfinding"""
-        pos = self.current_pos
-
-        if pos == target:
-            self._bug_follow_state = None
-            return None
-
-        move_dir, self._bug_follow_state = bug_nav(
-            c, pos, target, self._bug_follow_state
-        )
-
-        return move_dir
+    # --- Harvest States ---
 
     def _building_outward(self, c: Controller):
         """Build conveyors outward from core, place harvesters on adjacent ore"""
@@ -216,7 +187,7 @@ class Harvester:
         if target_pos is not None:
             move_dir = self._navigate(c, target_pos)
             if move_dir is not None:
-                self._build_conveyor_and_move(c, pos, move_dir)
+                self._build_and_move(c, pos, move_dir)
         else:
             outward_dir = self.core_pos.direction_to(pos)
             target = pos.add(
@@ -224,7 +195,7 @@ class Harvester:
             )
             move_dir = self._navigate(c, target)
             if move_dir is not None:
-                self._build_conveyor_and_move(c, pos, move_dir)
+                self._build_and_move(c, pos, move_dir)
 
     def _searching_ores(self, c: Controller):
         """After first ore, roam to find more ores while extending conveyor network"""
@@ -239,11 +210,11 @@ class Harvester:
         if target_pos is not None:
             move_dir = self._navigate(c, target_pos)
             if move_dir is not None:
-                self._build_conveyor_and_move(c, pos, move_dir)
+                self._build_and_move(c, pos, move_dir)
         else:
             move_dir = self._navigate(c, pos.add(random_direction_4()))
             if move_dir is not None:
-                self._build_conveyor_and_move(c, pos, move_dir)
+                self._build_and_move(c, pos, move_dir)
 
     def _placing_foundry(self, c: Controller):
         """Harvesters placed on ti and ax, trace conveyors to core and place foundry on its border"""

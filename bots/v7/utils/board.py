@@ -6,6 +6,10 @@ action_radius = {
 }
 
 
+def is_wall(c: Controller, pos: Position) -> bool:
+    return c.get_tile_env(pos) == Environment.WALL
+
+
 def is_tile_conveyor(c: Controller, pos: Position) -> bool:
     id = c.get_tile_building_id(pos)
     if id is None:

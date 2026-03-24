@@ -1,4 +1,10 @@
-# Cambridge Battlecode 2026
+# Cambridge Battlecode 
+
+## Trello Board
+
+Tracking ideas, info and bug fixes
+
+Link: https://trello.com/b/nZzM64RG/battlecode
 
 ## Requirements
 

@@ -4,9 +4,9 @@ from utils.movement import (
     DIRECTIONS_4,
     DIAGONALS,
     random_direction_4,
-    bug_nav,
     on_map,
 )
+from utils.pathfinding import Pathfinding
 from utils.board import (
     action_radius,
     is_wall,
@@ -44,7 +44,7 @@ class Harvester:
         self.titanium_found = False
         self.axionite_found = False
         self.cost_scale = 100.0
-        self._bug_follow_state: dict | None = None
+        self.pathfinder = Pathfinding()
         self.target_pos: Position | None = None
 
     def _build_and_move(self, c: Controller, pos: Position, move_dir: Direction):
@@ -55,12 +55,18 @@ class Harvester:
         bridge_target = None
 
         if move_dir in DIAGONALS:
-            left_pos = pos.add(move_dir.rotate_left())
-            right_pos = pos.add(move_dir.rotate_right())
+            left_dir = move_dir.rotate_left()
+            right_dir = move_dir.rotate_right()
+            left_pos = pos.add(left_dir)
+            right_pos = pos.add(right_dir)
             if is_wall(c, left_pos) and is_wall(c, right_pos):
                 bridge_target = pos
+            elif is_wall(c, left_pos):
+                move_dir = right_dir
+            elif is_wall(c, right_pos):
+                move_dir = left_dir
             else:
-                move_dir = move_dir.rotate_left()
+                move_dir = left_dir
 
         next_pos = pos.add(move_dir)
 
@@ -133,18 +139,14 @@ class Harvester:
             c.move(move_dir)
 
     def _navigate(self, c: Controller, target: Position) -> Direction:
-        """Returns next move direction with bugnav pathfinding"""
+        """Returns next move direction with hybrid pathfinding."""
         pos = self.current_pos
 
         if pos == target:
-            self._bug_follow_state = None
+            self.pathfinder.reset()
             return None
 
-        move_dir, self._bug_follow_state = bug_nav(
-            c, pos, target, self._bug_follow_state
-        )
-
-        return move_dir
+        return self.pathfinder.next_direction(c, pos, target)
 
     def _try_build_harvester(self, c: Controller, pos: Position) -> bool:
         """Check cardinal directions and place a harvester (titanium first)"""

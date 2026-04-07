@@ -1,6 +1,8 @@
 from enum import Enum
 from cambc import Controller, Direction, EntityType, Position
-from utils.pathfinding import Pathfinding
+from utils.movement import (
+    bug_nav,
+)
 
 
 class AttackState(Enum):
@@ -22,16 +24,18 @@ class Attacker:
         self.gunners_placed = 0
         self.enemy_core_candidate_idx = 0
         self.enemy_core_candidates = []
-        self.pathfinder = Pathfinding()
+        self._bug_follow_state: dict | None = None
         self.target_pos: Position | None = None
 
     def _search(self, c: Controller, target: Position):
-        """Helper: navigate towards target and pave if needed."""
+        """Helper: navigate towards target with bug nav and pave if needed."""
         if c.get_move_cooldown() > 0:
             return
 
         pos = c.get_position()
-        direction = self.pathfinder.next_direction(c, pos, target)
+        direction, self._bug_follow_state = bug_nav(
+            c, pos, target, self._bug_follow_state
+        )
         if direction is None:
             return
 
@@ -191,7 +195,7 @@ class Attacker:
                         self.enemy_pos.x - adx * 2,
                         self.enemy_pos.y - ady * 2,
                     )
-                    self.pathfinder.reset()
+                    self._bug_follow_state = None
                     break
 
         self.current_pos = c.get_position()

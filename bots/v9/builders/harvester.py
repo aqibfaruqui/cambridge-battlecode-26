@@ -4,9 +4,9 @@ from utils.movement import (
     DIRECTIONS_4,
     DIAGONALS,
     random_direction_4,
-    on_map,
 )
 from utils.pathfinding import Pathfinding
+from utils.movement import bug_nav
 from utils.board import (
     action_radius,
     is_wall,
@@ -45,6 +45,7 @@ class Harvester:
         self.axionite_found = False
         self.cost_scale = 100.0
         self.pathfinder = Pathfinding()
+        self._bug_follow_state: dict | None = None
         self.target_pos: Position | None = None
 
     def _build_and_move(self, c: Controller, pos: Position, move_dir: Direction):
@@ -138,15 +139,21 @@ class Harvester:
         if c.can_move(move_dir):
             c.move(move_dir)
 
-    def _navigate(self, c: Controller, target: Position) -> Direction:
-        """Returns next move direction with hybrid pathfinding."""
+    def _navigate(self, c: Controller, target: Position, ore_target: bool = False) -> Direction:
+        """Returns next move direction for either ore pursuit or exploration."""
         pos = self.current_pos
 
         if pos == target:
             self.pathfinder.reset()
+            self._bug_follow_state = None
             return None
 
-        return self.pathfinder.next_direction(c, pos, target)
+        if ore_target:
+            return self.pathfinder.harvester_direction(c, pos, target)
+        move_dir, self._bug_follow_state = bug_nav(
+            c, pos, target, self._bug_follow_state
+        )
+        return move_dir
 
     def _try_build_harvester(self, c: Controller, pos: Position) -> bool:
         """Check cardinal directions and place a harvester (titanium first)"""
@@ -190,21 +197,15 @@ class Harvester:
 
         self.target_pos = nearby_titanium(c, pos)
         if self.target_pos is not None:
-            move_dir = self._navigate(c, self.target_pos)
+            move_dir = self._navigate(c, self.target_pos, ore_target=True)
             if move_dir is not None:
                 self._build_and_move(c, pos, move_dir)
         else:
             outward_dir = self.core_pos.direction_to(pos)
-            fallback_target = pos.add(
+            self.target_pos = pos.add(
                 outward_dir if outward_dir != Direction.CENTRE else random_direction_4()
             )
-
-            if outward_dir in DIRECTIONS_4 and on_map(c, fallback_target):
-                self.target_pos = fallback_target
-            else:
-                self.target_pos = None
-
-            move_dir = self._navigate(c, fallback_target)
+            move_dir = self._navigate(c, self.target_pos)
             if move_dir is not None:
                 self._build_and_move(c, pos, move_dir)
 
@@ -220,9 +221,12 @@ class Harvester:
         if built_harvester:
             return
 
-        self.target_pos = nearby_ore(c, pos)
+        self.target_pos = nearby_titanium(c, pos)
+        if self.target_pos is None:
+            self.target_pos = nearby_ore(c, pos)
+            
         if self.target_pos is not None:
-            move_dir = self._navigate(c, self.target_pos)
+            move_dir = self._navigate(c, self.target_pos, ore_target=True)
             if move_dir is not None:
                 self._build_and_move(c, pos, move_dir)
         else:

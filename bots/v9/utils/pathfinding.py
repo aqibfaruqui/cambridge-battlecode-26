@@ -1,16 +1,31 @@
-from heapq import heappop, heappush
+from collections import deque
 
-from cambc import Controller, Direction, Position
-from utils.movement import DIRECTIONS_8, on_map
+from cambc import Controller, Direction, EntityType, Environment, Position
+from utils.board import is_wall
+from utils.movement import DIRECTIONS_4, _manhattan, bug_nav, on_map
+
+_WALKABLE_BUILDINGS = frozenset(
+    {EntityType.ROAD, EntityType.CONVEYOR, EntityType.BRIDGE}
+)
+_UNKNOWN = 0
+_BLOCKED = 1
+_TRAVERSABLE = 2
+_STUCK_RESET_TURNS = 2
 
 
 class Pathfinding:
-    def __init__(self, algorithm: str = "hybrid"):
-        self.algorithm = algorithm
+    def __init__(self):
         self._follow_state: dict | None = None
+        self._known_map: list[list[int]] | None = None
+        self._map_version = 0
+        self._reverse_bfs_cache: dict[tuple[str, int, int], dict] = {}
+        self._last_position: tuple[int, int] | None = None
+        self._stuck_turns = 0
 
     def reset(self):
         self._follow_state = None
+        self._last_position = None
+        self._stuck_turns = 0
 
     def next_direction(
         self, c: Controller, current: Position, target: Position
@@ -19,242 +34,284 @@ class Pathfinding:
             self.reset()
             return None
 
-        match self.algorithm:
-            # For hybrid use A* if target is in vision, otherwise use bug nav
-            case "hybrid":
-                if c.is_in_vision(target):
-                    direction = self._a_star_direction(c, current, target)
-                    if direction is not None:
-                        self.reset()
-                        return direction
-                direction, self._follow_state = bug_nav(
-                    c, current, target, self._follow_state
-                )
-                return direction
-            case "a_star":
-                self.reset()
-                return self._a_star_direction(c, current, target)
-            case "bug_nav":
-                direction, self._follow_state = bug_nav(
-                    c, current, target, self._follow_state
-                )
-                return direction
-            case _:
-                raise ValueError(f"Unknown pathfinding algorithm: {self.algorithm}")
+        self._refresh_progress(current)
 
-    def _a_star_direction(
+        forward = current.direction_to(target)
+        if _can_progress(c, current, forward):
+            self._follow_state = None
+            return forward
+
+        direction, self._follow_state = bug_nav(
+            c, current, target, self._follow_state
+        )
+        return direction
+
+    def harvester_direction(
         self, c: Controller, current: Position, target: Position
     ) -> Direction | None:
-        goals = self._goal_positions(c, current, target)
-        if not goals:
+        if _is_cardinal_adjacent(current, target):
+            self.reset()
             return None
 
-        start_key = (current.x, current.y)
-        goal_keys = {(pos.x, pos.y) for pos in goals}
-        if start_key in goal_keys:
-            return None
+        self._refresh_progress(current)
 
-        frontier = []
-        heappush(frontier, (self._goal_heuristic(current, goals), 0, start_key))
-        came_from: dict[tuple[int, int], tuple[int, int] | None] = {start_key: None}
-        costs = {start_key: 0}
+        # Harvesters primarily route with a cached reverse BFS over observed tiles.
+        self._observe(c)
+        cache = self._ensure_reverse_bfs_harvester(c, current, target)
+        if cache is not None:
+            best_direction = None
+            best_distance = float("inf")
 
-        while frontier:
-            _, cost, node = heappop(frontier)
-            if cost != costs.get(node):
-                continue
-
-            if node in goal_keys:
-                return self._reconstruct_direction(current, node, came_from)
-
-            pos = Position(node[0], node[1])
-            for direction in DIRECTIONS_8:
-                next_pos = pos.add(direction)
-                if not self._is_search_traversable(c, next_pos):
+            for direction in DIRECTIONS_4:
+                if not _can_harvester_progress(c, current, direction):
                     continue
 
-                next_key = (next_pos.x, next_pos.y)
-                next_cost = cost + 1
-                if next_cost >= costs.get(next_key, float("inf")):
+                next_pos = current.add(direction)
+                next_distance = cache["distances"][next_pos.y][next_pos.x]
+                if next_distance is None or next_distance >= best_distance:
                     continue
 
-                costs[next_key] = next_cost
-                came_from[next_key] = node
-                priority = next_cost + self._goal_heuristic(next_pos, goals)
-                heappush(frontier, (priority, next_cost, next_key))
+                best_distance = next_distance
+                best_direction = direction
 
-        return None
+            if best_direction is not None:
+                self._follow_state = None
+                return best_direction
 
-    def _goal_positions(
+        fallback_target = self._fallback_harvester_goal(c, current, target)
+        direction, self._follow_state = bug_nav(
+            c, current, fallback_target, self._follow_state
+        )
+        return direction
+
+    def reverse_bfs_direction_harvester(
         self, c: Controller, current: Position, target: Position
+    ) -> Direction | None:
+        return self.harvester_direction(c, current, target)
+
+    def _refresh_progress(self, current: Position):
+        current_key = (current.x, current.y)
+        if self._last_position == current_key:
+            self._stuck_turns += 1
+        else:
+            self._last_position = current_key
+            self._stuck_turns = 0
+
+        if self._stuck_turns < _STUCK_RESET_TURNS:
+            return
+
+        self._follow_state = None
+        self._stuck_turns = 0
+
+    def _observe(self, c: Controller):
+        if self._known_map is None:
+            self._known_map = [
+                [_UNKNOWN for _ in range(c.get_map_width())]
+                for _ in range(c.get_map_height())
+            ]
+
+        changed = False
+
+        # Only rebuild BFS when newly observed tiles change the traversable map.
+        for pos in c.get_nearby_tiles():
+            new_state = _TRAVERSABLE if _is_future_clearable(c, pos) else _BLOCKED
+            old_state = self._known_map[pos.y][pos.x]
+            if old_state == new_state:
+                continue
+            self._known_map[pos.y][pos.x] = new_state
+            changed = True
+
+        if changed:
+            self._map_version += 1
+
+    def _ensure_reverse_bfs_harvester(
+        self, c: Controller, current: Position, target: Position
+    ) -> dict | None:
+        target_key = ("harvester", target.x, target.y)
+        cache = self._reverse_bfs_cache.get(target_key)
+        if cache is not None and cache["version"] == self._map_version:
+            return cache
+
+        goals = self._known_goal_positions_harvester(current, target)
+        if not goals:
+            self._reverse_bfs_cache.pop(target_key, None)
+            return None
+
+        distances = self._build_reverse_bfs_cardinal(c, goals)
+        current_distance = distances[current.y][current.x]
+        if current_distance is None and not _is_cardinal_adjacent(current, target):
+            self._reverse_bfs_cache.pop(target_key, None)
+            return None
+
+        cache = {
+            "version": self._map_version,
+            "distances": distances,
+        }
+        self._reverse_bfs_cache[target_key] = cache
+        return cache
+
+    def _known_goal_positions_harvester(
+        self, current: Position, target: Position
     ) -> list[Position]:
-        if self._is_search_traversable(c, target):
+        if self._known_map is None:
+            return []
+
+        if self._is_known_traversable(target):
             return [target]
 
         goals = []
-        for direction in DIRECTIONS_8:
+        for direction in DIRECTIONS_4:
             candidate = target.add(direction)
-            if candidate == current or self._is_search_traversable(c, candidate):
+            if candidate == current or self._is_known_traversable(candidate):
                 goals.append(candidate)
-        return goals
 
-    def _is_search_traversable(self, c: Controller, pos: Position) -> bool:
-        if not on_map(c, pos) or not c.is_in_vision(pos):
+        unique_goals: list[Position] = []
+        seen = set()
+        for goal in goals:
+            key = (goal.x, goal.y)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_goals.append(goal)
+        return unique_goals
+
+    def _build_reverse_bfs_cardinal(
+        self, c: Controller, goals: list[Position]
+    ) -> list[list[int | None]]:
+        distances: list[list[int | None]] = [
+            [None for _ in range(c.get_map_width())]
+            for _ in range(c.get_map_height())
+        ]
+        queue = deque()
+
+        for goal in goals:
+            distances[goal.y][goal.x] = 0
+            queue.append(goal)
+
+        while queue:
+            pos = queue.popleft()
+            base_distance = distances[pos.y][pos.x]
+            for direction in DIRECTIONS_4:
+                next_pos = pos.add(direction)
+                if not self._is_known_traversable(next_pos):
+                    continue
+                if distances[next_pos.y][next_pos.x] is not None:
+                    continue
+                distances[next_pos.y][next_pos.x] = base_distance + 1
+                queue.append(next_pos)
+
+        return distances
+
+    def _is_known_traversable(self, pos: Position) -> bool:
+        if (
+            self._known_map is None
+            or not (0 <= pos.y < len(self._known_map))
+            or not (0 <= pos.x < len(self._known_map[0]))
+        ):
             return False
-        if c.is_tile_passable(pos):
-            return True
-        if c.is_tile_empty(pos) and c.can_build_road(pos):
-            return True
-        return False
+        return self._known_map[pos.y][pos.x] == _TRAVERSABLE
 
-    def _goal_heuristic(self, pos: Position, goals: list[Position]) -> int:
-        return min(_chebyshev(pos, goal) for goal in goals)
+    def _fallback_harvester_goal(
+        self, c: Controller, current: Position, target: Position
+    ) -> Position:
+        best_goal = target
+        best_score = float("inf")
 
-    def _reconstruct_direction(
-        self,
-        start: Position,
-        end_key: tuple[int, int],
-        came_from: dict[tuple[int, int], tuple[int, int] | None],
-    ) -> Direction | None:
-        node = end_key
-        previous = came_from.get(node)
-        start_key = (start.x, start.y)
+        for direction in DIRECTIONS_4:
+            candidate = target.add(direction)
+            if candidate == current:
+                return candidate
+            if not on_map(c, candidate):
+                continue
 
-        while previous is not None and previous != start_key:
-            node = previous
-            previous = came_from.get(node)
+            if c.is_in_vision(candidate):
+                if not _is_future_clearable(c, candidate):
+                    continue
+            elif not self._is_known_traversable(candidate):
+                continue
 
-        next_pos = Position(node[0], node[1])
-        return start.direction_to(next_pos)
+            score = _manhattan(current, candidate)
+            if score < best_score:
+                best_score = score
+                best_goal = candidate
+
+        return best_goal
+
+def _is_cardinal_adjacent(a: Position, b: Position) -> bool:
+    return abs(a.x - b.x) + abs(a.y - b.y) == 1
 
 
-def _chebyshev(a: Position, b: Position):
-    return max(abs(a.x - b.x), abs(a.y - b.y))
-
-
-def _is_hard_blocked(c: Controller, pos: Position):
+def _is_future_clearable(c: Controller, pos: Position) -> bool:
     if not on_map(c, pos):
-        return True
-    # Empty tiles are not passable but can be paved; don't treat those as hard walls.
-    if c.is_tile_empty(pos) and c.can_build_road(pos):
         return False
-    return not c.is_tile_passable(pos)
+    if is_wall(c, pos):
+        return False
 
+    building_id = c.get_tile_building_id(pos)
+    if building_id is None:
+        return c.get_tile_env(pos) == Environment.EMPTY
+
+    entity_type = c.get_entity_type(building_id)
+    if entity_type in _WALKABLE_BUILDINGS:
+        return True
+
+    return entity_type == EntityType.CORE and c.get_team(building_id) == c.get_team()
+
+
+def _can_clear_and_step(c: Controller, current: Position, next_pos: Position) -> bool:
+    if not on_map(c, next_pos):
+        return False
+    if is_wall(c, next_pos):
+        return False
+
+    direction = current.direction_to(next_pos)
+    building_id = c.get_tile_building_id(next_pos)
+    if building_id is None:
+        if c.get_tile_env(next_pos) != Environment.EMPTY:
+            return False
+        if direction in DIRECTIONS_4:
+            return c.can_build_conveyor(next_pos, direction.opposite())
+        return c.can_build_road(next_pos)
+
+    entity_type = c.get_entity_type(building_id)
+    if entity_type in _WALKABLE_BUILDINGS:
+        if c.can_move(direction):
+            return True
+        if entity_type == EntityType.ROAD and direction in DIRECTIONS_4:
+            return _can_replace_road_with_conveyor(c, next_pos)
+        return False
+
+    return entity_type == EntityType.CORE and c.can_move(direction)
 
 def _can_progress(c: Controller, current: Position, direction: Direction):
     next_pos = current.add(direction)
-    return c.can_move(direction) or (
-        on_map(c, next_pos) and c.is_tile_empty(next_pos) and c.can_build_road(next_pos)
-    )
+    return c.can_move(direction) or _can_clear_and_step(c, current, next_pos)
 
 
-def _state_key(
-    current: Position,
-    target: Position,
-    obstacle_pos: Position | None,
-    obstacle_on_right: bool,
-):
-    reference = obstacle_pos if obstacle_pos is not None else target
-    reference_dir = current.direction_to(reference)
-    dir_idx = 0
-    for idx, direction in enumerate(DIRECTIONS_8):
-        if direction == reference_dir:
-            dir_idx = idx
-            break
-    return (current.x, current.y, dir_idx, 1 if obstacle_on_right else 0)
+def _can_harvester_progress(c: Controller, current: Position, direction: Direction):
+    if direction not in DIRECTIONS_4:
+        return False
+
+    next_pos = current.add(direction)
+    if c.can_move(direction):
+        return True
+
+    if not on_map(c, next_pos):
+        return False
+    if c.get_tile_env(next_pos) != Environment.EMPTY:
+        return False
+
+    building_id = c.get_tile_building_id(next_pos)
+    if building_id is not None:
+        return (
+            c.get_entity_type(building_id) == EntityType.ROAD
+            and _can_replace_road_with_conveyor(c, next_pos)
+        )
+
+    return c.can_build_conveyor(next_pos, direction.opposite())
 
 
-def bug_nav(
-    c: Controller,
-    current: Position,
-    target: Position,
-    follow_state: dict | None = None,
-):
-    # Adapted from CamelCase v21 final Battlecode bug navigator.
-    if follow_state is None or follow_state.get("target") != target:
-        follow_state = {
-            "target": target,
-            "min_dist": float("inf"),
-            "obstacle_on_right": True,
-            "obstacle_pos": None,
-            "visited": set(),
-        }
-
-    has_options = any(_can_progress(c, current, d) for d in DIRECTIONS_8)
-    if not has_options:
-        return None, follow_state
-
-    distance = _chebyshev(current, target)
-    if distance < follow_state["min_dist"]:
-        follow_state["min_dist"] = distance
-        follow_state["obstacle_pos"] = None
-        follow_state["visited"].clear()
-
-    obstacle_pos = follow_state["obstacle_pos"]
-    if obstacle_pos is not None and not _is_hard_blocked(c, obstacle_pos):
-        follow_state["obstacle_pos"] = None
-        follow_state["visited"].clear()
-        obstacle_pos = None
-
-    key = _state_key(current, target, obstacle_pos, follow_state["obstacle_on_right"])
-    if key in follow_state["visited"]:
-        follow_state["obstacle_pos"] = None
-        follow_state["visited"].clear()
-        obstacle_pos = None
-    else:
-        follow_state["visited"].add(key)
-
-    if obstacle_pos is None:
-        forward = current.direction_to(target)
-        if _can_progress(c, current, forward):
-            return forward, follow_state
-
-        left = forward
-        for _ in range(8):
-            left = left.rotate_left()
-            if _can_progress(c, current, left):
-                break
-
-        right = forward
-        for _ in range(8):
-            right = right.rotate_right()
-            if _can_progress(c, current, right):
-                break
-
-        left_dist = _chebyshev(current.add(left), target)
-        right_dist = _chebyshev(current.add(right), target)
-        if left_dist < right_dist:
-            follow_state["obstacle_on_right"] = True
-        elif right_dist < left_dist:
-            follow_state["obstacle_on_right"] = False
-        else:
-            follow_state["obstacle_on_right"] = True
-
-        if follow_state["obstacle_on_right"]:
-            follow_state["obstacle_pos"] = current.add(left.rotate_right())
-        else:
-            follow_state["obstacle_pos"] = current.add(right.rotate_left())
-
-    for can_rotate in (True, False):
-        direction = current.direction_to(follow_state["obstacle_pos"])
-        for _ in range(8):
-            direction = (
-                direction.rotate_left()
-                if follow_state["obstacle_on_right"]
-                else direction.rotate_right()
-            )
-
-            if _can_progress(c, current, direction):
-                return direction, follow_state
-
-            location = current.add(direction)
-            if can_rotate and not on_map(c, location):
-                follow_state["obstacle_on_right"] = not follow_state[
-                    "obstacle_on_right"
-                ]
-                break
-
-            if _is_hard_blocked(c, location):
-                follow_state["obstacle_pos"] = location
-
-    return None, follow_state
+def _can_replace_road_with_conveyor(c: Controller, pos: Position) -> bool:
+    if not c.can_destroy(pos):
+        return False
+    return c.get_global_resources()[0] >= c.get_conveyor_cost()[0]

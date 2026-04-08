@@ -7,6 +7,7 @@ from utils.movement import (
 )
 from utils.pathfinding import Pathfinding
 from utils.movement import bug_nav
+from utils.map_memory import MapMemory
 from utils.board import (
     action_radius,
     is_wall,
@@ -44,7 +45,10 @@ class Harvester:
         self.titanium_found = False
         self.axionite_found = False
         self.cost_scale = 100.0
+        self.memory = MapMemory()
+        self.memory.set_core(core_pos)
         self.pathfinder = Pathfinding()
+        self.pathfinder.set_memory(self.memory)
         self._bug_follow_state: dict | None = None
         self.target_pos: Position | None = None
 
@@ -224,7 +228,6 @@ class Harvester:
         self.target_pos = nearby_titanium(c, pos)
         if self.target_pos is None:
             self.target_pos = nearby_ore(c, pos)
-            
         if self.target_pos is not None:
             move_dir = self._navigate(c, self.target_pos, ore_target=True)
             if move_dir is not None:
@@ -315,6 +318,7 @@ class Harvester:
     def run(self, c: Controller):
         self.current_pos = c.get_position()
         self.ti, self.ax = c.get_global_resources()
+        self.memory.update(c)
         self._check_for_foundry(c)
 
         match self.state:

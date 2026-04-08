@@ -1,4 +1,4 @@
-from cambc import Controller, Environment, Position
+from cambc import Controller, EntityType, Environment, Position
 
 _SYM_ROT = "rot"   # 180° rotation:  mirror(x,y) = (W-1-x, H-1-y)
 _SYM_HORZ = "horz" # horizontal flip: mirror(x,y) = (W-1-x, y)
@@ -9,6 +9,8 @@ WALL = 1
 TRAVERSABLE = 2
 ORE_TI = 3
 ORE_AX = 4
+CORE_OWN = 5
+CORE_ENEMY = 6
 
 
 class MapMemory:
@@ -26,12 +28,17 @@ class MapMemory:
         self._pred_ti: set[tuple[int, int]] = set()
         self._pred_ax: set[tuple[int, int]] = set()
 
+        # Core positions
+        self._own_core: Position | None = None
+        self._enemy_core: Position | None = None
+
         # Maybe we could keep track of covered tiles here?
         # Maybe we keep track of conveyors placed aswell? 
 
         # Symmetry candidates (rotation, horizontal flip, vertical flip)
         self._sym_candidates: set[str] = {_SYM_ROT, _SYM_HORZ, _SYM_VERT}
         self._sym_confirmed: str | None = None
+        self._sym_projected: bool = False  # full back-fill done once on confirmation
         self.version: int = 0  # incremented when a blocking tile is newly found
 
 
@@ -42,25 +49,35 @@ class MapMemory:
             self._w = c.get_map_width()
             self._h = c.get_map_height()
             self._tiles = [[UNKNOWN] * self._w for _ in range(self._h)]
+            if self._own_core is not None:
+                self._mark_core_footprint(self._own_core, CORE_OWN)
 
         newly_seen: list[Position] = []
         pred_ti = self._pred_ti
         pred_ax = self._pred_ax
+        find_enemy_core = self._enemy_core is None
+        my_team = c.get_team() if find_enemy_core else None
 
         for pos in c.get_nearby_tiles():
             px = pos.x
             py = pos.y
 
-            # Discard any predicted entry the moment we can actually see the
-            # tile, even if it was already classified via symmetry projection.
-            key = (px, py)
-            if key in pred_ti:
-                pred_ti.discard(key)
-            elif key in pred_ax:
-                pred_ax.discard(key)
+            # Spot enemy core while we still haven't found it.
+            if find_enemy_core:
+                bid = c.get_tile_building_id(pos)
+                if bid is not None and c.get_entity_type(bid) == EntityType.CORE and c.get_team(bid) != my_team:
+                    self._enemy_core = c.get_position(bid)
+                    if self._tiles is not None:
+                        self._mark_core_footprint(self._enemy_core, CORE_ENEMY)
+                    find_enemy_core = False
 
-            # Tile state never changes once it is classified
+            # Tile state never changes once it is classified.
             if self._tiles[py][px] != UNKNOWN:
+                # Clean up any projected-ore entry we can now physically confirm.
+                # Guard avoids tuple creation once both sets are empty (common case).
+                if pred_ti or pred_ax:
+                    pred_ti.discard((px, py))
+                    pred_ax.discard((px, py))
                 continue
 
             env = c.get_tile_env(pos)
@@ -87,7 +104,18 @@ class MapMemory:
             if self._sym_confirmed is None:
                 self._refine_symmetry(newly_seen)
             if self._sym_confirmed:
-                self._project_symmetry(newly_seen)
+                if not self._sym_projected:
+                    # First time symmetry is confirmed, fill in all observed tiles.
+                    self._project_all()
+                    self._sym_projected = True
+                else:
+                    self._project_symmetry(newly_seen)
+
+    def set_core(self, pos: Position):
+        """Record our own core position. Call once during harvester init."""
+        self._own_core = pos
+        self._try_resolve_enemy_core()
+        self._mark_core_footprint(self._own_core, CORE_OWN)
 
     def nearest_predicted_titanium(self, origin: Position) -> Position | None:
         """Nearest symmetry-predicted titanium ore (never directly observed)."""
@@ -101,6 +129,28 @@ class MapMemory:
         return self._sym_confirmed
 
     # Helpers
+
+    def _try_resolve_enemy_core(self):
+        """Compute enemy core once we have both our core position and confirmed symmetry."""
+        if self._enemy_core is not None:
+            return
+        if self._own_core is None or self._sym_confirmed is None:
+            return
+        mx, my = self._mirror(self._own_core.x, self._own_core.y, self._sym_confirmed)
+        self._enemy_core = Position(mx, my)
+        if self._tiles is not None:
+            self._mark_core_footprint(self._enemy_core, CORE_ENEMY)
+
+    def _mark_core_footprint(self, centre: Position, state: int):
+        """Mark the 3x3 footprint of a core with the given tile state."""
+        
+        cx, cy = centre.x, centre.y
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                x, y = cx + dx, cy + dy
+                if 0 <= x < self._w and 0 <= y < self._h:
+                    if self._tiles[y][x] == UNKNOWN:
+                        self._tiles[y][x] = state
 
     def _update_ore_sets(self, x: int, y: int, new: int, observed: bool = True):
         # Update predicted ores based on the new tile state
@@ -144,6 +194,24 @@ class MapMemory:
         # If we have only one symmetry candidate left, we can confirm it
         if self._sym_confirmed is None and len(self._sym_candidates) == 1:
             self._sym_confirmed = next(iter(self._sym_candidates))
+            self._try_resolve_enemy_core()
+
+    def _project_all(self):
+        """One-time back-fill: project every already-classified tile to its mirror."""
+        for y in range(self._h):
+            for x in range(self._w):
+                state = self._tiles[y][x]
+                if state == UNKNOWN:
+                    continue
+                mx, my = self._mirror(x, y, self._sym_confirmed)
+                if not (0 <= mx < self._w and 0 <= my < self._h):
+                    continue
+                if self._tiles[my][mx] != UNKNOWN:
+                    continue
+                self._tiles[my][mx] = state
+                self._update_ore_sets(mx, my, state, observed=False)
+                if state != TRAVERSABLE:
+                    self.version += 1
 
     def _project_symmetry(self, new_tiles: list[Position]):
         """If we know symmetry project other tiles onto the other side of the map"""
@@ -177,4 +245,28 @@ class MapMemory:
                 best_pos = Position(x, y)
         return best_pos
 
+
+    # def debug_render(self, turn: int):
+    #     """Print an ASCII snapshot of the map to stderr."""
+    #     if self._tiles is None:
+    #         print(f"[turn {turn}] MapMemory: not yet initialised", file=sys.stderr)
+    #         return
+
+    #     _CHARS = {UNKNOWN: "?", WALL: "#", TRAVERSABLE: ".", ORE_TI: "T", ORE_AX: "A", CORE_OWN: "C", CORE_ENEMY: "E"}
+    #     known = sum(1 for row in self._tiles for t in row if t != UNKNOWN)
+    #     total = self._w * self._h
+    #     pct = 100 * known // total
+
+    #     own = self._own_core
+    #     enemy = self._enemy_core
+    #     print(
+    #         f"\n=== MapMemory turn {turn} | {self._w}x{self._h} | {pct}% explored"
+    #         f" | sym={self._sym_confirmed or 'TBD'}"
+    #         f" | own_core={own} enemy_core={enemy}"
+    #         f" | pred_ti={len(self._pred_ti)} pred_ax={len(self._pred_ax)} ===",
+    #         file=sys.stderr,
+    #     )
+    #     for row in reversed(self._tiles):  # y=0 at bottom, print top-down
+    #         print("".join(_CHARS[t] for t in row), file=sys.stderr)
+    #     print("=== end ===\n", file=sys.stderr)
 

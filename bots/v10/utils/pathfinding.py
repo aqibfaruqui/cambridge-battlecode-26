@@ -3,24 +3,38 @@ from collections import deque
 from cambc import Controller, Direction, EntityType, Environment, Position
 from utils.board import is_wall
 from utils.movement import DIRECTIONS_4, _manhattan, bug_nav, on_map
+from utils.map_memory import UNKNOWN, WALL, TRAVERSABLE, ORE_TI, ORE_AX, CORE_OWN, CORE_ENEMY
 
 _WALKABLE_BUILDINGS = frozenset(
     {EntityType.ROAD, EntityType.CONVEYOR, EntityType.BRIDGE}
 )
-_UNKNOWN = 0
-_BLOCKED = 1
-_TRAVERSABLE = 2
 _STUCK_RESET_TURNS = 2
+
+# Tiles that block movement in BFS.
+_BFS_BLOCKED = frozenset({WALL, ORE_TI, ORE_AX, CORE_ENEMY})
+
+
+def _is_bfs_passable(tile: int) -> bool:
+    """BFS passability: only confirmed traversable tiles.
+    UNKNOWN is NOT passable — conservative routing avoids planning through
+    walls we haven't seen yet. Symmetry projection fills in the map quickly
+    so the BFS graph still covers far more than v9's plain observation.
+    CORE_OWN is passable (our builders walk through it).
+    """
+    return tile == TRAVERSABLE or tile == CORE_OWN
 
 
 class Pathfinding:
     def __init__(self):
         self._follow_state: dict | None = None
-        self._known_map: list[list[int]] | None = None
-        self._map_version = 0
+        self._memory = None
+        self._map_version: int = -1
         self._reverse_bfs_cache: dict[tuple[str, int, int], dict] = {}
         self._last_position: tuple[int, int] | None = None
-        self._stuck_turns = 0
+        self._stuck_turns: int = 0
+
+    def set_memory(self, memory) -> None:
+        self._memory = memory
 
     def reset(self):
         self._follow_state = None
@@ -55,8 +69,6 @@ class Pathfinding:
 
         self._refresh_progress(current)
 
-        # Harvesters primarily route with a cached reverse BFS over observed tiles.
-        self._observe(c)
         cache = self._ensure_reverse_bfs_harvester(c, current, target)
         if cache is not None:
             best_direction = None
@@ -103,33 +115,16 @@ class Pathfinding:
         self._follow_state = None
         self._stuck_turns = 0
 
-    def _observe(self, c: Controller):
-        if self._known_map is None:
-            self._known_map = [
-                [_UNKNOWN for _ in range(c.get_map_width())]
-                for _ in range(c.get_map_height())
-            ]
-
-        changed = False
-
-        # Only rebuild BFS when newly observed tiles change the traversable map.
-        for pos in c.get_nearby_tiles():
-            new_state = _TRAVERSABLE if _is_future_clearable(c, pos) else _BLOCKED
-            old_state = self._known_map[pos.y][pos.x]
-            if old_state == new_state:
-                continue
-            self._known_map[pos.y][pos.x] = new_state
-            changed = True
-
-        if changed:
-            self._map_version += 1
-
     def _ensure_reverse_bfs_harvester(
         self, c: Controller, current: Position, target: Position
     ) -> dict | None:
+        if self._memory is None or self._memory._tiles is None:
+            return None
+
+        mem_version = self._memory.version
         target_key = ("harvester", target.x, target.y)
         cache = self._reverse_bfs_cache.get(target_key)
-        if cache is not None and cache["version"] == self._map_version:
+        if cache is not None and cache["version"] == mem_version:
             return cache
 
         goals = self._known_goal_positions_harvester(current, target)
@@ -143,73 +138,67 @@ class Pathfinding:
             self._reverse_bfs_cache.pop(target_key, None)
             return None
 
-        cache = {
-            "version": self._map_version,
-            "distances": distances,
-        }
+        cache = {"version": mem_version, "distances": distances}
         self._reverse_bfs_cache[target_key] = cache
         return cache
 
     def _known_goal_positions_harvester(
         self, current: Position, target: Position
     ) -> list[Position]:
-        if self._known_map is None:
+        if self._memory is None or self._memory._tiles is None:
             return []
 
-        if self._is_known_traversable(target):
+        # If target is confirmed passable, route directly to it.
+        if self._is_confirmed_passable(target):
             return [target]
 
+        # Target is ore/wall/unknown — find confirmed-passable adjacent tiles.
         goals = []
+        seen = set()
         for direction in DIRECTIONS_4:
             candidate = target.add(direction)
-            if candidate == current or self._is_known_traversable(candidate):
-                goals.append(candidate)
-
-        unique_goals: list[Position] = []
-        seen = set()
-        for goal in goals:
-            key = (goal.x, goal.y)
+            key = (candidate.x, candidate.y)
             if key in seen:
                 continue
             seen.add(key)
-            unique_goals.append(goal)
-        return unique_goals
+            if candidate == current or self._is_confirmed_passable(candidate):
+                goals.append(candidate)
+        return goals
 
     def _build_reverse_bfs_cardinal(
         self, c: Controller, goals: list[Position]
     ) -> list[list[int | None]]:
-        distances: list[list[int | None]] = [
-            [None for _ in range(c.get_map_width())]
-            for _ in range(c.get_map_height())
-        ]
+        tiles = self._memory._tiles
+        w = self._memory._w
+        h = self._memory._h
+        distances: list[list[int | None]] = [[None] * w for _ in range(h)]
         queue = deque()
 
         for goal in goals:
             distances[goal.y][goal.x] = 0
-            queue.append(goal)
+            queue.append((goal.x, goal.y))
 
         while queue:
-            pos = queue.popleft()
-            base_distance = distances[pos.y][pos.x]
-            for direction in DIRECTIONS_4:
-                next_pos = pos.add(direction)
-                if not self._is_known_traversable(next_pos):
+            px, py = queue.popleft()
+            next_dist = distances[py][px] + 1
+            for nx, ny in ((px, py - 1), (px, py + 1), (px - 1, py), (px + 1, py)):
+                if not (0 <= nx < w and 0 <= ny < h):
                     continue
-                if distances[next_pos.y][next_pos.x] is not None:
+                if not _is_bfs_passable(tiles[ny][nx]):
                     continue
-                distances[next_pos.y][next_pos.x] = base_distance + 1
-                queue.append(next_pos)
+                if distances[ny][nx] is not None:
+                    continue
+                distances[ny][nx] = next_dist
+                queue.append((nx, ny))
 
         return distances
 
-    def _is_known_traversable(self, pos: Position) -> bool:
-        if (
-            self._known_map is None
-            or not (0 <= pos.y < len(self._known_map))
-            or not (0 <= pos.x < len(self._known_map[0]))
-        ):
+    def _is_confirmed_passable(self, pos: Position) -> bool:
+        if self._memory is None or self._memory._tiles is None:
             return False
-        return self._known_map[pos.y][pos.x] == _TRAVERSABLE
+        if not (0 <= pos.x < self._memory._w and 0 <= pos.y < self._memory._h):
+            return False
+        return _is_bfs_passable(self._memory._tiles[pos.y][pos.x])
 
     def _fallback_harvester_goal(
         self, c: Controller, current: Position, target: Position
@@ -227,7 +216,7 @@ class Pathfinding:
             if c.is_in_vision(candidate):
                 if not _is_future_clearable(c, candidate):
                     continue
-            elif not self._is_known_traversable(candidate):
+            elif not self._is_confirmed_passable(candidate):
                 continue
 
             score = _manhattan(current, candidate)
@@ -236,6 +225,7 @@ class Pathfinding:
                 best_goal = candidate
 
         return best_goal
+
 
 def _is_cardinal_adjacent(a: Position, b: Position) -> bool:
     return abs(a.x - b.x) + abs(a.y - b.y) == 1
@@ -282,6 +272,7 @@ def _can_clear_and_step(c: Controller, current: Position, next_pos: Position) ->
         return False
 
     return entity_type == EntityType.CORE and c.can_move(direction)
+
 
 def _can_progress(c: Controller, current: Position, direction: Direction):
     next_pos = current.add(direction)

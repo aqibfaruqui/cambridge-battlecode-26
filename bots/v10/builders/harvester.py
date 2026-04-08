@@ -199,7 +199,10 @@ class Harvester:
             self.state = HarvestState.SEARCHING_ORES
             return
 
-        self.target_pos = nearby_titanium(c, pos)
+        self.target_pos = (
+            nearby_titanium(c, pos)
+            or self.memory.nearest_predicted_titanium(pos)
+        )
         if self.target_pos is not None:
             move_dir = self._navigate(c, self.target_pos, ore_target=True)
             if move_dir is not None:
@@ -225,9 +228,12 @@ class Harvester:
         if built_harvester:
             return
 
-        self.target_pos = nearby_titanium(c, pos)
-        if self.target_pos is None:
-            self.target_pos = nearby_ore(c, pos)
+        self.target_pos = (
+            nearby_titanium(c, pos)
+            or nearby_ore(c, pos)
+            or self.memory.nearest_predicted_titanium(pos)
+            or self.memory.nearest_predicted_axionite(pos)
+        )
         if self.target_pos is not None:
             move_dir = self._navigate(c, self.target_pos, ore_target=True)
             if move_dir is not None:

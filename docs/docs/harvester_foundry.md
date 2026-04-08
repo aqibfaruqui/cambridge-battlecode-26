@@ -17,8 +17,8 @@ Prioritises outputting in directions used least recently.
 | Property        | Value    |
 | --------------- | -------- |
 | HP              | 30       |
-| Base cost       | 80 Ti    |
-| Scaling         | 10%      |
+| Base cost       | 20 Ti    |
+| Scaling         | 5%       |
 | Output interval | 4 rounds |
 
 ```python  theme={"dark"}
@@ -37,15 +37,13 @@ if c.can_build_harvester(ore_pos):
 
 Takes one stack each of **titanium and raw axionite**, then outputs one stack of **refined axionite**. Accepts input and produces output from any side.
 
-| Property  | Value  |
-| --------- | ------ |
-| HP        | 50     |
-| Base cost | 120 Ti |
-| Scaling   | 100%   |
+| Property  | Value |
+| --------- | ----- |
+| HP        | 50    |
+| Base cost | 40 Ti |
+| Scaling   | 50%   |
 
-<Warning>
-  Foundries have the highest scaling contribution at +100% each. Building one adds 100% to your cost multiplier (e.g. 1.0x → 2.0x if it's your first build, but 1.5x → 2.5x if you've already built other things). Plan carefully before committing 120 Ti.
-</Warning>
+> **Warning:** Foundries have the highest scaling contribution at +50% each. Building one adds 50% to your cost multiplier (e.g. 1.0x → 1.5x if it's your first build, but 1.5x → 2.0x if you've already built other things). Plan carefully before committing 40 Ti.
 
 ### Refining process
 

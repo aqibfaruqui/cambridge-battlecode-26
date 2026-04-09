@@ -1,5 +1,8 @@
 replay.replay*
-.venv
 __pycache__/
 tmp/
+
+# User environment
 .DS_Store
+.venv
+.envrc

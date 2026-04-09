@@ -8,6 +8,8 @@
 
 All conveyors can hold **one stack** of any resource, and both accept input and produce output. Basic conveyors, splitters, and armoured conveyors point in one of the **cardinal directions**.
 
+You can inspect the stack currently stored in one of these buildings with `c.get_stored_resource(...)` and `c.get_stored_resource_id(...)`.
+
 ## Conveyor
 
 <img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/conveyor.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=487e50d068b9c397ad4c16a993f6a257" alt="Conveyor" style={{ width: 64, float: "right", marginLeft: 16 }} width="512" height="512" data-path="images/entities/conveyor.png" />
@@ -23,6 +25,10 @@ Accepts resources from any of its three non-output directions. Sends its content
 ```python  theme={"dark"}
 # Build a conveyor pointing south
 c.build_conveyor(pos, Direction.SOUTH)
+
+# Inspect the stack currently on a conveyor
+resource_type = c.get_stored_resource(conveyor_id)
+resource_id = c.get_stored_resource_id(conveyor_id)
 ```
 
 ## Splitter
@@ -47,7 +53,7 @@ Outputs its contents to a **specific tile within Euclidean distance 3** (distanc
 | --------- | ----- |
 | HP        | 20    |
 | Base cost | 20 Ti |
-| Scaling   | 5%    |
+| Scaling   | 10%   |
 
 ```python  theme={"dark"}
 # Build a bridge that outputs to a target position
@@ -58,13 +64,13 @@ c.build_bridge(bridge_pos, target_pos)
 
 <img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/armoured-conveyor.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=c706382c9d7e9718c9a2d3e41322a373" alt="Armoured conveyor" style={{ width: 64, float: "right", marginLeft: 16 }} width="512" height="512" data-path="images/entities/armoured-conveyor.png" />
 
-Same function as a basic conveyor but with **much more HP**. Requires refined axionite to build.
+Same function as a basic conveyor but with **much more HP**. Requires refined axionite to build. Armoured conveyors are **immune to builder bot attacks**.
 
-| Property  | Value       |
-| --------- | ----------- |
-| HP        | 50          |
-| Base cost | 10 Ti, 5 Ax |
-| Scaling   | 1%          |
+| Property  | Value      |
+| --------- | ---------- |
+| HP        | 50         |
+| Base cost | 5 Ti, 5 Ax |
+| Scaling   | 1%         |
 
 ## Resource distribution
 

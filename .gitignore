@@ -1,4 +1,13 @@
 replay.replay*
-.venv
 __pycache__/
 tmp/
+
+# RAG index cache
+.rag_index/
+
+# User environment
+.DS_Store
+.venv
+.envrc
+.env
+.claude

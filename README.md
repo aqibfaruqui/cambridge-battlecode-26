@@ -34,7 +34,7 @@ uv python install 3.12.3
 
 ---
 
-## Create Virtual Environment
+## Enter Virtual Environment
 
 ```
 uv sync
@@ -88,3 +88,10 @@ bots/starter/main.py
 cambc submit bots/starter
 ```
 
+# Development
+
+Re-scrape documentation with:
+
+```sh 
+uv run scripts/scrape_docs.py
+```

@@ -12,7 +12,8 @@ export const DenseTable = ({children}) => <div className="dense-table">{children
 
 <img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/resources/titanium.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=99cae2a87a4dbda333098af04468f3f7" alt="Titanium" style={{ width: 48, float: "right", marginLeft: 16 }} width="512" height="512" data-path="images/resources/titanium.png" />
 
-The primary resource used to construct most buildings. Each team starts with **1000 titanium**.
+The primary resource used to construct most buildings. Each team starts with
+**500 titanium** and gains **10 passive titanium every 4 rounds**.
 
 Titanium is harvested from titanium ore deposits and delivered to the core via conveyors.
 
@@ -38,9 +39,23 @@ Axionite comes in two forms:
   Whenever "axionite" is mentioned in the spec without qualification, it refers to **refined axionite**.
 </Info>
 
+## Conversion
+
+The core can convert refined axionite from the global resource pool into
+titanium with `c.convert(amount)`.
+
+$$
+1 \text{ Ax} \rightarrow 4 \text{ Ti}
+$$
+
+Converted axionite is removed from the Ax collected stat and added to the Ti
+collected stat.
+
 ## Resource distribution
 
 Resources are stored and moved in **stacks of 10**. At the end of each round, buildings that output resources send them to adjacent buildings that accept them.
+
+Each stored stack also has a **resource ID**. You can query the stack currently sitting in a conveyor or other storage building with `c.get_stored_resource_id(...)`.
 
 <Warning>
   Resources can be outputted to buildings belonging to the **opposing team**.
@@ -65,10 +80,11 @@ Where scale starts at 1.0 and increases **additively** with each entity built â€
     <tbody>
       <tr><td>Road</td><td>+0.5%</td></tr>
       <tr><td>Conveyor, splitter, armoured conveyor, barrier</td><td>+1%</td></tr>
-      <tr><td>Bridge</td><td>+5%</td></tr>
-      <tr><td>Harvester, gunner, breach, launcher</td><td>+10%</td></tr>
+      <tr><td>Bridge</td><td>+10%</td></tr>
+      <tr><td>Harvester</td><td>+5%</td></tr>
+      <tr><td>Gunner, breach, launcher</td><td>+10%</td></tr>
       <tr><td>Builder bot, sentinel</td><td>+20%</td></tr>
-      <tr><td>Axionite foundry</td><td>+100%</td></tr>
+      <tr><td>Axionite foundry</td><td>+50%</td></tr>
     </tbody>
   </table>
 </DenseTable>

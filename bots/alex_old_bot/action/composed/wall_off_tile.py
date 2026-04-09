@@ -2,16 +2,12 @@ from action.interface import Action, TaskResult, run_actions
 from action.build import BuildBarriers, BuildLaunchers
 from action.navigation import Goto
 from cambc import Controller, Position, Environment, EntityType
-from world.state import GlobalState
 import grid
 
 
 class WallOffTile(Action):
-    def __init__(
-        self, global_state: GlobalState, tile: Position, *, use_launchers=True
-    ):
+    def __init__(self, tile: Position, *, use_launchers=True):
         super().__init__()
-        self.global_state = global_state
         self.tile = tile
         self.use_launchers = use_launchers
         self._actions: list[Action] = []
@@ -50,33 +46,29 @@ class WallOffTile(Action):
             west_launcher = Position(self.tile.x - 1, self.tile.y)
 
             north_goto = Goto(
-                self.global_state,
                 [self.tile] + grid.adjacent_positions(c, north_wall),
             )
             south_goto = Goto(
-                self.global_state,
                 [self.tile] + grid.adjacent_positions(c, south_wall),
             )
             east_goto = Goto(
-                self.global_state,
                 [self.tile] + grid.adjacent_positions(c, east_launcher),
             )
             west_goto = Goto(
-                self.global_state,
                 [self.tile] + grid.adjacent_positions(c, west_launcher),
             )
 
-            north_build = BuildBarriers(self.global_state, [north_wall])
-            south_build = BuildBarriers(self.global_state, [south_wall])
+            north_build = BuildBarriers([north_wall])
+            south_build = BuildBarriers([south_wall])
             east_build = (
-                BuildLaunchers(self.global_state, [east_launcher])
+                BuildLaunchers([east_launcher])
                 if self.use_launchers
-                else BuildBarriers(self.global_state, [east_launcher])
+                else BuildBarriers([east_launcher])
             )
             west_build = (
-                BuildLaunchers(self.global_state, [west_launcher])
+                BuildLaunchers([west_launcher])
                 if self.use_launchers
-                else BuildBarriers(self.global_state, [west_launcher])
+                else BuildBarriers([west_launcher])
             )
 
             if self._wall_filter(c, north_wall):

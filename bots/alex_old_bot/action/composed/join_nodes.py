@@ -1,6 +1,5 @@
 from typing import Optional
 
-from world.state import GlobalState
 from action.interface import Action, TaskResult, run_actions
 from cambc import Controller, Position, EntityType, Direction, ResourceType
 from action.build import BuildConveyors, BuildBridge
@@ -53,7 +52,6 @@ def _find_bridge_landing(
 
 
 def _path_is_direct(path: list[Direction], start_sm: tuple[int, int]) -> bool:
-    """True if the BFS path length is close to the manhattan distance (not winding)."""
     end_sm = start_sm
     for d in path:
         ddx, ddy = d.delta()
@@ -65,7 +63,6 @@ def _path_is_direct(path: list[Direction], start_sm: tuple[int, int]) -> bool:
 class JoinNodes(Action):
     def __init__(
         self,
-        global_state: GlobalState,
         start_positions: list[Position],
         end_positions: list[Position],
         ore_type: ResourceType,
@@ -73,7 +70,6 @@ class JoinNodes(Action):
         wait_for_resources: Optional[tuple[int, int]] = (10, 0),
     ):
         super().__init__()
-        self.global_state = global_state
         self.start_positions = start_positions
         self.end_positions = end_positions
         self.ore_type = ore_type
@@ -146,7 +142,6 @@ class JoinNodes(Action):
         if _path_is_direct(path, start_sm):
             return from_pos, path[0]
 
-        # Path is winding around obstacles — bridge to skip ahead
         landing = _find_bridge_landing(
             space_map, c.get_position(), from_pos, toward_pos
         )
@@ -156,7 +151,6 @@ class JoinNodes(Action):
         if isinstance(target, Direction):
             self._actions.append(
                 BuildConveyors(
-                    self.global_state,
                     [(pos, target)],
                     wait_for_resources=self.wait_for_resources,
                 )
@@ -166,7 +160,6 @@ class JoinNodes(Action):
         else:
             self._actions.append(
                 BuildBridge(
-                    self.global_state,
                     pos,
                     target,
                     wait_for_resources=self.wait_for_resources,
@@ -188,13 +181,12 @@ class JoinNodes(Action):
                 self._next_hop_start_positions,
                 key=lambda p: p.distance_squared(best_end),
             )
-            self._actions = [Goto(self.global_state, sorted_starting)]
+            self._actions = [Goto(sorted_starting)]
             return TaskResult.INCOMPLETE
 
         if near_start in self.end_positions:
             return TaskResult.SUCCESS
 
-        # Adjacent to an acceptable end — build final conveyor
         for d in grid.DIRS_CARDINAL:
             adj = near_start.add(d)
             if adj not in self.end_positions:
@@ -204,7 +196,6 @@ class JoinNodes(Action):
                 self._append_link(near_start, d)
                 return TaskResult.INCOMPLETE
 
-        # Plan next link toward the closest end position
         sorted_targets = sorted(
             self.end_positions,
             key=lambda p: p.distance_squared(best_start),

@@ -3,7 +3,6 @@ from collections import deque
 import random
 
 from action.interface import Behaviour
-from action.set_state import SetState
 from action.composed.goto_place_harvester import GotoPlaceHarvester
 from action.composed.join_nodes import JoinNodes
 from action.composed.bridge_join_nodes import BridgeJoinNodes
@@ -11,7 +10,7 @@ from action.composed.wall_off_tile import WallOffTile
 
 from action.navigation import Goto
 from action.build import BuildBarriers
-from world.state import GlobalState
+from world.tracking import find_core_pos, find_enemy_core_pos
 from world.comms.for_builder_bot import BuilderBotMessages, BuilderBotMessageType
 from world.comms.for_buildings import BuildingMessages
 from cambc import Controller, Position, Environment, EntityType, Direction, ResourceType
@@ -33,12 +32,7 @@ class Navigator(IntEnum):
 def spiral_positions(
     cx: int, cy: int, w: int, h: int, gap: int = 4, skip: int = 4
 ) -> deque[Position]:
-    """Generate outward spiral waypoints from (cx, cy) on a W×H grid.
-
-    Rings at Chebyshev distance gap, 2*gap, 3*gap, ...
-    Points sampled at every integer step along each ring's perimeter.
-    Out-of-bounds points are skipped. Stops when a full ring is OOB.
-    """
+    """Generate outward spiral waypoints from (cx, cy) on a W×H grid."""
     result = deque()
     result.append(Position(cx, cy))
     ring = 1
@@ -46,27 +40,22 @@ def spiral_positions(
     while True:
         d = ring * gap
         points = []
-        # Top edge: left to right at y = cy - d
         for x in range(cx - d, cx + d + 1):
             if tile % skip == 0:
                 points.append(Position(x, cy - d))
             tile += 1
-        # Right edge: top+1 to bottom at x = cx + d
         for y in range(cy - d + 1, cy + d + 1):
             if tile % skip == 0:
                 points.append(Position(cx + d, y))
             tile += 1
-        # Bottom edge: right-1 to left at y = cy + d
         for x in range(cx + d - 1, cx - d - 1, -1):
             if tile % skip == 0:
                 points.append(Position(x, cy + d))
             tile += 1
-        # Left edge: bottom-1 to top+1 at x = cx - d
         for y in range(cy + d - 1, cy - d, -1):
             if tile % skip == 0:
                 points.append(Position(cx - d, y))
             tile += 1
-        # Filter to in-bounds
         valid = [p for p in points if 0 <= p.x < w and 0 <= p.y < h]
         if not valid:
             break
@@ -79,10 +68,8 @@ class Explorer(Behaviour):
     def __init__(self, navigator: Navigator):
         super().__init__()
         self.navigator = navigator
-        self.global_state = GlobalState(
-            track_core=True,
-            track_enemy_core=True,
-        )
+        self._core_pos = None
+        self._enemy_core_pos = None
 
         self._flag_self_core = True
         self._state = ExplorerState.TITANIUM
@@ -93,8 +80,8 @@ class Explorer(Behaviour):
     def _next_location(self, c: Controller) -> Position:
         if self._spiral is None:
             self._spiral = spiral_positions(
-                self.global_state.get_core_pos().x,
-                self.global_state.get_core_pos().y,
+                self._core_pos.x,
+                self._core_pos.y,
                 c.get_map_width(),
                 c.get_map_height(),
             )
@@ -133,60 +120,56 @@ class Explorer(Behaviour):
 
     def _make_harvester_actions(
         self, c: Controller, candidate: Position
-    ) -> tuple[SetState, BridgeJoinNodes, WallOffTile, GotoPlaceHarvester]:
+    ) -> tuple[BridgeJoinNodes, WallOffTile, GotoPlaceHarvester]:
+        self._state = (
+            ExplorerState.AXIONITE
+            if self._state == ExplorerState.TITANIUM
+            else ExplorerState.AXIONITE_2
+        )
         sorted_adjacent = sorted(
             grid.cardinally_adjacent_positions(c, candidate),
-            key=lambda p: self.global_state.get_core_pos().distance_squared(p),
+            key=lambda p: self._core_pos.distance_squared(p),
         )
         return (
-            SetState(
-                self,
-                "_state",
-                ExplorerState.AXIONITE
-                if self._state == ExplorerState.TITANIUM
-                else ExplorerState.AXIONITE_2,
-            ),
             BridgeJoinNodes(
-                self.global_state,
                 sorted_adjacent,
-                grid.adjacent_positions(c, self.global_state.get_core_pos()),
+                grid.adjacent_positions(c, self._core_pos),
                 ResourceType.TITANIUM,
             ),
-            WallOffTile(self.global_state, candidate, use_launchers=False),
-            GotoPlaceHarvester(self.global_state, c, candidate),
+            WallOffTile(candidate, use_launchers=False),
+            GotoPlaceHarvester(c, candidate),
         )
 
     def _make_block_ore_actions(
         self, c: Controller, candidate: Position
     ) -> tuple[BuildBarriers, Goto]:
         return (
-            BuildBarriers(self.global_state, [candidate]),
-            Goto(self.global_state, grid.adjacent_positions(c, candidate)),
+            BuildBarriers(grid.cardinally_adjacent_positions(c, candidate)),
+            Goto(grid.adjacent_positions(c, candidate)),
         )
 
     def _make_guard_bridge_actions(self, candidate: Position) -> WallOffTile:
-        return WallOffTile(self.global_state, candidate)
+        return WallOffTile(candidate)
 
     def _set_best_harvester_task(self, c: Controller, candidate: Position) -> None:
         pos = c.get_position()
         for i, task in enumerate(self.actions):
             if isinstance(task, GotoPlaceHarvester):
                 if pos.distance_squared(candidate) < pos.distance_squared(task.target):
-                    state, join, wall_off, goto = self._make_harvester_actions(
+                    join, wall_off, goto = self._make_harvester_actions(
                         c, candidate
                     )
-                    self.actions[i - 3] = state
                     self.actions[i - 2] = join
                     self.actions[i - 1] = wall_off
                     self.actions[i] = goto
                     self._placed_nodes = join.get_placed_nodes()
                 return
 
-        if any(isinstance(a, (JoinNodes, SetState, WallOffTile)) for a in self.actions):
+        if any(isinstance(a, (JoinNodes, BridgeJoinNodes, WallOffTile)) for a in self.actions):
             return
 
-        state, join, wall_off, goto = self._make_harvester_actions(c, candidate)
-        self.actions.extend([state, join, wall_off, goto])
+        join, wall_off, goto = self._make_harvester_actions(c, candidate)
+        self.actions.extend([join, wall_off, goto])
         self._placed_nodes = join.get_placed_nodes()
 
     def _set_best_block_task(self, c: Controller, candidate: Position) -> None:
@@ -256,7 +239,6 @@ class Explorer(Behaviour):
         )
 
         if our_bridges and not any(isinstance(a, WallOffTile) for a in self.actions):
-            # Wall-off takes priority — remove any existing block task
             self.actions = [
                 a
                 for i, a in enumerate(self.actions)
@@ -319,7 +301,8 @@ class Explorer(Behaviour):
         pass
 
     def tick(self, c: Controller) -> None:
-        self.global_state.update(c)
+        self._core_pos = find_core_pos(c, self._core_pos)
+        self._enemy_core_pos = find_enemy_core_pos(c, self._enemy_core_pos)
         super().tick(c)
 
         if self._flag_self_core:
@@ -338,12 +321,12 @@ class Explorer(Behaviour):
                     c.place_marker(
                         tile,
                         BuildingMessages.encode_self_core_location(
-                            self.global_state.get_core_pos()
+                            self._core_pos
                         ),
                     )
                     self._flag_self_core = False
                     return
-        elif self.global_state.try_enemy_core_pos():
+        elif self._enemy_core_pos:
             for tile in [
                 tile for tile in c.get_nearby_tiles(2) if tile != c.get_position()
             ]:
@@ -359,7 +342,7 @@ class Explorer(Behaviour):
                     c.place_marker(
                         tile,
                         BuildingMessages.encode_enemy_core_location(
-                            self.global_state.get_enemy_core_pos()
+                            self._enemy_core_pos
                         ),
                     )
                     self._flag_self_core = True
@@ -377,7 +360,6 @@ class Explorer(Behaviour):
                 return
 
             next_location = self._next_location(c)
-            print(f"Idling explorer assigns next location {next_location}")
             self.actions.append(
-                Goto(self.global_state, [next_location], clear_roads_behind=True)
+                Goto([next_location], clear_roads_behind=True)
             )

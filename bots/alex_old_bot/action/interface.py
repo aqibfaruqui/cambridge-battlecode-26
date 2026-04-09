@@ -24,38 +24,30 @@ class Action:
         return self.__class__.__name__
 
 
-def run_actions(c: Controller, actions: list[Action], skip_can_run: bool = False) -> TaskResult:
-    """Run top of stack. If can_run() fails, pop with INCOMPLETE.
-    On SUCCESS/FAILURE, pop. On INCOMPLETE, keep.
-    skip_can_run: skip the can_run check on the first action (caller already verified)."""
+def run_actions(
+    c: Controller, actions: list[Action], skip_can_run: bool = False
+) -> TaskResult:
+    """Run top of stack. If can_run() fails, return INCOMPLETE.
+    On SUCCESS, pop and continue. On FAILURE, pop and return.
+    On INCOMPLETE, keep and return."""
     first = True
     while actions:
         top = actions[-1]
         if first and skip_can_run:
             first = False
         elif not top.can_run(c):
-            print(f"Action {top.__class__.__name__} cannot run, waiting")
             return TaskResult.INCOMPLETE
 
         result = top.run(c)
         if result == TaskResult.FAILURE:
-            print(f"Action {top.__class__.__name__} failed, popping")
             actions.pop()
             return TaskResult.FAILURE
         if result == TaskResult.SUCCESS:
-            print(f"Action {top.__class__.__name__} succeeded, popping")
             actions.pop()
             continue
-        print(f"Action {top.__class__.__name__} incomplete, keeping")
+        return TaskResult.INCOMPLETE
 
-    print("All actions completed, returning success")
     return TaskResult.SUCCESS
-
-
-def print_action_stack(actions: list[Action]) -> None:
-    print("Action stack:")
-    for action in actions:
-        print(f"  {action}")
 
 
 class Behaviour:
@@ -67,7 +59,6 @@ class Behaviour:
 
     def tick(self, c: Controller) -> None:
         """Called once per turn by the entity dispatcher."""
-        print_action_stack(self.actions)
         self.check_interrupts(c)
         self.check_transitions(c)
 
@@ -77,18 +68,10 @@ class Behaviour:
         run_actions(c, self.actions)
 
     def check_interrupts(self, c: Controller) -> None:
-        """Scan for conditions and push high-priority actions onto the stack.
-        Runs every tick BEFORE the current action. Override per-behaviour.
-        Default: no-op."""
         pass
 
     def check_transitions(self, c: Controller) -> None:
-        """Detect phase changes and replace the action stack.
-        Runs every tick after interrupts. Override per-behaviour.
-        Default: no-op."""
         pass
 
     def idle(self, c: Controller) -> None:
-        """Seed the action stack when it's empty.
-        Override per-behaviour. Default: no-op."""
         pass

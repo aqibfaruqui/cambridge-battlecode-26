@@ -1,7 +1,7 @@
 from enum import IntEnum
 from typing import Optional
 
-from world.comms import Encrypyt, PositionEncoder
+from world.comms import Encrypt, PositionEncoder
 from cambc import Position
 
 
@@ -10,17 +10,17 @@ class BuildingMessageType(IntEnum):
     ENEMY_CORE_LOCATION = 0b0001
 
 
-class BuildingMessages(IntEnum):
+class BuildingMessages:
     FOR_BUILDINGS = 0b0001
 
     @classmethod
     def is_building_message(cls, data: int) -> bool:
-        decrypted = Encrypyt.decrypt(data)
+        decrypted = Encrypt.decrypt(data)
         return (decrypted >> 28) == cls.FOR_BUILDINGS
 
     @classmethod
     def get_message_type(cls, data: int) -> Optional[BuildingMessageType]:
-        decrypted = Encrypyt.decrypt(data)
+        decrypted = Encrypt.decrypt(data)
         if (decrypted >> 28) != cls.FOR_BUILDINGS:
             return None
         match BuildingMessageType((decrypted >> 24) & 0xF):
@@ -34,15 +34,15 @@ class BuildingMessages(IntEnum):
     @classmethod
     def encode_self_core_location(cls, position: Position) -> int:
         message = (
-            cls.FOR_BUILDINGS
+            cls.FOR_BUILDINGS << 28
             | (BuildingMessageType.SELF_CORE_LOCATION << 24)
             | PositionEncoder.encode(position)
         )
-        return Encrypyt.encrypt(message)
+        return Encrypt.encrypt(message)
 
     @classmethod
     def decode_self_core_location(cls, data: int) -> Position:
-        data = Encrypyt.decrypt(data)
+        data = Encrypt.decrypt(data)
         return PositionEncoder.decode(data & 0x00000FFF)
 
     @classmethod
@@ -52,9 +52,9 @@ class BuildingMessages(IntEnum):
             | (BuildingMessageType.ENEMY_CORE_LOCATION << 24)
             | PositionEncoder.encode(position)
         )
-        return Encrypyt.encrypt(message)
+        return Encrypt.encrypt(message)
 
     @classmethod
     def decode_enemy_core_location(cls, data: int) -> Position:
-        data = Encrypyt.decrypt(data)
+        data = Encrypt.decrypt(data)
         return PositionEncoder.decode(data & 0x00000FFF)

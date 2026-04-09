@@ -1,6 +1,5 @@
 from typing import Optional
 
-from world.state import GlobalState
 from action.interface import Action, TaskResult, run_actions
 from action.build import BuildBridge, BuildMarker
 from action.navigation import Goto
@@ -20,7 +19,6 @@ class BridgeJoinNodes(Action):
 
     def __init__(
         self,
-        global_state: GlobalState,
         start_positions: list[Position],
         end_positions: list[Position],
         ore_type: ResourceType,
@@ -28,7 +26,6 @@ class BridgeJoinNodes(Action):
         wait_for_resources: Optional[tuple[int, int]] = (10, 0),
     ):
         super().__init__()
-        self.global_state = global_state
         self.start_positions = start_positions
         self.end_positions = end_positions
         self.ore_type = ore_type
@@ -48,7 +45,6 @@ class BridgeJoinNodes(Action):
             for pos in self._current_positions
             if grid.adjacent_to(c.get_position(), pos, can_be_on=True)
         ]
-        # Prefer tiles with a road on them
         for tile in candidates:
             bid = c.get_tile_building_id(tile)
             if (
@@ -60,7 +56,6 @@ class BridgeJoinNodes(Action):
         return candidates[0] if candidates else None
 
     def _wallable_neighbors(self, c: Controller, pos: Position) -> list[Position]:
-        """Return all 8 neighbors of pos that can have a barrier built on them."""
         result = []
         for adj in grid.adjacent_positions(c, pos):
             if not c.is_in_vision(adj):
@@ -76,15 +71,12 @@ class BridgeJoinNodes(Action):
     def _append_bridge(
         self, _: Controller, from_pos: Position, to_pos: Position
     ) -> None:
-        self._actions.append(Goto(self.global_state, [to_pos], wait_timer=2))
+        self._actions.append(Goto([to_pos], wait_timer=2))
         self._actions.append(
-            BuildMarker(
-                self.global_state, BuilderBotMessages.encode_claim_position(to_pos)
-            )
+            BuildMarker(BuilderBotMessages.encode_claim_position(to_pos))
         )
         self._actions.append(
             BuildBridge(
-                self.global_state,
                 from_pos,
                 to_pos,
                 wait_for_resources=self.wait_for_resources,
@@ -109,13 +101,12 @@ class BridgeJoinNodes(Action):
             sorted_starts = sorted(
                 self._current_positions, key=lambda p: p.distance_squared(best_end)
             )
-            self._actions = [Goto(self.global_state, sorted_starts, wait_timer=2)]
+            self._actions = [Goto(sorted_starts, wait_timer=2)]
             return TaskResult.INCOMPLETE
 
         if near in self.end_positions:
             return TaskResult.SUCCESS
 
-        # Check if adjacent to an acceptable end
         for d in grid.DIRS_CARDINAL:
             adj = near.add(d)
             if adj not in self.end_positions:
@@ -125,7 +116,6 @@ class BridgeJoinNodes(Action):
                 self._append_bridge(c, near, adj)
                 return TaskResult.INCOMPLETE
 
-        # Close enough to an end — bridge directly
         for target in sorted(
             self.end_positions, key=lambda p: p.distance_squared(near)
         ):
@@ -133,7 +123,6 @@ class BridgeJoinNodes(Action):
                 self._append_bridge(c, near, target)
                 return TaskResult.INCOMPLETE
 
-        # Find bridge landing toward closest end
         space_map = build_space_map(
             c,
             allow_self=True,
@@ -149,7 +138,6 @@ class BridgeJoinNodes(Action):
                 self._append_bridge(c, near, landing)
                 return TaskResult.INCOMPLETE
 
-        # This start position can't place a bridge — try others
         if len(self._current_positions) > 1:
             self._current_positions = [p for p in self._current_positions if p != near]
             return TaskResult.INCOMPLETE

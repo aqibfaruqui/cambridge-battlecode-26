@@ -1,7 +1,7 @@
 from cambc import Position
 
 
-class Encrypyt:
+class Encrypt:
     key = 0x3C4E123F
 
     @classmethod

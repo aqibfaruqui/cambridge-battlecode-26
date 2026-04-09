@@ -5,18 +5,16 @@ from action.build import BuildHarvester, BuildMarker
 from action.navigation import Goto
 from world.comms.for_builder_bot import BuilderBotMessages
 from cambc import Position, Controller
-from world.state import GlobalState
 
 
 class GotoPlaceHarvester(Action):
-    def __init__(self, global_state: GlobalState, c: Controller, target: Position):
+    def __init__(self, c: Controller, target: Position):
         super().__init__()
         self.target = target
         adjacent: list[Position] = grid.adjacent_positions(c, target)
         adjacent.sort(key=lambda p: p.distance_squared(target))
         self.actions = [
             BuildHarvester(
-                global_state,
                 target,
                 wait_for_resources=(10, 0),
                 destroy=[
@@ -26,9 +24,8 @@ class GotoPlaceHarvester(Action):
                     EntityType.BARRIER,
                 ],
             ),
-            Goto(global_state, adjacent),
+            Goto(adjacent),
             BuildMarker(
-                global_state,
                 message=BuilderBotMessages.encode_claim_ore(target),
             ),
         ]
@@ -36,7 +33,6 @@ class GotoPlaceHarvester(Action):
     def can_run(self, c: Controller) -> bool:
         if not self.actions:
             return True
-
         return self.actions[-1].can_run(c)
 
     def run(self, c: Controller) -> TaskResult:

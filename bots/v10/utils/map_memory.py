@@ -27,6 +27,8 @@ class MapMemory:
         # Predicted ores based on symmetry (not observed yet)
         self._pred_ti: set[tuple[int, int]] = set()
         self._pred_ax: set[tuple[int, int]] = set()
+        self._known_ti: set[tuple[int, int]] = set()
+        self._known_ax: set[tuple[int, int]] = set()
 
         # Core positions
         self._own_core: Position | None = None
@@ -125,6 +127,35 @@ class MapMemory:
         """Nearest symmetry-predicted axionite ore (never directly observed)."""
         return self._nearest(origin, self._pred_ax)
 
+    def nearest_known_titanium(
+        self,
+        origin: Position,
+        blocked: set[tuple[int, int]] | None = None,
+    ) -> Position | None:
+        return self._nearest(origin, self._known_ti, blocked)
+
+    def nearest_known_axionite(
+        self,
+        origin: Position,
+        blocked: set[tuple[int, int]] | None = None,
+    ) -> Position | None:
+        return self._nearest(origin, self._known_ax, blocked)
+
+    def nearest_known_ore(
+        self,
+        origin: Position,
+        blocked: set[tuple[int, int]] | None = None,
+    ) -> Position | None:
+        titanium = self._nearest(origin, self._known_ti, blocked)
+        axionite = self._nearest(origin, self._known_ax, blocked)
+        if titanium is None:
+            return axionite
+        if axionite is None:
+            return titanium
+        if origin.distance_squared(titanium) <= origin.distance_squared(axionite):
+            return titanium
+        return axionite
+
     def symmetry(self) -> str | None:
         return self._sym_confirmed
 
@@ -153,12 +184,17 @@ class MapMemory:
                         self._tiles[y][x] = state
 
     def _update_ore_sets(self, x: int, y: int, new: int, observed: bool = True):
-        # Update predicted ores based on the new tile state
-        # Maybe we can delete this (not sure if optimal just a note)
         key = (x, y)
+        self._pred_ti.discard(key)
+        self._pred_ax.discard(key)
+        self._known_ti.discard(key)
+        self._known_ax.discard(key)
+
         if observed:
-            self._pred_ti.discard(key)
-            self._pred_ax.discard(key)
+            if new == ORE_TI:
+                self._known_ti.add(key)
+            elif new == ORE_AX:
+                self._known_ax.add(key)
         elif new == ORE_TI:
             self._pred_ti.add(key)
         elif new == ORE_AX:
@@ -232,13 +268,18 @@ class MapMemory:
                 self.version += 1
 
     def _nearest(
-        self, origin: Position, ore_set: set[tuple[int, int]]
+        self,
+        origin: Position,
+        ore_set: set[tuple[int, int]],
+        blocked: set[tuple[int, int]] | None = None,
     ) -> Position | None:
         """Helper function to find the nearest ore tile"""
         best_pos: Position | None = None
         best_dist = float("inf")
         ox, oy = origin.x, origin.y
         for x, y in ore_set:
+            if blocked is not None and (x, y) in blocked:
+                continue
             dist = (x - ox) * (x - ox) + (y - oy) * (y - oy)
             if dist < best_dist:
                 best_dist = dist
@@ -269,4 +310,3 @@ class MapMemory:
     #     for row in reversed(self._tiles):  # y=0 at bottom, print top-down
     #         print("".join(_CHARS[t] for t in row), file=sys.stderr)
     #     print("=== end ===\n", file=sys.stderr)
-

@@ -2,7 +2,13 @@ from collections import deque
 
 from cambc import Controller, Direction, EntityType, Environment, Position
 from utils.board import is_wall
-from utils.movement import DIRECTIONS_4, _manhattan, bug_nav, on_map
+from utils.movement import (
+    DIRECTIONS_4,
+    _manhattan,
+    bug_nav,
+    on_map,
+    reached_core,
+)
 from utils.map_memory import UNKNOWN, WALL, TRAVERSABLE, ORE_TI, ORE_AX, CORE_OWN, CORE_ENEMY
 
 _WALKABLE_BUILDINGS = frozenset(
@@ -100,6 +106,62 @@ class Pathfinding:
         self, c: Controller, current: Position, target: Position
     ) -> Direction | None:
         return self.harvester_direction(c, current, target)
+
+    def return_distances(
+        self, c: Controller, core_pos: Position
+    ) -> list[list[int | None]]:
+        width = c.get_map_width()
+        height = c.get_map_height()
+        distances: list[list[int | None]] = [[None] * width for _ in range(height)]
+        queue = deque()
+
+        for y in range(height):
+            for x in range(width):
+                pos = Position(x, y)
+                if not reached_core(pos, core_pos):
+                    continue
+                if not self._is_return_tile_passable(c, pos):
+                    continue
+                distances[y][x] = 0
+                queue.append((x, y))
+
+        while queue:
+            px, py = queue.popleft()
+            next_dist = distances[py][px] + 1
+            for nx, ny in ((px, py - 1), (px + 1, py), (px, py + 1), (px - 1, py)):
+                if not (0 <= nx < width and 0 <= ny < height):
+                    continue
+                if distances[ny][nx] is not None:
+                    continue
+                pos = Position(nx, ny)
+                if not self._is_return_tile_passable(c, pos):
+                    continue
+                distances[ny][nx] = next_dist
+                queue.append((nx, ny))
+
+        return distances
+
+    def return_direction(
+        self,
+        c: Controller,
+        current: Position,
+        distances: list[list[int | None]],
+    ) -> Direction | None:
+        best_direction = None
+        best_distance = None
+
+        for direction in DIRECTIONS_4:
+            next_pos = current.add(direction)
+            if not on_map(c, next_pos):
+                continue
+            next_distance = distances[next_pos.y][next_pos.x]
+            if next_distance is None:
+                continue
+            if best_distance is None or next_distance < best_distance:
+                best_distance = next_distance
+                best_direction = direction
+
+        return best_direction
 
     def _refresh_progress(self, current: Position):
         current_key = (current.x, current.y)
@@ -225,6 +287,29 @@ class Pathfinding:
                 best_goal = candidate
 
         return best_goal
+
+    def _is_return_tile_passable(self, c: Controller, pos: Position) -> bool:
+        if not on_map(c, pos):
+            return False
+
+        if c.is_in_vision(pos):
+            if c.get_tile_env(pos) == Environment.WALL:
+                return False
+
+            building_id = c.get_tile_building_id(pos)
+            if building_id is None:
+                return c.get_tile_env(pos) == Environment.EMPTY
+
+            entity_type = c.get_entity_type(building_id)
+            if entity_type in _WALKABLE_BUILDINGS:
+                return True
+            return entity_type == EntityType.CORE and c.get_team(building_id) == c.get_team()
+
+        if self._memory is None or self._memory._tiles is None:
+            return False
+
+        state = self._memory._tiles[pos.y][pos.x]
+        return state in (TRAVERSABLE, CORE_OWN, UNKNOWN)
 
 
 def _is_cardinal_adjacent(a: Position, b: Position) -> bool:

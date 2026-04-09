@@ -10,3 +10,4 @@ tmp/
 .venv
 .envrc
 .env
+.claude

@@ -14,7 +14,7 @@ Walkable tiles for builder bots to move on. The cheapest building.
 
 | Property  | Value |
 | --------- | ----- |
-| HP        | 10    |
+| HP        | 5     |
 | Base cost | 1 Ti  |
 | Scaling   | 0.5%  |
 
@@ -36,9 +36,11 @@ Cheap, takes up space, and has high HP. Useful for blocking enemy paths or prote
 
 A tile containing a single **unsigned 32-bit integer** that can be read by any allied unit. Building a marker is completely free and does **not** cost action cooldown — you may place at most one marker per round.
 
-Any team may build over markers, destroying them.
+Any team may build over markers, destroying them. Additionally, **all units** (core, builder bots, and turrets) can destroy friendly markers for free using the standard destroy action.
 
-Markers remain targetable by gunners, but they do **not** shield occupied tiles behind them.
+Markers remain targetable by gunners, but unlike walls, builder bots, and
+non-marker buildings they do **not** block line of sight or shield occupied
+tiles behind them.
 
 | Property | Value |
 | -------- | ----- |

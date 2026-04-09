@@ -8,14 +8,14 @@
 
 <img src="https://mintcdn.com/cambridgebattlecode/W9OYBDP1YcA3tc0W/images/entities/builder-bot.png?fit=max&auto=format&n=W9OYBDP1YcA3tc0W&q=85&s=b0b8f534c879d31c95e22691fccade5b" alt="Builder bot" style={{ width: 64, float: "right", marginLeft: 16 }} width="512" height="512" data-path="images/entities/builder-bot.png" />
 
-Builder bots are the **only mobile unit**. They construct buildings, repair themselves or the building on their own tile, and can make a weak attack against the building under them.
+Builder bots are the **only mobile unit**. They construct buildings, heal friendly entities on a chosen tile, and can make a weak attack against the building under them.
 
 ## Properties
 
 | Property             | Value |
 | -------------------- | ----- |
-| HP                   | 30    |
-| Base cost            | 50 Ti |
+| HP                   | 40    |
+| Base cost            | 30 Ti |
 | Scaling contribution | 20%   |
 | Vision radius²       | 20    |
 | Action radius²       | 2     |
@@ -29,11 +29,11 @@ Builder bots can move to an adjacent tile (including diagonals) if their move co
 <Warning>
   Builder bots can **only walk on**:
 
-  * Conveyors (any variant, any direction, either team)
+  * Conveyors, splitters, armoured conveyors, and bridges (any direction, either team)
   * Roads (either team)
   * The allied core
 
-  These are called **walkable** tiles. The direction of the conveyor does not matter, and neither does the presence of resources on the tile.
+  These are called **walkable** tiles. The direction of the building does not matter, and neither does the presence of resources on the tile.
 </Warning>
 
 ```python  theme={"dark"}
@@ -49,25 +49,26 @@ When action cooldown is 0, a builder bot can perform one of:
 
 ### Build
 
-Build any building or turret on a tile within action radius that doesn't already have a building.
+Build any building or turret on a tile within action radius that doesn't
+already have a building.
 
 <Info>
-  Only walkable buildings (conveyors and roads) can be built on a tile that contains a builder bot.
+  If a tile already contains a builder bot, only walkable buildings
+  (conveyors and roads) can be built on that tile.
 </Info>
 
 ### Heal
 
-Spend **1 Ti** to heal **4 HP** on the tile the builder bot is standing on. If the builder bot is damaged, it heals itself first. Otherwise it heals the building underneath. The action fails if neither would gain HP.
+Spend **1 Ti** to heal **4 HP** to all friendly entities on a tile within action radius. If a friendly builder bot and a friendly building share the chosen tile, both are healed. The action fails if nothing on that tile would gain HP.
 
 ```python  theme={"dark"}
-my_pos = c.get_position()
-if c.can_heal(my_pos):
-    c.heal(my_pos)
+if c.can_heal(target_pos):
+    c.heal(target_pos)
 ```
 
 ### Attack
 
-Spend **2 Ti** to deal **2 damage** to the building on the tile the builder bot is standing on. This reuses the standard `can_fire()` / `fire()` combat API.
+Spend **2 Ti** to deal **2 damage** to the building on the tile the builder bot is standing on. This reuses the standard `can_fire()` / `fire()` combat API. **Armoured conveyors are immune** to builder bot attacks.
 
 ```python  theme={"dark"}
 my_pos = c.get_position()

@@ -28,7 +28,8 @@ if c.can_build_harvester(ore_pos):
 ```
 
 <Tip>
-  Harvesters are expensive (80 Ti base, +10% scaling) but they generate resources passively. Build them on ore deposits early to fund your expansion.
+  Harvesters are now cheap enough to get online early. A base harvester costs
+  only 20 Ti and adds just +5% scaling.
 </Tip>
 
 ## Axionite Foundry
@@ -43,7 +44,12 @@ Takes one stack each of **titanium and raw axionite**, then outputs one stack of
 | Base cost | 40 Ti |
 | Scaling   | 50%   |
 
-> **Warning:** Foundries have the highest scaling contribution at +50% each. Building one adds 50% to your cost multiplier (e.g. 1.0x → 1.5x if it's your first build, but 1.5x → 2.0x if you've already built other things). Plan carefully before committing 40 Ti.
+<Warning>
+  Foundries have the highest scaling contribution at +50% each. Building one
+  adds 50% to your cost multiplier (e.g. 1.0x -> 1.5x if it's your first
+  build, but 1.5x -> 2.0x if you've already built other things). Plan
+  carefully before committing 40 Ti.
+</Warning>
 
 ### Refining process
 

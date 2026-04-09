@@ -52,6 +52,11 @@ If both cores are still alive after **2000 rounds**, the winner is decided by ti
   </Step>
 </Steps>
 
+<Info>
+  Axionite converted by the core with `c.convert(...)` is removed from the Ax
+  collected stat and added to the Ti collected stat.
+</Info>
+
 ## Map
 
 The map is a rectangular grid between **20×20** and **50×50** inclusive. The top-left (northwest) corner is position `(0, 0)`.
@@ -81,7 +86,7 @@ Units are game entities which run an **independent instance** of the code that y
 
 Each round, units take their turns **in the order they were spawned**. After all units have taken their turn, [resources are distributed](/spec/conveyors#resource-distribution). See the [reference tables](/spec/reference) for a quick comparison of all entity stats.
 
-Each team can have at most **50 living units total**, including the core. In practice, that means a team can have at most **49 additional living units** at once.
+Each team can have at most **50 living units total**, including the core. In practice, that means a team can have at most **49 additional living units** at once. You can inspect the current count with `c.get_unit_count()`, and the cap is exposed as `GameConstants.MAX_TEAM_UNITS`.
 
 ### Vision and action radius
 
@@ -103,7 +108,7 @@ Turrets also have an **attack range** which is different from their action radiu
       <tr><td>Builder bot</td><td>20</td><td>2</td></tr>
       <tr><td>Gunner</td><td>13</td><td>2</td></tr>
       <tr><td>Sentinel</td><td>32</td><td>2</td></tr>
-      <tr><td>Breach</td><td>13</td><td>2</td></tr>
+      <tr><td>Breach</td><td>2</td><td>2</td></tr>
       <tr><td>Launcher</td><td>26</td><td>2</td></tr>
     </tbody>
   </table>
@@ -145,6 +150,17 @@ for entity_id in c.get_nearby_entities():
 <Info>
   The ID-based API was chosen for performance — constructing Python objects for every entity query would be too slow within the 2ms time limit.
 </Info>
+
+## Resource IDs
+
+Each stored resource stack also has a **unique integer ID**. Use these IDs when you want to tell otherwise identical stacks apart in your logistics network.
+
+You can query the stack currently stored in a conveyor, splitter, armoured conveyor, bridge, or foundry with `c.get_stored_resource_id(id)`. If the building is empty, it returns `None`.
+
+```python  theme={"dark"}
+resource_type = c.get_stored_resource(conveyor_id)
+resource_id = c.get_stored_resource_id(conveyor_id)
+```
 
 ## Computation limit
 

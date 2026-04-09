@@ -2,6 +2,9 @@ replay.replay*
 __pycache__/
 tmp/
 
+# RAG index cache
+.rag_index/
+
 # User environment
 .DS_Store
 .venv

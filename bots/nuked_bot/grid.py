@@ -1,4 +1,5 @@
 from cambc import Direction, Controller, Position
+from typing import NamedTuple
 
 DIRS = [
     Direction.NORTH,
@@ -31,33 +32,56 @@ DIRS_DIAGONAL = [
 ]
 
 
-def is_valid(c: Controller, pos: Position) -> bool:
+def horizontally_symmetric(c: Controller, point: Position) -> Position:
+    """Returns the point reflecred in horizontal symmetry"""
+    return Position(c.get_map_width() - 1 - point.x, point.y)
+
+
+def rotationally_symmetric(c: Controller, point: Position) -> Position:
+    """Returns the point reflected in rotational symmetry"""
+    return Position(c.get_map_width() - 1 - point.x, c.get_map_height() - 1 - point.y)
+
+
+def vertically_symmetric(c: Controller, point: Position) -> Position:
+    """Returns the point reflected in vertical symmetry"""
+    return Position(point.x, c.get_map_height() - 1 - point.y)
+
+
+def in_bounds(c: Controller, pos: Position) -> bool:
+    """Checks if a position is in map dimensions"""
     return 0 <= pos.x < c.get_map_width() and 0 <= pos.y < c.get_map_height()
 
 
 def adjacent_to(p1: Position, p2: Position, *, can_be_on: bool = False) -> bool:
+    """Checks if p1 is adjacent to p2, optionally can_be_on is false"""
     return p1.distance_squared(p2) <= 2 and (can_be_on or p1 != p2)
 
 
-def cardinally_adjacent_to(
+def is_cardinally_adjacent_to(
     p1: Position, p2: Position, *, can_be_on: bool = False
 ) -> bool:
+    """Checks if p1 is cardinally adjacent to p2, optionally can_be_on is false"""
     return p1.distance_squared(p2) == 1 and (can_be_on or p1 != p2)
 
 
 def adjacent_positions(c: Controller, pos: Position) -> list[Position]:
-    return [pos.add(direction) for direction in DIRS if is_valid(c, pos.add(direction))]
+    """Adjacent positions not including input `pos`, guaranteed in bounds"""
+    return [
+        pos.add(direction) for direction in DIRS if in_bounds(c, pos.add(direction))
+    ]
 
 
 def cardinally_adjacent_positions(c: Controller, pos: Position) -> list[Position]:
+    """Cardinally adjacent positions not including input `pos`, guaranteed in bounds"""
     return [
         pos.add(direction)
         for direction in DIRS_CARDINAL
-        if is_valid(c, pos.add(direction))
+        if in_bounds(c, pos.add(direction))
     ]
 
 
 def left_of(direction: Direction) -> Direction:
+    """Returns the direction 90 degrees anticlockwise of any direction"""
     match direction:
         case Direction.NORTH:
             return Direction.WEST
@@ -78,6 +102,7 @@ def left_of(direction: Direction) -> Direction:
 
 
 def right_of(direction: Direction) -> Direction:
+    """Returns the direction 90 degrees clockwise of any direction"""
     match direction:
         case Direction.NORTH:
             return Direction.EAST

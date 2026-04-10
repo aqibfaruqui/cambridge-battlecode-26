@@ -68,7 +68,7 @@ class Goto(Action):
     def _try_move(self, c: Controller, direction: Direction) -> TaskResult:
         new_pos = c.get_position().add(direction)
 
-        if not grid.is_valid(c, new_pos):
+        if not grid.in_bounds(c, new_pos):
             return TaskResult.FAILURE
 
         if c.can_build_road(new_pos):

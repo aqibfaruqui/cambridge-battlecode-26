@@ -16,11 +16,12 @@ class Action:
 
     def can_run(self, _: Controller) -> bool:
         """Precondition check. Called by run_actions before run().
-        Default: True. Override to assert adjacency, affordability, etc."""
-        return True
+        Default: raises exception. You must override to assert adjacency,
+        affordability, etc."""
+        raise NotImplementedError("You must implement the can_run function.")
 
     def run(self, c: Controller) -> TaskResult:
-        raise NotImplementedError
+        raise NotImplementedError("You must implement the run function.")
 
     def __str__(self) -> str:
         return self.__class__.__name__

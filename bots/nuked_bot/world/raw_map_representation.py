@@ -1,4 +1,4 @@
-from cambc import Controller, Position
+from cambc import Controller, Position, EntityType, Environment
 from enum import IntEnum
 
 
@@ -10,6 +10,13 @@ class CustomEnv(IntEnum):
     TEAM_CORE = 4
     ENEMY_CORE = 5
 
+
+_ENV_MAP = {
+    Environment.EMPTY: 0,
+    Environment.WALL: 1,
+    Environment.ORE_TITANIUM: 2,
+    Environment.ORE_AXIONITE: 3,
+}
 
 CHAR_MAP = [".", "█", "T", "A", "◎", "◉"]
 
@@ -27,6 +34,23 @@ class EnvironmentMap:
 
     def set_raw(self, x: int, y: int, v: int) -> None:
         self._array[y * self._w + x] = v
+
+    def update(self, c: Controller) -> None:
+        arr = self._array
+        w = self._w
+        get_tile_env = c.get_tile_env
+        get_tile_building_id = c.get_tile_building_id
+        get_entity_type = c.get_entity_type
+        get_team = c.get_team
+
+        for tile in c.get_nearby_tiles():
+            x, y = tile
+            idx = y * w + x
+            bid = get_tile_building_id(tile)
+            if bid is not None and get_entity_type(bid) == EntityType.CORE:
+                arr[idx] = 4 if get_team() == get_team(bid) else 5
+            else:
+                arr[idx] = _ENV_MAP[get_tile_env(tile)]
 
     def __str__(self) -> str:
         w = self._w

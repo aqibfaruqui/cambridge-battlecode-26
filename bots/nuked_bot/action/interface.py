@@ -35,6 +35,11 @@ def run_actions(
     first = True
     while actions:
         top = actions[-1]
+
+        print("Executing action stack: ")
+        for action in actions[:-1]:
+            print(f"{action}")
+
         if first and skip_can_run:
             first = False
         elif not top.can_run(c):

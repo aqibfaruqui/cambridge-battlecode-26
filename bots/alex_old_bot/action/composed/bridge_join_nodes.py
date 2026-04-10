@@ -17,6 +17,8 @@ import grid
 class BridgeJoinNodes(Action):
     """Like JoinNodes, but only builds bridges and walls around each one."""
 
+    interruptible = False
+
     def __init__(
         self,
         start_positions: list[Position],

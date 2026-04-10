@@ -256,9 +256,6 @@ class Explorer(Behaviour):
             self._set_best_block_task(c, ores[0])
 
     def check_interrupts(self, c: Controller) -> None:
-        if c.get_current_round() > 20 and self._state == ExplorerState.AXIONITE:
-            self._state = ExplorerState.TITANIUM_2
-
         if (
             self._state != ExplorerState.TITANIUM
             and self._state != ExplorerState.TITANIUM_2
@@ -298,7 +295,8 @@ class Explorer(Behaviour):
             self._set_best_harvester_task(c, ores[0])
 
     def check_transitions(self, c: Controller) -> None:
-        pass
+        if c.get_current_round() > 20 and self._state == ExplorerState.AXIONITE:
+            self._state = ExplorerState.TITANIUM_2
 
     def tick(self, c: Controller) -> None:
         self._core_pos = find_core_pos(c, self._core_pos)

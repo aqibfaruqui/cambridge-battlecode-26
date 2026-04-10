@@ -8,10 +8,11 @@ from world.tracking import find_core_pos
 
 
 class Builder:
-    def __init__(self):
+    def __init__(self, c: Controller):
         self.builder_type: Optional[BuilderType] = None
         self.behaviour: Optional[Behaviour] = None
         self._core_pos = None
+        self.c = c
 
     def run(self, c: Controller):
         self._core_pos = find_core_pos(c, self._core_pos)
@@ -29,6 +30,6 @@ class Builder:
         self.builder_type = builder_type
         match builder_type:
             case BuilderType.RANDOM_EXPLORER:
-                return explorer.Explorer()
+                return explorer.Explorer(c)
             case _:
                 raise RuntimeError(f"Builder type {builder_type.name} not implemented")

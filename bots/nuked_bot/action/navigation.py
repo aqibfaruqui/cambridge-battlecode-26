@@ -1,3 +1,4 @@
+from world.raw_map_representation import EnvironmentMap
 from typing import Optional
 
 from action.interface import Action, TaskResult
@@ -25,11 +26,13 @@ class Goto(Action):
         *,
         wait_timer: int = 0,
         timeout: int = 200,
+        env_map: EnvironmentMap | None = None,
     ):
         super().__init__()
         self.targets = targets
         self.wait_timer = wait_timer
         self.timeout = timeout
+        self.env_map = env_map
 
         self._waited = 0
         self._elapsed = 0
@@ -76,6 +79,8 @@ class Goto(Action):
 
         if c.can_move(direction):
             c.move(direction)
+            if self.env_map is not None:
+                self.env_map.update(c)
             return TaskResult.SUCCESS
 
         return TaskResult.FAILURE

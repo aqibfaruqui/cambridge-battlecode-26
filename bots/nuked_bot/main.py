@@ -28,7 +28,7 @@ class Player:
                 self.core_logic.run(c)
             case EntityType.BUILDER_BOT:
                 if self.builder_logic is None:
-                    self.builder_logic = Builder()
+                    self.builder_logic = Builder(c)
                 self.builder_logic.run(c)
             case _:
                 pass

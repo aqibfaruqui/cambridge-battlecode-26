@@ -3,33 +3,32 @@ from typing import Optional
 
 from action.interface import Action, TaskResult
 from cambc import Controller, Position, Direction
-from nav.alex_nav import AlexNav
-from nav.space_map import build_space_map
+from nav.d_star import DStarLite
 import grid
 
 
 class Goto(Action):
-    """Move a builder bot toward one of several target positions.
+    """Move a builder bot toward a target position.
 
-    Plans a path each tick via AlexNav on a 9x9 space map
+    Plans a path each tick via D* Lite on the shared EnvironmentMap
     and advances one step at a time.
 
     Args:
-        targets: Candidate destinations; the first reachable one is used.
+        target: Destination position.
         wait_timer: Max consecutive ticks to idle when no path is found.
         timeout: Hard cap on total ticks before the action fails.
     """
 
     def __init__(
         self,
-        targets: list[Position],
+        target: Position,
         *,
         wait_timer: int = 0,
         timeout: int = 200,
         env_map: EnvironmentMap | None = None,
     ):
         super().__init__()
-        self.targets = targets
+        self.target = target
         self.wait_timer = wait_timer
         self.timeout = timeout
         self.env_map = env_map
@@ -37,21 +36,38 @@ class Goto(Action):
         self._waited = 0
         self._elapsed = 0
         self._next_move: Optional[Direction] = None
-        self.planner = AlexNav()
+
+        self._planner: DStarLite | None = None
+        if env_map is not None:
+            self._planner = DStarLite(env_map, target.x, target.y)
 
     def _needs_road(self, c: Controller, pos: Position) -> bool:
         return c.get_tile_building_id(pos) is None
 
     def _plan_next_move(self, c: Controller) -> Optional[Direction]:
-        space_map = build_space_map(c)
-        for target in self.targets:
-            next_move, err = self.planner.plan(c.get_position(), target, space_map)
-            if next_move is not None and err is None:
-                return next_move
+        if self._planner is None:
+            return None
+
+        pos = c.get_position()
+        self._planner.set_position(pos.x, pos.y)
+        self._planner.notify_map_changes()
+        self._planner.plan()
+        direction = self._planner.step()
+
+        if direction is not None:
+            c.draw_indicator_line(pos, self.target, 0, 255, 0)
+            lines = self._planner.extract_path_lines()
+            for x1, y1, x2, y2 in lines:
+                c.draw_indicator_line(Position(x1, y1), Position(x2, y2), 0, 0, 255)
+            if direction == Direction.CENTRE:
+                return None
+            return direction
+
+        c.draw_indicator_line(pos, self.target, 255, 0, 0)
         return None
 
     def can_run(self, c: Controller) -> bool:
-        if c.get_position() in self.targets:
+        if c.get_position() == self.target:
             return True
 
         self._next_move = self._plan_next_move(c)
@@ -88,7 +104,7 @@ class Goto(Action):
     def run(self, c: Controller) -> TaskResult:
         self._elapsed += 1
 
-        if c.get_position() in self.targets:
+        if c.get_position() == self.target:
             return TaskResult.SUCCESS
 
         if self._elapsed > self.timeout:
@@ -105,8 +121,9 @@ class Goto(Action):
         self._next_move = None
 
         if result == TaskResult.SUCCESS:
+            self._waited = 0
             return TaskResult.INCOMPLETE
         return TaskResult.FAILURE
 
     def __str__(self) -> str:
-        return f"Goto: {self.targets}"
+        return f"Goto: {self.target}"

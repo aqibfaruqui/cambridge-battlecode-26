@@ -16,7 +16,7 @@ class Explorer(Behaviour):
         if not self.actions:
             x = random.randint(0, c.get_map_width() - 1)
             y = random.randint(0, c.get_map_height() - 1)
-            self.actions.append(Goto([Position(x, y)], env_map=self._map))
+            self.actions.append(Goto(Position(x, y), env_map=self._map))
 
     def tick(self, c: Controller) -> None:
         super().tick(c)

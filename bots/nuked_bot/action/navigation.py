@@ -1,22 +1,22 @@
-from world.raw_map_representation import EnvironmentMap
-from typing import Optional
-
 from action.interface import Action, TaskResult
-from cambc import Controller, Position, Direction
+from cambc import Controller, Direction, Position
 from nav.d_star import DStarLite
+from world.raw_map_representation import EnvironmentMap
 import grid
+from debugging import DEBUG_MODE
 
 
 class Goto(Action):
     """Move a builder bot toward a target position.
 
     Plans a path each tick via D* Lite on the shared EnvironmentMap
-    and advances one step at a time.
+    and advances one step per tick.
 
     Args:
         target: Destination position.
-        wait_timer: Max consecutive ticks to idle when no path is found.
+        wait_timer: Extra ticks tolerated while no path is available.
         timeout: Hard cap on total ticks before the action fails.
+        env_map: Shared environment map used for planning.
     """
 
     def __init__(
@@ -35,36 +35,10 @@ class Goto(Action):
 
         self._waited = 0
         self._elapsed = 0
-        self._next_move: Optional[Direction] = None
-
-        self._planner: DStarLite | None = None
-        if env_map is not None:
-            self._planner = DStarLite(env_map, target.x, target.y)
-
-    def _needs_road(self, c: Controller, pos: Position) -> bool:
-        return c.get_tile_building_id(pos) is None
-
-    def _plan_next_move(self, c: Controller) -> Optional[Direction]:
-        if self._planner is None:
-            return None
-
-        pos = c.get_position()
-        self._planner.set_position(pos.x, pos.y)
-        self._planner.notify_map_changes()
-        self._planner.plan()
-        direction = self._planner.step()
-
-        if direction is not None:
-            c.draw_indicator_line(pos, self.target, 0, 255, 0)
-            lines = self._planner.extract_path_lines()
-            for x1, y1, x2, y2 in lines:
-                c.draw_indicator_line(Position(x1, y1), Position(x2, y2), 0, 0, 255)
-            if direction == Direction.CENTRE:
-                return None
-            return direction
-
-        c.draw_indicator_line(pos, self.target, 255, 0, 0)
-        return None
+        self._next_move: Direction | None = None
+        self._planner: DStarLite | None = (
+            DStarLite(env_map, target.x, target.y) if env_map is not None else None
+        )
 
     def can_run(self, c: Controller) -> bool:
         if c.get_position() == self.target:
@@ -78,28 +52,11 @@ class Goto(Action):
         if self._next_move is None:
             return True
 
-        new_pos = c.get_position().add(self._next_move)
-        if self._needs_road(c, new_pos) and c.get_action_cooldown() != 0:
+        step_pos = c.get_position().add(self._next_move)
+        if self._needs_road(c, step_pos) and c.get_action_cooldown() != 0:
             return False
 
         return True
-
-    def _try_move(self, c: Controller, direction: Direction) -> TaskResult:
-        new_pos = c.get_position().add(direction)
-
-        if not grid.in_bounds(c, new_pos):
-            return TaskResult.FAILURE
-
-        if c.can_build_road(new_pos):
-            c.build_road(new_pos)
-
-        if c.can_move(direction):
-            c.move(direction)
-            if self.env_map is not None:
-                self.env_map.update(c)
-            return TaskResult.SUCCESS
-
-        return TaskResult.FAILURE
 
     def run(self, c: Controller) -> TaskResult:
         self._elapsed += 1
@@ -117,13 +74,55 @@ class Goto(Action):
             self._waited += 1
             return TaskResult.INCOMPLETE
 
-        result = self._try_move(c, self._next_move)
+        direction = self._next_move
         self._next_move = None
+        if not self._try_move(c, direction):
+            return TaskResult.FAILURE
 
-        if result == TaskResult.SUCCESS:
-            self._waited = 0
-            return TaskResult.INCOMPLETE
-        return TaskResult.FAILURE
+        self._waited = 0
+        return TaskResult.INCOMPLETE
+
+    def _plan_next_move(self, c: Controller) -> Direction | None:
+        planner = self._planner
+        if planner is None:
+            return None
+
+        pos = c.get_position()
+        planner.set_position(pos.x, pos.y)
+        planner.notify_map_changes()
+        planner.plan()
+
+        direction = planner.step()
+        if DEBUG_MODE:
+            if direction is None or direction == Direction.CENTRE:
+                c.draw_indicator_line(pos, self.target, 255, 0, 0)
+                return None
+
+            c.draw_indicator_line(pos, self.target, 0, 255, 0)
+
+        if DEBUG_MODE:
+            for x1, y1, x2, y2 in planner.extract_path_lines():
+                c.draw_indicator_line(Position(x1, y1), Position(x2, y2), 0, 0, 255)
+        return direction
+
+    def _try_move(self, c: Controller, direction: Direction) -> bool:
+        new_pos = c.get_position().add(direction)
+        if not grid.in_bounds(c, new_pos):
+            return False
+
+        if c.can_build_road(new_pos):
+            c.build_road(new_pos)
+
+        if not c.can_move(direction):
+            return False
+
+        c.move(direction)
+        if self.env_map is not None:
+            self.env_map.update(c)
+        return True
+
+    def _needs_road(self, c: Controller, pos: Position) -> bool:
+        return c.get_tile_building_id(pos) is None
 
     def __str__(self) -> str:
         return f"Goto: {self.target}"

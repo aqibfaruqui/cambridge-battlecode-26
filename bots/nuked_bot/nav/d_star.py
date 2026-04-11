@@ -119,7 +119,6 @@ class DStarLite:
                 best_cost = v
                 best = d
 
-        print(str(self._env))
         return best
 
     def plan(self) -> None:

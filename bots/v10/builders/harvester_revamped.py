@@ -22,10 +22,14 @@ from utils.harvester_states.seek import (
     _is_memory_passable,
     _pick_frontier_target,
     _pick_seek_target,
+    _seek_direction,
 )
 from utils.map_memory import MapMemory
+from utils.map_memory_benchmark import MapMemoryBenchmark
 from utils.movement import DIRECTIONS_4, reached_core
 from utils.pathfinding import Pathfinding
+from utils.raw_map_representation import EnvironmentMap
+from utils.d_star import DStarLite
 
 
 class HarvestState(Enum):
@@ -51,8 +55,13 @@ class Harvester:
 
         self.memory = MapMemory()
         self.memory.set_core(core_pos)
+        self.map_benchmark = MapMemoryBenchmark()
+        self.environment_map: EnvironmentMap | None = None
         self.pathfinder = Pathfinding()
         self.pathfinder.set_memory(self.memory)
+        self.seek_planner: DStarLite | None = None
+        self.seek_planner_goal: tuple[int, int] | None = None
+        self.return_planner: DStarLite | None = None
 
         self.target_pos: Position | None = None
         self.blacklisted_ores: set[tuple[int, int]] = set()
@@ -180,9 +189,9 @@ class Harvester:
                 self.target_pos = None
                 return
 
-        move_dir = self.pathfinder.next_direction(c, self.current_pos, move_target)
+        move_dir = _seek_direction(self, c, move_target)
         if move_dir is None:
-            self.target_pos = None
+            # No D* step this tick; hold and replan next tick with same target.
             return
 
         self._advance(c, move_dir)
@@ -216,7 +225,9 @@ class Harvester:
     def run(self, c: Controller):
         self.current_pos = c.get_position()
         self.ti, self.ax = c.get_global_resources()
-        self.memory.update(c)
+        if self.environment_map is None:
+            self.environment_map = EnvironmentMap(c.get_map_width(), c.get_map_height())
+        self.environment_map.update(c)
         self._check_for_foundry(c)
 
         match self.state:

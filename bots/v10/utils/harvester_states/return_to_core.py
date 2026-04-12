@@ -1,21 +1,195 @@
-from cambc import Direction, EntityType, Environment
+from cambc import Direction, EntityType, Environment, Position
 
+from utils.d_star import DStarLite, _RETURN_BLOCK_MASK
 from utils.map_memory import CORE_OWN, ORE_AX, TRAVERSABLE, UNKNOWN
 from utils.movement import (
     DIRECTIONS_4,
     get_direction_4,
-    get_direction_8,
     is_diagonal,
     reached_core,
     split_diagonal,
 )
-
-
 def _reset_return_state(self):
     """Clear temporary return execution state"""
     self.bridge_from = None
     self.return_actions.clear()
+    self.return_planner = None
     self.post_bridge_conveyor = False
+
+
+# Stale helper kept commented for quick rollback/reference.
+# def _return_direction(self) -> Direction | None:
+#     if self.environment_map is not None:
+#         planner = self.return_planner
+#         if planner is None:
+#             planner = DStarLite(
+#                 self.environment_map,
+#                 self.core_pos.x,
+#                 self.core_pos.y,
+#                 block_mask=_RETURN_BLOCK_MASK,
+#             )
+#             self.return_planner = planner
+#
+#         planner.set_position(self.current_pos.x, self.current_pos.y)
+#         planner.notify_map_changes()
+#         move_dir = planner.step()
+#         if move_dir is not None and move_dir != Direction.CENTRE:
+#             return move_dir
+#
+#     return self.current_pos.direction_to(self.core_pos)
+
+
+def _refresh_return_planner(self) -> tuple[Direction | None, list[tuple[int, int]]]:
+    planner = self.return_planner
+    if planner is None and self.environment_map is not None:
+        planner = DStarLite(
+            self.environment_map,
+            self.core_pos.x,
+            self.core_pos.y,
+            block_mask=_RETURN_BLOCK_MASK,
+        )
+        self.return_planner = planner
+
+    if planner is None:
+        return None, []
+
+    planner.set_position(self.current_pos.x, self.current_pos.y)
+    planner.notify_map_changes()
+
+    return planner.step(), planner.extract_path()
+
+
+def _planner_step_at(self, pos: Position) -> Direction | None:
+    planner = self.return_planner
+    if planner is None and self.environment_map is not None:
+        planner = DStarLite(
+            self.environment_map,
+            self.core_pos.x,
+            self.core_pos.y,
+            block_mask=_RETURN_BLOCK_MASK,
+        )
+        self.return_planner = planner
+
+    if planner is None:
+        return None
+
+    planner.set_position(pos.x, pos.y)
+    planner.notify_map_changes()
+    step = planner.step()
+    if step == Direction.CENTRE:
+        return None
+    return step
+
+
+def _ordered_split(self, origin, move_dir: Direction) -> list[Direction] | None:
+    ns, ew = split_diagonal(origin, origin.add(move_dir))
+    if ns is None or ew is None:
+        return None
+    preferred = get_direction_4(origin, self.core_pos)
+    if preferred == ew:
+        return [ew, ns]
+    return [ns, ew]
+
+
+def _choose_diagonal_split_from(self, c, origin, move_dir: Direction) -> list[Direction] | None:
+    ordered = _ordered_split(self, origin, move_dir)
+    if ordered is None:
+        return None
+
+    if c is None:
+        return ordered
+
+    options = [tuple(ordered), tuple(reversed(ordered))]
+    for first, second in options:
+        first_pos = origin.add(first)
+        if not _is_return_tile_usable(self, c, first_pos):
+            continue
+
+        if reached_core(first_pos, self.core_pos):
+            if c.can_move(first):
+                return [first]
+            continue
+
+        if not (
+            c.can_move(first)
+            or c.can_build_conveyor(first_pos, second)
+        ):
+            continue
+
+        second_pos = first_pos.add(second)
+        if not _is_return_tile_usable(self, c, second_pos):
+            continue
+
+        return [first, second]
+
+    return None
+
+
+def _resolve_next_after_move(
+    self, c, move_dir: Direction, queued_followup: list[Direction]
+) -> tuple[Direction | None, list[Direction]]:
+    move_pos = self.current_pos.add(move_dir)
+
+    if queued_followup:
+        return queued_followup[0], [move_dir, *queued_followup]
+
+    follow_dir = _planner_step_at(self, move_pos)
+    if follow_dir is None:
+        follow_dir = move_pos.direction_to(self.core_pos)
+    if follow_dir is None or follow_dir == Direction.CENTRE:
+        return None, [move_dir]
+
+    if follow_dir in DIRECTIONS_4:
+        return follow_dir, [move_dir]
+
+    split = _choose_diagonal_split_from(self, c, move_pos, follow_dir)
+    if split is None or len(split) == 0:
+        return None, [move_dir]
+    return split[0], [move_dir, *split]
+
+
+def _resolve_return_intent(
+    self, c, planner_step: Direction | None
+) -> tuple[Direction | None, Direction | None, list[Direction], Direction | None]:
+    move_dir = None
+    queued_followup: list[Direction] = []
+
+    if self.return_actions:
+        move_dir = self.return_actions[0]
+        queued_followup = self.return_actions[1:]
+    else:
+        move_dir = planner_step
+        if move_dir is None or move_dir == Direction.CENTRE:
+            move_dir = self.current_pos.direction_to(self.core_pos)
+        if move_dir is None or move_dir == Direction.CENTRE:
+            return None, None, [], None
+
+        if move_dir not in DIRECTIONS_4:
+            split = _choose_diagonal_split(self, c, move_dir)
+            if split is None:
+                return None, None, [], move_dir
+            move_dir = split[0]
+            queued_followup = split[1:]
+
+    next_move_dir, resolved_actions = _resolve_next_after_move(
+        self, c, move_dir, queued_followup
+    )
+    return move_dir, next_move_dir, resolved_actions, None
+
+
+def _connector_direction_from_planner(self, c, move_pos: Position) -> Direction | None:
+    step = _planner_step_at(self, move_pos)
+    if step is None:
+        step = move_pos.direction_to(self.core_pos)
+    if step is None or step == Direction.CENTRE:
+        return None
+    if step in DIRECTIONS_4:
+        return step
+
+    split = _choose_diagonal_split_from(self, c, move_pos, step)
+    if split is None or len(split) == 0:
+        return None
+    return split[0]
 
 
 def _is_return_tile_usable(self, c, pos) -> bool:
@@ -119,7 +293,6 @@ def _plan_blocked_return_fallback(
             return split, None
         return None, move_dir
 
-    # could make non deterministic sometimes
     diagonal_dir = self.current_pos.direction_to(self.core_pos)
     if diagonal_dir not in DIRECTIONS_4 and diagonal_dir != Direction.CENTRE:
         return None, diagonal_dir
@@ -146,7 +319,9 @@ def _build_first_connector(self, c) -> bool:
     if build_id is not None and c.get_entity_type(build_id) == EntityType.ROAD and c.can_destroy(move_pos):
         c.destroy(move_pos)
 
-    conveyor_dir = get_direction_4(move_pos, self.core_pos)
+    conveyor_dir = _connector_direction_from_planner(self, c, move_pos)
+    if conveyor_dir is None:
+        return False
 
     if c.can_build_conveyor(move_pos, conveyor_dir):
         c.build_conveyor(move_pos, conveyor_dir)
@@ -157,48 +332,41 @@ def _build_first_connector(self, c) -> bool:
             c.move(step_dir)
             return True
         return False
-
     return True
 
 
 def _build_return_step(self, c) -> bool:
     """Lay a return path using split cardinals first, then bridge fallback"""
-    if not self.return_actions:
-        move_dir = get_direction_8(self.current_pos, self.core_pos)
-        if move_dir is None:
-            return False
+    planner_step, _planner_path = _refresh_return_planner(self)
 
-        if move_dir in DIRECTIONS_4:
-            self.return_actions = [move_dir]
-        else:
-            split = _choose_diagonal_split(self, c, move_dir)
-            if split is not None:
-                self.return_actions = split
-            else:
-                return _handle_return_diagonal_step(self, c, move_dir)
+    move_dir, next_move_dir, resolved_actions, bridge_dir = _resolve_return_intent(
+        self, c, planner_step
+    )
+    if bridge_dir is not None:
+        self.return_actions.clear()
+        return _handle_return_diagonal_step(self, c, bridge_dir)
+    if move_dir is None:
+        self.return_actions.clear()
+        return False
 
-    move_dir = self.return_actions[0]
+    self.return_actions = resolved_actions
     move_pos = self.current_pos.add(move_dir)
 
-    next_move_dir = (
-        self.return_actions[1]
-        if len(self.return_actions) > 1
-        else get_direction_4(move_pos, self.core_pos)
-    )
     if next_move_dir is None:
+        self.return_actions.clear()
         return False
 
     if not _can_execute_return_step(self, c, move_dir, next_move_dir):
         fallback_actions, bridge_dir = _plan_blocked_return_fallback(self, c, move_dir)
         if fallback_actions is not None:
-            self.return_actions = fallback_actions
-            move_dir = self.return_actions[0]
-            move_pos = self.current_pos.add(move_dir)
-            next_move_dir = (
-                self.return_actions[1]
-                if len(self.return_actions) > 1
-                else get_direction_4(move_pos, self.core_pos)
+            move_dir = fallback_actions[0]
+            next_move_dir, self.return_actions = _resolve_next_after_move(
+                self, c, move_dir, fallback_actions[1:]
             )
+            move_pos = self.current_pos.add(move_dir)
+            if next_move_dir is None:
+                self.return_actions.clear()
+                return False
         elif bridge_dir is not None:
             return _handle_return_diagonal_step(self, c, bridge_dir)
         else:

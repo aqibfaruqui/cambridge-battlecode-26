@@ -1,5 +1,6 @@
-from cambc import Direction, Position
+from cambc import Direction, Environment, Position
 
+from utils.d_star import DStarLite
 from utils.map_memory import CORE_OWN, ORE_AX, ORE_TI, TRAVERSABLE, UNKNOWN
 from utils.movement import DIRECTIONS_4, _chebyshev, random_direction_4
 
@@ -134,6 +135,52 @@ def _pick_seek_target(self, pos: Position) -> tuple[Position | None, bool]:
     return _fallback_edge_target(self), False
 
 
+def _can_execute_seek_step(self, c, move_dir: Direction) -> bool:
+    next_pos = self.current_pos.add(move_dir)
+    return c.can_move(move_dir) or (
+        0 <= next_pos.x < c.get_map_width()
+        and 0 <= next_pos.y < c.get_map_height()
+        and c.get_tile_env(next_pos) == Environment.EMPTY
+        and c.can_build_road(next_pos)
+    )
+
+
+def _seek_direction(self, c, move_target: Position) -> Direction | None:
+    w = c.get_map_width()
+    h = c.get_map_height()
+    if w <= 0 or h <= 0:
+        return None
+
+    # Guard D* goal construction against out-of-bounds exploration targets.
+    if not (0 <= move_target.x < w and 0 <= move_target.y < h):
+        move_target = Position(
+            min(max(move_target.x, 0), w - 1),
+            min(max(move_target.y, 0), h - 1),
+        )
+
+    if self.environment_map is not None:
+        goal = (move_target.x, move_target.y)
+        planner = self.seek_planner
+
+        if planner is None or self.seek_planner_goal != goal:
+            planner = DStarLite(self.environment_map, move_target.x, move_target.y)
+            self.seek_planner = planner
+            self.seek_planner_goal = goal
+
+        planner.set_position(self.current_pos.x, self.current_pos.y)
+        planner.notify_map_changes()
+
+        move_dir = planner.step()
+        if (
+            move_dir is not None
+            and move_dir != Direction.CENTRE
+            and _can_execute_seek_step(self, c, move_dir)
+        ):
+            return move_dir
+
+    return None
+
+
 def _seek(self, c):
     """Explore, target titanium, and place harvesters when adjacent"""
     self._update_foundry_flag(c)
@@ -155,15 +202,15 @@ def _seek(self, c):
             return
 
         # Move to an adjacent build tile, not onto the ore itself.
-            move_target = _best_ore_approach(self, self.target_pos)
+        move_target = _best_ore_approach(self, self.target_pos)
         if move_target is None:
             self.blacklisted_ores.add((self.target_pos.x, self.target_pos.y))
             self.target_pos = None
             return
 
-    move_dir = self.pathfinder.next_direction(c, self.current_pos, move_target)
+    move_dir = _seek_direction(self, c, move_target)
     if move_dir is None:
-        self.target_pos = None
+        # No D* step this tick; hold and replan next tick with same target.
         return
 
     self._advance(c, move_dir)

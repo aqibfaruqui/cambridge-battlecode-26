@@ -78,7 +78,10 @@ def random_direction_8():
 
 
 def reached_core(current_pos: Position, core_pos: Position):
-    return current_pos.distance_squared(core_pos) <= 1
+    return (
+        abs(current_pos.x - core_pos.x) <= 1
+        and abs(current_pos.y - core_pos.y) <= 1
+    )
 
 
 def direction_from_centre(c: Controller, pos: Position):

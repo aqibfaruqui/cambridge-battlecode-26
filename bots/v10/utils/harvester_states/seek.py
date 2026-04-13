@@ -1,6 +1,6 @@
 from cambc import Direction, Environment, Position
 
-from utils.d_star import DStarLite
+from utils.d_star import DStarLite, _SEEK_BLOCK_MASK
 from utils.raw_map_representation import ORE_TITANIUM
 from utils.movement import DIRECTIONS_4, _chebyshev, random_direction_4
 
@@ -96,7 +96,7 @@ def _frontier_score(self, pos: Position, target: Position) -> float:
     if (target.y < height_mid) != (self.core_pos.y < height_mid):
         quadrant_bonus += 1
 
-    return (unknown_neighbors * 8 + ore_neighbors * 5 + quadrant_bonus * 3) - distance
+    return (unknown_neighbors * 80 + ore_neighbors * 50 + quadrant_bonus * 30) - distance
 
 
 def _pick_frontier_target(self, pos: Position) -> Position | None:
@@ -245,7 +245,7 @@ def _seek_direction(self, c, move_target: Position) -> Direction | None:
         planner = self.seek_planner
 
         if planner is None or self.seek_planner_goal != goal:
-            planner = DStarLite(self.environment_map, move_target.x, move_target.y)
+            planner = DStarLite(self.environment_map, move_target.x, move_target.y, block_mask=_SEEK_BLOCK_MASK)
             self.seek_planner = planner
             self.seek_planner_goal = goal
 

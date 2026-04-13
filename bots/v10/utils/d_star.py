@@ -38,6 +38,13 @@ _RETURN_BLOCK_MASK = (
     | (1 << _ORE_AXIONITE)
     | (1 << _ENEMY_CORE)
 )
+# Like _RETURN_BLOCK_MASK but allows UNKNOWN and ORE_AXIONITE tiles — lets
+# the seek planner route through unexplored space and axionite deposits.
+_SEEK_BLOCK_MASK = (
+    (1 << _WALL)
+    | (1 << _ORE_TITANIUM)
+    | (1 << _ENEMY_CORE)
+)
 
 
 class DStarLite:

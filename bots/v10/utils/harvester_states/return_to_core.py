@@ -445,6 +445,12 @@ def _handle_pending_return_bridge(self, c) -> bool:
         self.return_bridge_fail_counts.pop(key, None)
         return True
 
+    # If we simply can't afford the bridge yet, wait without counting a failure.
+    ti, _ = c.get_global_resources()
+    bridge_cost_ti, _ = c.get_bridge_cost()
+    if ti < bridge_cost_ti:
+        return False
+
     fails = self.return_bridge_fail_counts.get(key, 0) + 1
     self.return_bridge_fail_counts[key] = fails
     if fails >= _MAX_BRIDGE_FAILS:
@@ -475,11 +481,14 @@ def _ensure_post_bridge_conveyor(self, c) -> bool:
     if not cleared:
         return False
 
-    can_build_conveyor = (
-        c.get_tile_env(self.current_pos) == Environment.EMPTY
-        and c.can_build_conveyor(self.current_pos, conveyor_dir)
-    )
-    if can_build_conveyor:
+    tile_empty = c.get_tile_env(self.current_pos) == Environment.EMPTY
+    if tile_empty:
+        ti, _ = c.get_global_resources()
+        conveyor_cost_ti, _ = c.get_conveyor_cost()
+        if ti < conveyor_cost_ti:
+            return False
+
+    if tile_empty and c.can_build_conveyor(self.current_pos, conveyor_dir):
         c.build_conveyor(self.current_pos, conveyor_dir)
         _mark_network_reach_dirty(self)
 

@@ -14,7 +14,6 @@ from utils.harvester_states.seek import (
     _seek as _seek_state,
 )
 from utils.map_memory import MapMemory
-from utils.map_memory_benchmark import MapMemoryBenchmark
 from utils.movement import DIRECTIONS_4, reached_core
 from utils.pathfinding import Pathfinding
 from utils.raw_map_representation import EnvironmentMap
@@ -44,7 +43,6 @@ class Harvester:
 
         self.memory = MapMemory()
         self.memory.set_core(core_pos)
-        self.map_benchmark = MapMemoryBenchmark()
         self.environment_map: EnvironmentMap | None = None
         self.pathfinder = Pathfinding()
         self.pathfinder.set_memory(self.memory)

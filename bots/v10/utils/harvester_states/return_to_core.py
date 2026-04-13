@@ -1,4 +1,5 @@
 
+import sys
 from enum import Enum, auto
 
 from cambc import Direction, EntityType, Environment, Position
@@ -179,8 +180,13 @@ def _resolve_diagonal_plan(
         if _is_return_tile_usable(self, c, first_pos.add(second)):
             return _DiagonalKind.SPLIT, [first, second], None
 
-    if origin == self.current_pos and c.can_move(move_dir):
-        return _DiagonalKind.BRIDGE_NOW, None, move_dir
+    if origin == self.current_pos:
+        diag_pos = origin.add(move_dir)
+        can_reach = c.can_move(move_dir) or (
+            c.get_tile_env(diag_pos) == Environment.EMPTY and c.can_build_road(diag_pos)
+        )
+        if can_reach:
+            return _DiagonalKind.BRIDGE_NOW, None, move_dir
 
     return _DiagonalKind.NONE, None, None
 
@@ -306,7 +312,9 @@ def _build_first_connector(self, c) -> bool:
     if step is None or step == Direction.CENTRE:
         return False
     if step not in DIRECTIONS_4:
-        _, split, _ = _resolve_diagonal_plan(self, c, move_pos, step)
+        kind, split, bridge_dir = _resolve_diagonal_plan(self, c, move_pos, step)
+        if kind == _DiagonalKind.BRIDGE_NOW and bridge_dir is not None:
+            return _handle_return_diagonal_step(self, c, bridge_dir)
         if not split:
             return False
         step = split[0]

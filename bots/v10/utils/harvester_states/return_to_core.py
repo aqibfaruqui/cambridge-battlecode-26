@@ -171,13 +171,6 @@ def _ordered_split(self, origin, move_dir: Direction) -> list[Direction] | None:
     return [ns, ew]
 
 
-def _choose_diagonal_split_from(self, c, origin, move_dir: Direction) -> list[Direction] | None:
-    kind, actions, _bridge_dir = _resolve_diagonal_plan(self, c, origin, move_dir)
-    if kind != "split":
-        return None
-    return actions
-
-
 def _can_step_from_tile(self, c, origin: Position, step_dir: Direction) -> bool:
     target = origin.add(step_dir)
     if not _is_return_tile_usable(self, c, target):
@@ -399,11 +392,6 @@ def _clear_return_tile(self, c, pos) -> bool:
     return False
 
 
-def _choose_diagonal_split(self, c, move_dir: Direction) -> list[Direction] | None:
-    """Expand one diagonal return edge into a committed cardinal pair"""
-    return _choose_diagonal_split_from(self, c, self.current_pos, move_dir)
-
-
 def _can_execute_return_step(self, c, move_dir: Direction, next_move_dir: Direction | None) -> bool:
     """Check whether the next return step can be realized this turn"""
     if c.can_move(move_dir):
@@ -414,23 +402,6 @@ def _can_execute_return_step(self, c, move_dir: Direction, next_move_dir: Direct
 
     move_pos = self.current_pos.add(move_dir)
     return c.can_build_conveyor(move_pos, next_move_dir)
-
-
-def _plan_blocked_return_fallback(
-    self, c, move_dir: Direction
-) -> tuple[list[Direction] | None, Direction | None]:
-    """Prefer bridge-oriented fallback over local detours"""
-    if move_dir not in DIRECTIONS_4:
-        split = _choose_diagonal_split(self, c, move_dir)
-        if split is not None:
-            return split, None
-        return None, move_dir
-
-    diagonal_dir = self.current_pos.direction_to(self.core_pos)
-    if diagonal_dir not in DIRECTIONS_4 and diagonal_dir != Direction.CENTRE:
-        return None, diagonal_dir
-
-    return None, None
 
 
 def _build_first_connector(self, c) -> bool:
@@ -471,17 +442,36 @@ def _build_first_connector(self, c) -> bool:
 
 def _build_return_step(self, c) -> bool:
     """Lay a return path using split cardinals first, then bridge fallback"""
+    def clear_actions_and_fail() -> bool:
+        self.return_actions.clear()
+        return False
+
+    def is_core_entry_tile(pos: Position) -> bool:
+        if reached_core(pos, self.core_pos):
+            return True
+        build_id = c.get_tile_building_id(pos)
+        return build_id is not None and c.get_entity_type(build_id) == EntityType.CORE
+
+    def try_move_and_consume(move_dir: Direction, continuation_bridge_dir: Direction | None = None) -> bool:
+        if not c.can_move(move_dir):
+            return clear_actions_and_fail()
+        if self.return_actions:
+            self.return_actions.pop(0)
+        c.move(move_dir)
+        if continuation_bridge_dir is not None:
+            self.return_pending_bridge_dir = continuation_bridge_dir
+        return True
+
     planner_step, _planner_path = _refresh_return_planner(self, c)
 
     move_dir, next_move_dir, resolved_actions, bridge_dir, bridge_later_dir = _resolve_return_intent(
         self, c, planner_step, _planner_path
     )
     if bridge_dir is not None:
-        self.return_actions.clear()
+        clear_actions_and_fail()
         return _handle_return_diagonal_step(self, c, bridge_dir)
     if move_dir is None:
-        self.return_actions.clear()
-        return False
+        return clear_actions_and_fail()
 
     self.return_actions = resolved_actions
     if len(self.return_actions) >= 2:
@@ -490,8 +480,7 @@ def _build_return_step(self, c) -> bool:
 
     continuation_bridge = bridge_later_dir is not None
     if next_move_dir is None and not continuation_bridge:
-        self.return_actions.clear()
-        return False
+        return clear_actions_and_fail()
 
     if not continuation_bridge and not _can_execute_return_step(self, c, move_dir, next_move_dir):
         # Re-evaluate from current tile; allow bridge fallback when diagonal intent is blocked as split.
@@ -499,42 +488,24 @@ def _build_return_step(self, c) -> bool:
         if replan_step is not None and replan_step not in DIRECTIONS_4 and replan_step != Direction.CENTRE:
             kind, split, bridge_dir = _resolve_diagonal_plan(self, c, self.current_pos, replan_step)
             if kind == "bridge_now" and bridge_dir is not None:
-                self.return_actions.clear()
+                clear_actions_and_fail()
                 return _handle_return_diagonal_step(self, c, bridge_dir)
             if kind == "split" and split is not None and len(split) > 0:
                 move_dir = split[0]
                 next_move_dir = split[1] if len(split) > 1 else None
                 self.return_actions = split
                 if next_move_dir is None:
-                    self.return_actions.clear()
-                    return False
+                    return clear_actions_and_fail()
                 move_pos = self.current_pos.add(move_dir)
                 if not _can_execute_return_step(self, c, move_dir, next_move_dir):
-                    self.return_actions.clear()
-                    return False
+                    return clear_actions_and_fail()
             else:
-                self.return_actions.clear()
-                return False
+                return clear_actions_and_fail()
         else:
-            self.return_actions.clear()
-            return False
+            return clear_actions_and_fail()
 
-    if reached_core(move_pos, self.core_pos):
-        if c.can_move(move_dir):
-            self.return_actions.pop(0)
-            c.move(move_dir)
-            return True
-        self.return_actions.clear()
-        return False
-
-    build_id = c.get_tile_building_id(move_pos)
-    if build_id is not None and c.get_entity_type(build_id) == EntityType.CORE:
-        if c.can_move(move_dir):
-            self.return_actions.pop(0)
-            c.move(move_dir)
-            return True
-        self.return_actions.clear()
-        return False
+    if is_core_entry_tile(move_pos):
+        return try_move_and_consume(move_dir)
 
     if continuation_bridge:
         # Bridge continuation still needs the immediate step to be passable.
@@ -549,15 +520,8 @@ def _build_return_step(self, c) -> bool:
             c.build_conveyor(move_pos, next_move_dir)
             _mark_network_reach_dirty(self)
 
-    if c.can_move(move_dir):
-        self.return_actions.pop(0)
-        c.move(move_dir)
-        if continuation_bridge:
-            self.return_pending_bridge_dir = bridge_later_dir
-        return True
-
-    self.return_actions.clear()
-    return False
+    pending_bridge_dir = bridge_later_dir if continuation_bridge else None
+    return try_move_and_consume(move_dir, pending_bridge_dir)
 
 
 def _handle_pending_bridge_continuation(self, c) -> bool:

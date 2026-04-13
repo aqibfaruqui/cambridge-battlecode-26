@@ -56,6 +56,7 @@ class DStarLite:
         "_last",
         "_snapshot",
         "_block_mask",
+        "_dynamic_blocked",
     )
 
     def __init__(
@@ -88,6 +89,7 @@ class DStarLite:
         self._enqueue(self._goal)
 
         self._snapshot = bytearray(env._array)
+        self._dynamic_blocked: set[int] = set()
 
     # ---------- Public API ----------
 
@@ -118,6 +120,28 @@ class DStarLite:
             self._compute_shortest_path()
 
         return changed
+
+    def set_dynamic_blockers(self, blocked_xy: list[tuple[int, int]]) -> bool:
+        new_blocked: set[int] = set()
+        for x, y in blocked_xy:
+            if self._in_bounds(x, y):
+                new_blocked.add(self._to_idx(x, y))
+
+        if new_blocked == self._dynamic_blocked:
+            return False
+
+        changed_nodes = self._dynamic_blocked.symmetric_difference(new_blocked)
+        self._dynamic_blocked = new_blocked
+
+        for idx in changed_nodes:
+            self._recompute_rhs(idx)
+            for pred in self._pred(idx):
+                self._recompute_rhs(pred)
+
+        if changed_nodes:
+            self._compute_shortest_path()
+
+        return True
 
     def step(self) -> Direction | None:
         if self._start == self._goal:
@@ -293,6 +317,10 @@ class DStarLite:
         return (s for s, _ in self._succ(u))
 
     def _blocked(self, idx: int) -> bool:
+        if idx == self._start:
+            return False
+        if idx in self._dynamic_blocked:
+            return True
         return (self._block_mask >> self._env._array[idx]) & 1
 
     def _to_idx(self, x: int, y: int) -> int:

@@ -2,27 +2,18 @@ from enum import Enum
 
 from cambc import Controller, Direction, EntityType, Environment, Position
 from utils.board import is_ore_titanium
+# Use v2 return engine. Rollback: switch this import back to `return_to_core`.
 from utils.harvester_states.return_to_core import (
     _build_first_connector,
     _build_return_step,
-    _can_execute_return_step,
-    _choose_diagonal_split,
-    _clear_return_tile,
     _ensure_post_bridge_conveyor,
+    _harvester_attached_to_core,
+    _handle_pending_bridge_continuation,
     _handle_pending_return_bridge,
-    _handle_return_diagonal_step,
-    _is_return_tile_usable,
-    _plan_blocked_return_fallback,
     _reset_return_state,
 )
 from utils.harvester_states.seek import (
-    _best_ore_approach,
-    _fallback_edge_target,
-    _frontier_score,
-    _is_memory_passable,
-    _pick_frontier_target,
-    _pick_seek_target,
-    _seek_direction,
+    _seek as _seek_state,
 )
 from utils.map_memory import MapMemory
 from utils.map_memory_benchmark import MapMemoryBenchmark
@@ -64,11 +55,18 @@ class Harvester:
         self.return_planner: DStarLite | None = None
 
         self.target_pos: Position | None = None
+        self.seek_target_is_ore = False
         self.blacklisted_ores: set[tuple[int, int]] = set()
+        self.blacklisted_seek_targets: set[tuple[int, int]] = set()
+        self.seek_unreachable_counts: dict[tuple[int, int], int] = {}
         self.edge_cycle_index = 0
+        self.network_reach_round = -1
+        self.network_reach_dirty = True
+        self.reachable_to_core: set[tuple[int, int]] | None = None
         self.harvester_pos: Position | None = None
         self.just_placed = False
         self.bridge_from: Position | None = None
+        self.return_pending_bridge_dir: Direction | None = None
         self.return_actions: list[Direction] = []
         self.post_bridge_conveyor = False
 
@@ -141,6 +139,7 @@ class Harvester:
             self.titanium_found = True
             self.blacklisted_ores.discard((ore_pos.x, ore_pos.y))
             self.target_pos = None
+            self.seek_target_is_ore = False
             self.harvester_pos = ore_pos
             self.just_placed = True
             _reset_return_state(self)
@@ -162,54 +161,38 @@ class Harvester:
             c.draw_indicator_line(self.current_pos, self.target_pos, r, g, b)
         elif self.state == HarvestState.RETURN and self.current_pos != self.core_pos:
             c.draw_indicator_line(self.current_pos, self.core_pos, 255, 255, 0)
+
     def _seek(self, c: Controller):
-        """Explore, target titanium, and place harvesters when adjacent"""
-        self._update_foundry_flag(c)
-
-        if self._try_build_harvester(c):
-            self.state = HarvestState.RETURN
-            return
-
-        self.target_pos, is_ore_target = _pick_seek_target(self, self.current_pos)
-        if self.target_pos is None:
-            return
-
-        move_target = self.target_pos
-        if is_ore_target:
-            # Drop ores that are already claimed when they come into vision.
-            if c.is_in_vision(self.target_pos) and not self._is_valid_titanium_target(c, self.target_pos):
-                self.blacklisted_ores.add((self.target_pos.x, self.target_pos.y))
-                self.target_pos = None
-                return
-
-            # Move to an adjacent build tile, not onto the ore itself.
-            move_target = _best_ore_approach(self, self.target_pos)
-            if move_target is None:
-                self.blacklisted_ores.add((self.target_pos.x, self.target_pos.y))
-                self.target_pos = None
-                return
-
-        move_dir = _seek_direction(self, c, move_target)
-        if move_dir is None:
-            # No D* step this tick; hold and replan next tick with same target.
-            return
-
-        self._advance(c, move_dir)
+        _seek_state(self, c)
 
     def _return(self, c: Controller):
         """Lay conveyors back to the core"""
         self._update_foundry_flag(c)
+
+        # If we're already on/adjacent to core, RETURN is complete.
+        if reached_core(self.current_pos, self.core_pos):
+            self.state = HarvestState.SEEK
+            self.target_pos = None
+            self.seek_target_is_ore = False
+            self.harvester_pos = None
+            _reset_return_state(self)
+            return
 
         if self.just_placed:
             if _build_first_connector(self, c):
                 self.just_placed = False
             return
 
-        if reached_core(self.current_pos, self.core_pos):
+        if _harvester_attached_to_core(self, c):
             self.state = HarvestState.SEEK
             self.target_pos = None
+            self.seek_target_is_ore = False
             self.harvester_pos = None
             _reset_return_state(self)
+            return
+
+        if self.return_pending_bridge_dir is not None:
+            _handle_pending_bridge_continuation(self, c)
             return
 
         if self.bridge_from is not None:

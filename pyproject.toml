@@ -9,6 +9,7 @@ dependencies = [
     "cambc==1.7.0",
     "numpy>=2.4.4",
     "pre-commit>=4.5.1",
+    "pyright>=1.1.408",
     "python-dotenv>=1.2.2",
     "voyageai>=0.3.7",
 ]

@@ -2,6 +2,7 @@ from enum import Enum
 
 from cambc import Controller, Direction, EntityType, Environment, Position
 from utils.board import is_ore_titanium
+
 # Use v2 return engine. Rollback: switch this import back to `return_to_core`.
 from utils.harvester_states.return_to_core import (
     _build_first_connector,
@@ -16,7 +17,6 @@ from utils.harvester_states.seek import (
     _seek as _seek_state,
 )
 from utils.map_memory import MapMemory
-from utils.map_memory_benchmark import MapMemoryBenchmark
 from utils.movement import DIRECTIONS_4, reached_core
 from utils.pathfinding import Pathfinding
 from utils.raw_map_representation import EnvironmentMap
@@ -34,7 +34,7 @@ class Harvester:
     def __init__(self, core_pos: Position):
         self.state = HarvestState.SEEK
         self.core_pos = core_pos
-        self.current_pos = None
+        self.current_pos = Position(0, 0)
 
         self.ti = 0
         self.ax = 0
@@ -46,7 +46,6 @@ class Harvester:
 
         self.memory = MapMemory()
         self.memory.set_core(core_pos)
-        self.map_benchmark = MapMemoryBenchmark()
         self.environment_map: EnvironmentMap | None = None
         self.pathfinder = Pathfinding()
         self.pathfinder.set_memory(self.memory)

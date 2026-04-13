@@ -27,6 +27,10 @@ class Builder:
                     and c.get_team(eid) == c.get_team()
                 ):
                     self.core_pos = c.get_position(eid)
+                    break
+
+        if self.core_pos is None:
+            raise RuntimeError("Should've known where core was")
 
         if self.role is None:
             spawn_dir = self.core_pos.direction_to(c.get_position())

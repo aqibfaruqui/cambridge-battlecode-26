@@ -2,13 +2,11 @@ from enum import Enum
 
 from cambc import Controller, Direction, EntityType, Environment, Position
 from utils.board import is_ore_titanium
-# Use v2 return engine. Rollback: switch this import back to `return_to_core`.
 from utils.harvester_states.return_to_core import (
     _build_first_connector,
     _build_return_step,
     _ensure_post_bridge_conveyor,
     _harvester_attached_to_core,
-    _handle_pending_bridge_continuation,
     _handle_pending_return_bridge,
     _reset_return_state,
 )
@@ -66,8 +64,7 @@ class Harvester:
         self.harvester_pos: Position | None = None
         self.just_placed = False
         self.bridge_from: Position | None = None
-        self.return_pending_bridge_dir: Direction | None = None
-        self.return_actions: list[Direction] = []
+        self.return_next_dir: Direction | None = None
         self.post_bridge_conveyor = False
 
     # Foundry Logic
@@ -189,10 +186,6 @@ class Harvester:
             self.seek_target_is_ore = False
             self.harvester_pos = None
             _reset_return_state(self)
-            return
-
-        if self.return_pending_bridge_dir is not None:
-            _handle_pending_bridge_continuation(self, c)
             return
 
         if self.bridge_from is not None:

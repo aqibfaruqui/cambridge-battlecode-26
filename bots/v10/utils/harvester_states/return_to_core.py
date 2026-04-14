@@ -134,13 +134,14 @@ def _ensure_return_planner(self: Harvester, c):
     return planner
 
 
-def _refresh_return_planner(self: Harvester, c) -> tuple[Direction | None, list[tuple[int, int]]]:
+def _refresh_return_planner(self: Harvester, c: Controller) -> tuple[Direction | None, list[tuple[int, int]]]:
     planner = _ensure_return_planner(self, c)
     if planner is None:
         return None, []
     planner.set_position(self.current_pos.x, self.current_pos.y)
     step = planner.step()
     path = planner.extract_path()
+
     return step, path
 
 

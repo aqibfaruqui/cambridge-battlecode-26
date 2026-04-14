@@ -359,14 +359,25 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
         end = Position(x2, y2)
 
         build_id = c.get_tile_building_id(start)
+        entity_type = (
+            c.get_entity_type(build_id) if build_id is not None else None
+        )
         already_friendly_bridge = (
             build_id is not None
-            and c.get_entity_type(build_id) == EntityType.BRIDGE
+            and entity_type == EntityType.BRIDGE
             and c.get_team(build_id) == c.get_team()
         )
 
         if not already_friendly_bridge:
-            if c.can_destroy(start):
+            # Only clear a road — keep any friendly conveyor/splitter/bridge
+            # in place; if `can_build_bridge` is False afterwards we bail out
+            # rather than destroying logistics we already paid for.
+            if (
+                entity_type == EntityType.ROAD
+                and build_id is not None
+                and c.get_team(build_id) == c.get_team()
+                and c.can_destroy(start)
+            ):
                 c.destroy(start)
                 _mark_network_reach_dirty(self)
             if not c.can_build_bridge(start, end):

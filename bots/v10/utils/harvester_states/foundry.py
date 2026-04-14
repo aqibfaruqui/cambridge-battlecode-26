@@ -77,6 +77,7 @@ def _placing_foundry(self: Harvester, c: Controller) -> None:
         on_core_border(move_pos, self.core_pos)
         and not self.splitter_for_foundry
         and not is_tile_splitter(c, move_pos)
+        and not is_tile_foundry(c, move_pos)
         and (c.get_tile_building_id(move_pos) is None or c.can_destroy(move_pos))
         and self.ti >= cost_s
     ):
@@ -90,6 +91,7 @@ def _placing_foundry(self: Harvester, c: Controller) -> None:
         on_core_border(foundry_pos, self.core_pos)
         and self.splitter_for_foundry
         and not is_tile_foundry(c, foundry_pos)
+        and not is_tile_splitter(c, foundry_pos)
         and (c.get_tile_building_id(foundry_pos) is None or c.can_destroy(foundry_pos))
         and self.ti >= cost_f
     ):

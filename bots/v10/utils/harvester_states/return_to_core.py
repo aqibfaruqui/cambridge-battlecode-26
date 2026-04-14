@@ -471,8 +471,11 @@ def _ensure_post_bridge_conveyor(self, c) -> bool:
         return True
 
     conveyor_dir = _planner_step_at(self, c, self.current_pos)
-    if conveyor_dir is None or conveyor_dir not in DIRECTIONS_4:
+    if conveyor_dir is None or conveyor_dir == Direction.CENTRE:
         conveyor_dir = get_direction_4(self.current_pos, self.core_pos)
+    elif conveyor_dir not in DIRECTIONS_4:
+        _, split, _ = _resolve_diagonal_plan(self, c, self.current_pos, conveyor_dir)
+        conveyor_dir = split[0] if split else get_direction_4(self.current_pos, self.core_pos)
     if conveyor_dir is None:
         self.post_bridge_conveyor = False
         return False

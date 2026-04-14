@@ -320,6 +320,10 @@ def _build_first_connector(self, c) -> bool:
         step = split[0]
     conveyor_dir = step
 
+    if c.get_tile_building_id(move_pos) is None:
+        conveyor_cost_ti, _ = c.get_conveyor_cost()
+        if self.ti < conveyor_cost_ti:
+            return False
     if c.can_build_conveyor(move_pos, conveyor_dir):
         c.build_conveyor(move_pos, conveyor_dir)
         _mark_network_reach_dirty(self)
@@ -380,9 +384,14 @@ def _build_return_step(self, c) -> bool:
     if not _clear_return_tile(self, c, move_pos):
         return False
     dest_empty = c.get_tile_env(move_pos) == Environment.EMPTY
-    if next_dir is not None and c.can_build_conveyor(move_pos, next_dir):
-        c.build_conveyor(move_pos, next_dir)
-        _mark_network_reach_dirty(self)
+    if next_dir is not None:
+        if dest_empty:
+            conveyor_cost_ti, _ = c.get_conveyor_cost()
+            if self.ti < conveyor_cost_ti:
+                return False
+        if c.can_build_conveyor(move_pos, next_dir):
+            c.build_conveyor(move_pos, next_dir)
+            _mark_network_reach_dirty(self)
     elif dest_empty and c.can_build_road(move_pos):
         c.build_road(move_pos)
     if not c.can_move(move_dir):

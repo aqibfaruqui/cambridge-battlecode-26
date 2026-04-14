@@ -1,26 +1,25 @@
 from cambc import Controller
-from utils.movement import (
-    DIRECTIONS_4,
-    direction_to_centre,
-)
+from builders.builder import BuilderType
 
 
 class Core:
     def __init__(self):
         self.builders_spawned = 0
-        self.builders_max = 5
+        self.spawn_plan = [
+            BuilderType.HARVESTER,
+            BuilderType.HARVESTER,
+            BuilderType.HARVESTER,
+            BuilderType.ATTACKER,
+            BuilderType.HEALER,
+        ]
 
     def run(self, c: Controller):
-        if self.builders_spawned < self.builders_max:
-            core_pos = c.get_position()
-            if self.builders_spawned < 3:
-                spawn_dir = DIRECTIONS_4[self.builders_spawned % 4]  # HARVESTER
-            else:
-                spawn_dir = direction_to_centre(c, core_pos)  # ATTACKER
-                if spawn_dir in DIRECTIONS_4:
-                    spawn_dir = spawn_dir.rotate_right()
+        if self.builders_spawned >= len(self.spawn_plan):
+            return
 
-            spawn_pos = core_pos.add(spawn_dir)
-            if c.can_spawn(spawn_pos):
-                c.spawn_builder(spawn_pos)
-                self.builders_spawned += 1
+        core_pos = c.get_position()
+        builder_type = self.spawn_plan[self.builders_spawned]
+        spawn_pos = builder_type.position_from_core(core_pos)
+        if c.can_spawn(spawn_pos):
+            c.spawn_builder(spawn_pos)
+            self.builders_spawned += 1

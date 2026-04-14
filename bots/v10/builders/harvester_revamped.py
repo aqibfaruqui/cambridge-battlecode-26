@@ -1,7 +1,8 @@
 from enum import Enum
 
 from cambc import Controller, Direction, EntityType, Environment, Position
-from utils.board import is_ore_titanium
+from utils.board import is_ore_axionite, is_ore_titanium
+from utils.harvester_states.foundry import _placing_foundry as _foundry_state
 from utils.harvester_states.return_to_core import (
     _build_first_connector,
     _build_return_step,
@@ -25,6 +26,7 @@ class HarvestState(Enum):
 
     SEEK = "seek"
     RETURN = "return"
+    PLACING_FOUNDRY = "placing_foundry"
 
 
 class Harvester:
@@ -39,7 +41,9 @@ class Harvester:
         self.titanium_found = False
         self.axionite_found = False
         self.foundry_prev_placed = False
-        self.foundry_ready = False
+        self.foundry_curr_placed = False
+        self.splitter_for_foundry = False
+        self.foundry_placed_round: int = -1
 
         self.memory = MapMemory()
         self.memory.set_core(core_pos)
@@ -66,8 +70,6 @@ class Harvester:
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
 
-    # Foundry Logic
-    # Hasn't been implemented yet (worked for conveyors outward but not tested with return)
     def _check_for_foundry(self, c: Controller):
         """Identify if another builder has built a foundry"""
         new_cost_scale = c.get_scale_percent()
@@ -83,11 +85,6 @@ class Harvester:
             and self.ti >= foundry_cost
             and not self.foundry_prev_placed
         )
-
-    def _update_foundry_flag(self, c: Controller):
-        # Just a temporary flag to trigger the foundry, just to show its not implemented yet
-        if self._can_trigger_foundry(c):
-            self.foundry_ready = True
 
     def _clear_if_road(self, c: Controller, pos: Position):
         """Safely clear road tiles"""
@@ -120,8 +117,25 @@ class Harvester:
             return True
         return c.get_entity_type(build_id) != EntityType.HARVESTER
 
+    def _is_valid_axionite_target(self, c: Controller, ore_pos: Position) -> bool:
+        if not is_ore_axionite(c, ore_pos):
+            return False
+
+        build_id = c.get_tile_building_id(ore_pos)
+        if build_id is None:
+            return True
+        return c.get_entity_type(build_id) != EntityType.HARVESTER
+
+    def _is_valid_ore_target(self, c: Controller, ore_pos: Position) -> bool:
+        return self._is_valid_titanium_target(c, ore_pos) or (
+            self.titanium_found
+            and not self.axionite_found
+            and not self.foundry_prev_placed
+            and self._is_valid_axionite_target(c, ore_pos)
+        )
+
     def _try_build_harvester(self, c: Controller) -> bool:
-        """Check cardinal directions and place a titanium harvester"""
+        """Check cardinal directions and place a harvester (titanium first, then axionite)"""
         for direction in DIRECTIONS_4:
             ore_pos = self.current_pos.add(direction)
             if not self._is_valid_titanium_target(c, ore_pos):
@@ -142,6 +156,30 @@ class Harvester:
             self.state = HarvestState.RETURN
             return True
 
+        for direction in DIRECTIONS_4:
+            ore_pos = self.current_pos.add(direction)
+            if not (
+                self.titanium_found
+                and not self.axionite_found
+                and not self.foundry_prev_placed
+                and self._is_valid_axionite_target(c, ore_pos)
+            ):
+                continue
+
+            self._clear_if_road(c, ore_pos)
+            if not c.can_build_harvester(ore_pos):
+                continue
+
+            c.build_harvester(ore_pos)
+            self.axionite_found = True
+            self.target_pos = None
+            self.seek_target_is_ore = False
+            self.harvester_pos = ore_pos
+            self.just_placed = True
+            _reset_return_state(self)
+            self.state = HarvestState.RETURN
+            return True
+
         return False
 
     def _draw_debug(self, c: Controller):
@@ -149,6 +187,7 @@ class Harvester:
         state_colors = {
             HarvestState.SEEK: (0, 0, 255),
             HarvestState.RETURN: (255, 165, 0),
+            HarvestState.PLACING_FOUNDRY: (255, 255, 0),
         }
         r, g, b = state_colors.get(self.state, (255, 255, 255))
         c.draw_indicator_dot(self.current_pos, r, g, b)
@@ -158,16 +197,17 @@ class Harvester:
         elif self.state == HarvestState.RETURN and self.current_pos != self.core_pos:
             c.draw_indicator_line(self.current_pos, self.core_pos, 255, 255, 0)
 
+    def _placing_foundry(self, c: Controller):
+        _foundry_state(self, c)
+
     def _seek(self, c: Controller):
         _seek_state(self, c)
 
     def _return(self, c: Controller):
         """Lay conveyors back to the core"""
-        self._update_foundry_flag(c)
-
         # If we're already on/adjacent to core, RETURN is complete.
         if reached_core(self.current_pos, self.core_pos):
-            self.state = HarvestState.SEEK
+            self.state = HarvestState.PLACING_FOUNDRY if self._can_trigger_foundry(c) else HarvestState.SEEK
             self.target_pos = None
             self.seek_target_is_ore = False
             self.harvester_pos = None
@@ -180,7 +220,7 @@ class Harvester:
             return
 
         if _harvester_attached_to_core(self, c):
-            self.state = HarvestState.SEEK
+            self.state = HarvestState.PLACING_FOUNDRY if self._can_trigger_foundry(c) else HarvestState.SEEK
             self.target_pos = None
             self.seek_target_is_ore = False
             self.harvester_pos = None
@@ -210,5 +250,7 @@ class Harvester:
                 self._seek(c)
             case HarvestState.RETURN:
                 self._return(c)
+            case HarvestState.PLACING_FOUNDRY:
+                self._placing_foundry(c)
 
         self._draw_debug(c)

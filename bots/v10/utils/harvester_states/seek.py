@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 from cambc import Direction, Environment, Position, Controller
 
 from utils.d_star import DStarLite, _SEEK_BLOCK_MASK
-from utils.raw_map_representation import ORE_TITANIUM
+from utils.raw_map_representation import ORE_AXIONITE, ORE_TITANIUM
 from utils.movement import DIRECTIONS_4, _chebyshev, random_direction_4
 
 if TYPE_CHECKING:
@@ -201,6 +201,19 @@ def _pick_seek_target(self: Harvester, pos: Position) -> tuple[Position | None, 
             self.blacklisted_ores.add(key)
             blocked.add(key)
 
+    # If we have titanium and haven't found axionite, try to find a known axionite.
+    if self.titanium_found and not self.axionite_found and not self.foundry_prev_placed:
+        blocked_ax = set(self.blacklisted_ores) | set(self.blacklisted_seek_targets)
+        while True:
+            known_ax = env.nearest_known_axionite(pos, blocked_ax)
+            if known_ax is None:
+                break
+            if _best_ore_approach(self, known_ax, pos) is not None:
+                return known_ax, True
+            key = (known_ax.x, known_ax.y)
+            self.blacklisted_ores.add(key)
+            blocked_ax.add(key)
+
     frontier = _pick_frontier_target(self, pos)
     if frontier is not None:
         return frontier, False
@@ -215,7 +228,7 @@ def _target_still_viable(self: Harvester, target: Position, is_ore_target: bool)
     if not env.in_bounds(target.x, target.y):
         return False
     if is_ore_target:
-        return env.tile(target.x, target.y) == ORE_TITANIUM
+        return env.tile(target.x, target.y) in (ORE_TITANIUM, ORE_AXIONITE)
     # Frontier exploration targets expire once reached or once fully revealed.
     if target == self.current_pos:
         return False
@@ -274,8 +287,7 @@ def _seek_direction(self: Harvester, c: Controller, move_target: Position) -> Di
 
 
 def _seek(self: Harvester, c: Controller):
-    """Explore, target titanium, and place harvesters when adjacent"""
-    self._update_foundry_flag(c)
+    """Explore, target ore, and place harvesters when adjacent"""
     _ensure_seek_blacklists(self)
 
     if self._try_build_harvester(c):
@@ -291,7 +303,7 @@ def _seek(self: Harvester, c: Controller):
     is_ore_target = self.seek_target_is_ore
     if is_ore_target:
         # Drop ores that are already claimed when they come into vision.
-        if c.is_in_vision(self.target_pos) and not self._is_valid_titanium_target(c, self.target_pos):
+        if c.is_in_vision(self.target_pos) and not self._is_valid_ore_target(c, self.target_pos):
             self.blacklisted_ores.add((self.target_pos.x, self.target_pos.y))
             self.target_pos = None
             self.seek_target_is_ore = False

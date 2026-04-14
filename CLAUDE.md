@@ -23,7 +23,7 @@ All maps and replays conform to the Protobuf in `cambc.proto`.
 
 # RAG Documentation Tool
 
-A retrieval-augmented generation tool for querying the game docs in `docs/`. Uses VoyageAI embeddings and Claude to answer questions. Requires `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY` in `.env`. Always prefer this tool if available to reading documentation manually.
+A retrieval-augmented generation tool for querying the game docs in `docs/`. Requires `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY` in `.env`. Always prefer this tool if available to reading documentation manually. Do not make assumptions on game rules, query the documentation instead.
 
 Rebuild the index after docs change:
 ```sh

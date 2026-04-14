@@ -100,6 +100,7 @@ def _reset_return_state(self: Harvester):
     self.return_planner = None
     self.post_bridge_conveyor = False
     self.return_bridge_fail_counts = {}
+    self.shortcut_target = None
 
 
 def _return_dynamic_blockers(c: Controller) -> list[tuple[int, int]]:
@@ -350,6 +351,36 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
     planner_step, planner_path = _refresh_return_planner(self, c)
     carry_next: Direction | None = None
 
+    shortcut = _shortcut_path(planner_path)
+    if shortcut is not None:
+        x1, y1 = shortcut[1][0]
+        start = Position(x1, y1)
+        x2, y2 = shortcut[1][1]
+        end = Position(x2, y2)
+
+        build_id = c.get_tile_building_id(start)
+        already_friendly_bridge = (
+            build_id is not None
+            and c.get_entity_type(build_id) == EntityType.BRIDGE
+            and c.get_team(build_id) == c.get_team()
+        )
+
+        if not already_friendly_bridge:
+            if c.can_destroy(start):
+                c.destroy(start)
+                _mark_network_reach_dirty(self)
+            if not c.can_build_bridge(start, end):
+                return False
+            c.build_bridge(start, end)
+            _mark_network_reach_dirty(self)
+
+        # Hand the walk phase over to `_handle_shortcut_walk`, dispatched from
+        # `_return` each subsequent tick until we reach `end`. No more bridge
+        # building happens during the walk — just move + pave-road-if-stuck.
+        self.shortcut_target = end
+        _step_to_shortcut_target(self, c)
+        return True
+
     # Determine move_dir — consume carry-forward from previous split, or plan fresh.
     if self.return_next_dir is not None:
         move_dir = self.return_next_dir
@@ -515,3 +546,87 @@ def _ensure_post_bridge_conveyor(self: Harvester, c: Controller) -> bool:
 
     self.post_bridge_conveyor = False
     return True
+
+def _try_shortcut_step(self: Harvester, c: Controller, move_dir: Direction) -> bool:
+    """Move one tile in `move_dir`, paving an empty tile with a road if needed."""
+    if c.can_move(move_dir):
+        c.move(move_dir)
+        return True
+    step_pos = self.current_pos.add(move_dir)
+    if c.get_tile_env(step_pos) == Environment.EMPTY and c.can_build_road(step_pos):
+        c.build_road(step_pos)
+        if c.can_move(move_dir):
+            c.move(move_dir)
+            return True
+    return False
+
+
+def _step_to_shortcut_target(self: Harvester, c: Controller) -> bool:
+    """Walk one step toward `shortcut_target` without building conveyors.
+
+    Follows the return planner's next step rather than `direction_to(target)`
+    — the shortcut is selected precisely because the direct path to `end`
+    winds around walls, so direction_to would happily point through the wall
+    the bridge spans. The planner's _RETURN_BLOCK_MASK excludes walls/ores,
+    so each planner step is onto a tile that's already walkable or paveable.
+
+    Stays put on a blocked tick rather than clearing `shortcut_target` — the
+    bridge is already paid for, so retrying next tick avoids re-entering
+    `_shortcut_path` with a fresh bridge build.
+    """
+    if self.shortcut_target is None:
+        return False
+
+    move_dir = _planner_step_at(self, c, self.current_pos)
+    if move_dir is None or move_dir == Direction.CENTRE:
+        move_dir = self.current_pos.direction_to(self.shortcut_target)
+    if move_dir == Direction.CENTRE:
+        return False
+
+    if _try_shortcut_step(self, c, move_dir):
+        return True
+
+    if move_dir not in DIRECTIONS_4:
+        ns, ew = split_diagonal(self.current_pos, self.current_pos.add(move_dir))
+        for candidate in (ns, ew):
+            if candidate is not None and _try_shortcut_step(self, c, candidate):
+                return True
+
+    return False
+
+
+def _handle_shortcut_walk(self: Harvester, c: Controller) -> bool:
+    """Dispatched from `_return` while `shortcut_target` is set.
+
+    On arrival, drop the receiving conveyor at the bridge target so the bridge
+    output has something to feed into, then let the normal flow resume next
+    tick. Otherwise, take one step toward the target (paving a road on an
+    empty blocked tile if needed). Never builds a bridge.
+    """
+    if self.shortcut_target is None:
+        return False
+
+    if self.current_pos == self.shortcut_target:
+        self.shortcut_target = None
+        self.post_bridge_conveyor = True
+        return _ensure_post_bridge_conveyor(self, c)
+
+    return _step_to_shortcut_target(self, c)
+
+
+def _shortcut_path(path: list[tuple[int, int]], threshold: int = 5) -> tuple[Position, list[tuple[int, int]]] | None:
+    if len(path) < 5:
+        return None
+
+    x1, y1 = path[0]
+    best = -1
+    for i in range(len(path) - 1, 0, -1):
+        x2, y2 = path[i]
+        if (x1 - x2) ** 2 + (y1 - y2) ** 2 <= 9:
+            best = i
+            break
+
+    if best == -1 or best < threshold:
+        return None
+
+    return Position(x1, y1), path[:1] + path[best:]

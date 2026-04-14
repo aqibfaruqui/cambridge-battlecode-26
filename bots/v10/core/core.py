@@ -8,7 +8,7 @@ from utils.movement import (
 class Core:
     def __init__(self):
         self.builders_spawned = 0
-        self.builders_max = 5
+        self.builders_max = 3
 
     def run(self, c: Controller):
         if self.builders_spawned < self.builders_max:

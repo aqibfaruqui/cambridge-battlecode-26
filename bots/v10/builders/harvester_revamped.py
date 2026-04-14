@@ -7,6 +7,7 @@ from utils.harvester_states.return_to_core import (
     _build_first_connector,
     _build_return_step,
     _ensure_post_bridge_conveyor,
+    _handle_shortcut_walk,
     _harvester_attached_to_core,
     _handle_pending_return_bridge,
     _reset_return_state,
@@ -69,6 +70,7 @@ class Harvester:
         self.return_next_dir: Direction | None = None
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
+        self.shortcut_target: Position | None = None
 
     def _check_for_foundry(self, c: Controller):
         """Identify if another builder has built a foundry"""
@@ -233,6 +235,10 @@ class Harvester:
 
         if self.post_bridge_conveyor:
             _ensure_post_bridge_conveyor(self, c)
+            return
+
+        if self.shortcut_target is not None:
+            _handle_shortcut_walk(self, c)
             return
 
         _build_return_step(self, c)

@@ -1,6 +1,6 @@
 from enum import Enum
 from cambc import Controller, EntityType
-from builders.harvester import Harvester
+from builders.harvester_revamped import Harvester
 from builders.attacker import Attacker
 from utils.movement import (
     DIRECTIONS_4,
@@ -27,6 +27,9 @@ class Builder:
                     and c.get_team(eid) == c.get_team()
                 ):
                     self.core_pos = c.get_position(eid)
+
+        if self.core_pos is None:
+            raise ValueError("Expected core pos to be non-null")
 
         if self.role is None:
             spawn_dir = self.core_pos.direction_to(c.get_position())

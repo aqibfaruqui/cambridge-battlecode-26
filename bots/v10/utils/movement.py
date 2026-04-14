@@ -39,7 +39,7 @@ def _chebyshev(a: Position, b: Position):
     return max(abs(a.x - b.x), abs(a.y - b.y))
 
 
-def get_direction_4(current: Position, target: Position):
+def get_direction_4(current: Position, target: Position) -> Direction:
     best_dir = None
     best_dist = float("inf")
 
@@ -50,6 +50,9 @@ def get_direction_4(current: Position, target: Position):
         if dist < best_dist:
             best_dist = dist
             best_dir = d
+
+    if best_dir is None:
+        raise ValueError("get_direction_4 returned None, impossible")
 
     return best_dir
 
@@ -216,7 +219,7 @@ def bug_nav(
             follow_state["obstacle_pos"] = current.add(right.rotate_left())
 
     for can_rotate in (True, False):
-        direction = current.direction_to(follow_state["obstacle_pos"])
+        direction = current.direction_to(follow_state["obstacle_pos"]) # type: ignore
         for _ in range(8):
             direction = (
                 direction.rotate_left()

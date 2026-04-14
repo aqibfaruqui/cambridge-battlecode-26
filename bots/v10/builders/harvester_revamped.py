@@ -31,7 +31,7 @@ class Harvester:
     def __init__(self, core_pos: Position):
         self.state = HarvestState.SEEK
         self.core_pos = core_pos
-        self.current_pos = None
+        self.current_pos = Position(0, 0)
 
         self.ti = 0
         self.ax = 0
@@ -64,6 +64,7 @@ class Harvester:
         self.bridge_from: Position | None = None
         self.return_next_dir: Direction | None = None
         self.post_bridge_conveyor = False
+        self.return_bridge_fail_counts = {}
 
     # Foundry Logic
     # Hasn't been implemented yet (worked for conveyors outward but not tested with return)

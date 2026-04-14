@@ -1,8 +1,9 @@
 
-import sys
+from __future__ import annotations
 from enum import Enum, auto
+from typing import TYPE_CHECKING
 
-from cambc import Direction, EntityType, Environment, Position
+from cambc import Direction, EntityType, Environment, Position, Controller
 
 from utils.d_star import DStarLite, _RETURN_BLOCK_MASK
 from utils.map_memory import CORE_OWN, ORE_AX, TRAVERSABLE, UNKNOWN
@@ -16,6 +17,9 @@ from utils.movement import (
 )
 from utils.network_connectivity import compute_reachable_to_core
 
+if TYPE_CHECKING:
+    from builders.harvester_revamped import Harvester
+
 
 class _DiagonalKind(Enum):
     NONE = auto()
@@ -26,11 +30,11 @@ class _DiagonalKind(Enum):
 _MAX_BRIDGE_FAILS = 3
 
 
-def _mark_network_reach_dirty(self) -> None:
+def _mark_network_reach_dirty(self: Harvester) -> None:
     self.network_reach_dirty = True
 
 
-def _reachable_to_core(self, c) -> set[tuple[int, int]]:
+def _reachable_to_core(self: Harvester, c) -> set[tuple[int, int]]:
     current_round = c.get_current_round()
     if (
         self.reachable_to_core is None
@@ -43,7 +47,7 @@ def _reachable_to_core(self, c) -> set[tuple[int, int]]:
     return self.reachable_to_core
 
 
-def _receiver_accepts_from(self, c, source_pos: Position, receiver_pos: Position, receiver_id: int) -> bool:
+def _receiver_accepts_from(self: Harvester, c, source_pos: Position, receiver_pos: Position, receiver_id: int) -> bool:
     if c.get_team(receiver_id) != c.get_team():
         return False
 
@@ -65,7 +69,7 @@ def _receiver_accepts_from(self, c, source_pos: Position, receiver_pos: Position
     return False
 
 
-def _harvester_attached_to_core(self, c) -> bool:
+def _harvester_attached_to_core(self: Harvester, c) -> bool:
     if self.harvester_pos is None:
         return False
 
@@ -90,7 +94,7 @@ def _harvester_attached_to_core(self, c) -> bool:
 
 
 
-def _reset_return_state(self):
+def _reset_return_state(self: Harvester):
     self.bridge_from = None
     self.return_next_dir = None
     self.return_planner = None
@@ -98,7 +102,7 @@ def _reset_return_state(self):
     self.return_bridge_fail_counts = {}
 
 
-def _return_dynamic_blockers(c) -> list[tuple[int, int]]:
+def _return_dynamic_blockers(c: Controller) -> list[tuple[int, int]]:
     blockers: list[tuple[int, int]] = []
     team = c.get_team()
     for pos in c.get_nearby_tiles():
@@ -114,7 +118,7 @@ def _return_dynamic_blockers(c) -> list[tuple[int, int]]:
             blockers.append((pos.x, pos.y))
     return blockers
 
-def _ensure_return_planner(self, c):
+def _ensure_return_planner(self: Harvester, c):
     planner = self.return_planner
     if planner is None and self.environment_map is not None:
         planner = DStarLite(
@@ -130,7 +134,7 @@ def _ensure_return_planner(self, c):
     return planner
 
 
-def _refresh_return_planner(self, c) -> tuple[Direction | None, list[tuple[int, int]]]:
+def _refresh_return_planner(self: Harvester, c) -> tuple[Direction | None, list[tuple[int, int]]]:
     planner = _ensure_return_planner(self, c)
     if planner is None:
         return None, []
@@ -140,7 +144,7 @@ def _refresh_return_planner(self, c) -> tuple[Direction | None, list[tuple[int, 
     return step, path
 
 
-def _planner_step_at(self, c, pos: Position) -> Direction | None:
+def _planner_step_at(self: Harvester, c: Controller, pos: Position) -> Direction | None:
     planner = _ensure_return_planner(self, c)
     if planner is None:
         return None
@@ -151,7 +155,7 @@ def _planner_step_at(self, c, pos: Position) -> Direction | None:
     return step
 
 
-def _ordered_split(self, origin, move_dir: Direction) -> list[Direction] | None:
+def _ordered_split(self: Harvester, origin: Position, move_dir: Direction) -> list[Direction] | None:
     ns, ew = split_diagonal(origin, origin.add(move_dir))
     if ns is None or ew is None:
         return None
@@ -162,8 +166,8 @@ def _ordered_split(self, origin, move_dir: Direction) -> list[Direction] | None:
 
 
 def _resolve_diagonal_plan(
-    self,
-    c,
+    self: Harvester,
+    c: Controller,
     origin: Position,
     move_dir: Direction,
 ) -> tuple[_DiagonalKind, list[Direction] | None, Direction | None]:
@@ -192,8 +196,8 @@ def _resolve_diagonal_plan(
 
 
 def _next_dir_after_move(
-    self,
-    c,
+    self: Harvester,
+    c: Controller,
     move_dir: Direction,
     planner_path: list[tuple[int, int]],
 ) -> Direction | None:
@@ -222,13 +226,17 @@ def _next_dir_after_move(
 
 
 
-def _is_return_tile_usable(self, c, pos) -> bool:
+def _is_return_tile_usable(self: Harvester, c: Controller, pos: Position) -> bool:
     if reached_core(pos, self.core_pos):
         return True
 
     if not c.is_in_vision(pos):
         if not on_map(c, pos):
             return False
+        
+        if self.memory._tiles is None:
+            raise ValueError("Expected memory._tiles to be set")
+        
         return self.memory._tiles[pos.y][pos.x] in (TRAVERSABLE, ORE_AX, CORE_OWN, UNKNOWN)
 
     if c.get_tile_env(pos) == Environment.WALL:
@@ -252,7 +260,7 @@ def _is_return_tile_usable(self, c, pos) -> bool:
     return entity_type in (EntityType.CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER)
 
 
-def _clear_return_tile(self, c, pos) -> bool:
+def _clear_return_tile(_: Harvester, c: Controller, pos: Position) -> bool:
     build_id = c.get_tile_building_id(pos)
     if build_id is None:
         return True
@@ -274,7 +282,7 @@ def _clear_return_tile(self, c, pos) -> bool:
     return False
 
 
-def _can_execute_return_step(self, c, move_dir: Direction, next_move_dir: Direction | None) -> bool:
+def _can_execute_return_step(self: Harvester, c: Controller, move_dir: Direction, next_move_dir: Direction | None) -> bool:
     if c.can_move(move_dir):
         return True
 
@@ -288,14 +296,14 @@ def _can_execute_return_step(self, c, move_dir: Direction, next_move_dir: Direct
     return c.can_build_conveyor(move_pos, next_move_dir)
 
 
-def _build_first_connector(self, c) -> bool:
+def _build_first_connector(self: Harvester, c: Controller) -> bool:
     move_pos = self.current_pos
 
     # If the harvester was diagonal, pick one of the two cardinal join tiles.
     if self.harvester_pos and is_diagonal(self.current_pos, self.harvester_pos):
         ns, ew = split_diagonal(self.current_pos, self.harvester_pos)
-        m1 = self.current_pos.add(ns)
-        m2 = self.current_pos.add(ew)
+        m1 = self.current_pos.add(ns) # type: ignore
+        m2 = self.current_pos.add(ew) # type: ignore
         move_pos = (
             m1
             if m1.distance_squared(self.core_pos) < m2.distance_squared(self.core_pos)
@@ -337,7 +345,7 @@ def _build_first_connector(self, c) -> bool:
     return True
 
 
-def _build_return_step(self, c) -> bool:
+def _build_return_step(self: Harvester, c: Controller) -> bool:
     planner_step, planner_path = _refresh_return_planner(self, c)
     carry_next: Direction | None = None
 
@@ -401,7 +409,7 @@ def _build_return_step(self, c) -> bool:
     return True
 
 
-def _handle_return_diagonal_step(self, c, move_dir: Direction) -> bool:
+def _handle_return_diagonal_step(self: Harvester, c: Controller, move_dir: Direction) -> bool:
     move_pos = self.current_pos.add(move_dir)
     self.return_next_dir = None
 
@@ -416,7 +424,7 @@ def _handle_return_diagonal_step(self, c, move_dir: Direction) -> bool:
     return False
 
 
-def _handle_pending_return_bridge(self, c) -> bool:
+def _handle_pending_return_bridge(self: Harvester, c: Controller) -> bool:
     if self.bridge_from is None:
         return False
 
@@ -471,7 +479,7 @@ def _handle_pending_return_bridge(self, c) -> bool:
     return False
 
 
-def _ensure_post_bridge_conveyor(self, c) -> bool:
+def _ensure_post_bridge_conveyor(self: Harvester, c: Controller) -> bool:
     if not self.post_bridge_conveyor:
         return False
 

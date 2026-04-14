@@ -1,8 +1,14 @@
-from cambc import Direction, Environment, Position
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
+from cambc import Direction, Environment, Position, Controller
 
 from utils.d_star import DStarLite, _SEEK_BLOCK_MASK
 from utils.raw_map_representation import ORE_TITANIUM
 from utils.movement import DIRECTIONS_4, _chebyshev, random_direction_4
+
+if TYPE_CHECKING:
+    from builders.harvester_revamped import Harvester
 
 
 def _ensure_seek_blacklists(self) -> None:
@@ -12,7 +18,7 @@ def _ensure_seek_blacklists(self) -> None:
         self.seek_unreachable_counts = {}
 
 
-def _seek_dynamic_blockers(self, c, move_target: Position) -> list[tuple[int, int]]:
+def _seek_dynamic_blockers(self: Harvester, c: Controller, move_target: Position) -> list[tuple[int, int]]:
     blocked: list[tuple[int, int]] = []
     my_id = c.get_id()
     for pos in c.get_nearby_tiles():
@@ -25,7 +31,7 @@ def _seek_dynamic_blockers(self, c, move_target: Position) -> list[tuple[int, in
     return blocked
 
 
-def _is_memory_passable(self, x: int, y: int) -> bool:
+def _is_memory_passable(self: Harvester, x: int, y: int) -> bool:
     env = self.environment_map
     if env is None or not env.in_bounds(x, y):
         return False
@@ -33,7 +39,10 @@ def _is_memory_passable(self, x: int, y: int) -> bool:
 
 
 def _best_ore_approach(
-    self, ore_pos: Position, origin: Position | None = None, c=None
+    self: Harvester, 
+    ore_pos: Position, 
+    origin: Position | None = None, 
+    c: Controller | None = None
 ) -> Position | None:
     """Pick the best adjacent tile from which to build the harvester"""
     if origin is None:
@@ -68,7 +77,7 @@ def _best_ore_approach(
     return best_target
 
 
-def _frontier_score(self, pos: Position, target: Position) -> float:
+def _frontier_score(self: Harvester, pos: Position, target: Position) -> float:
     """Score a frontier tile by exploration value and nearby ore density"""
     env = self.environment_map
     if env is None:
@@ -99,7 +108,7 @@ def _frontier_score(self, pos: Position, target: Position) -> float:
     return (unknown_neighbors * 80 + ore_neighbors * 50 + quadrant_bonus * 30) - distance
 
 
-def _pick_frontier_target(self, pos: Position) -> Position | None:
+def _pick_frontier_target(self: Harvester, pos: Position) -> Position | None:
     """Pick the best frontier tile to continue exploration"""
     env = self.environment_map
     if env is None:
@@ -139,7 +148,7 @@ def _pick_frontier_target(self, pos: Position) -> Position | None:
     return best_target
 
 
-def _fallback_edge_target(self) -> Position:
+def _fallback_edge_target(self: Harvester) -> Position:
     """Cycle through edge midpoints if no better exploration target exists"""
     env = self.environment_map
     if env is None:
@@ -161,7 +170,7 @@ def _fallback_edge_target(self) -> Position:
     return targets[(self.edge_cycle_index - 1) % len(targets)]
 
 
-def _pick_seek_target(self, pos: Position) -> tuple[Position | None, bool]:
+def _pick_seek_target(self: Harvester, pos: Position) -> tuple[Position | None, bool]:
     """Choose between known titanium, predicted titanium, and frontier exploration."""
     env = self.environment_map
     if env is None:
@@ -199,7 +208,7 @@ def _pick_seek_target(self, pos: Position) -> tuple[Position | None, bool]:
     return _fallback_edge_target(self), False
 
 
-def _target_still_viable(self, target: Position, is_ore_target: bool) -> bool:
+def _target_still_viable(self: Harvester, target: Position, is_ore_target: bool) -> bool:
     env = self.environment_map
     if env is None:
         return False
@@ -217,7 +226,7 @@ def _target_still_viable(self, target: Position, is_ore_target: bool) -> bool:
     return False
 
 
-def _can_execute_seek_step(self, c, move_dir: Direction) -> bool:
+def _can_execute_seek_step(self: Harvester, c: Controller, move_dir: Direction) -> bool:
     next_pos = self.current_pos.add(move_dir)
     return c.can_move(move_dir) or (
         0 <= next_pos.x < c.get_map_width()
@@ -227,7 +236,7 @@ def _can_execute_seek_step(self, c, move_dir: Direction) -> bool:
     )
 
 
-def _seek_direction(self, c, move_target: Position) -> Direction | None:
+def _seek_direction(self: Harvester, c: Controller, move_target: Position) -> Direction | None:
     w = c.get_map_width()
     h = c.get_map_height()
     if w <= 0 or h <= 0:
@@ -264,7 +273,7 @@ def _seek_direction(self, c, move_target: Position) -> Direction | None:
     return None
 
 
-def _seek(self, c):
+def _seek(self: Harvester, c: Controller):
     """Explore, target titanium, and place harvesters when adjacent"""
     self._update_foundry_flag(c)
     _ensure_seek_blacklists(self)

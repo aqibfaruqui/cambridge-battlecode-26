@@ -213,10 +213,10 @@ class EnvironmentMap:
         return self.tile(x, y) == UNKNOWN
 
     def is_frontier_passable(self, x: int, y: int) -> bool:
-        return self.tile(x, y) in (TRAVERSABLE, ORE_AXIONITE, CORE_OWN)
+        return self.tile(x, y) in (TRAVERSABLE, CORE_OWN)
 
     def is_seek_candidate(self, x: int, y: int) -> bool:
-        return self.tile(x, y) in (UNKNOWN, TRAVERSABLE, ORE_AXIONITE, CORE_OWN)
+        return self.tile(x, y) in (UNKNOWN, TRAVERSABLE, CORE_OWN)
 
     def nearest_known_titanium(
         self,

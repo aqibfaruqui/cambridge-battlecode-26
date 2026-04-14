@@ -320,6 +320,10 @@ def _build_first_connector(self, c) -> bool:
         step = split[0]
     conveyor_dir = step
 
+    if c.get_tile_building_id(move_pos) is None:
+        conveyor_cost_ti, _ = c.get_conveyor_cost()
+        if self.ti < conveyor_cost_ti:
+            return False
     if c.can_build_conveyor(move_pos, conveyor_dir):
         c.build_conveyor(move_pos, conveyor_dir)
         _mark_network_reach_dirty(self)
@@ -380,9 +384,14 @@ def _build_return_step(self, c) -> bool:
     if not _clear_return_tile(self, c, move_pos):
         return False
     dest_empty = c.get_tile_env(move_pos) == Environment.EMPTY
-    if next_dir is not None and c.can_build_conveyor(move_pos, next_dir):
-        c.build_conveyor(move_pos, next_dir)
-        _mark_network_reach_dirty(self)
+    if next_dir is not None:
+        if dest_empty:
+            conveyor_cost_ti, _ = c.get_conveyor_cost()
+            if self.ti < conveyor_cost_ti:
+                return False
+        if c.can_build_conveyor(move_pos, next_dir):
+            c.build_conveyor(move_pos, next_dir)
+            _mark_network_reach_dirty(self)
     elif dest_empty and c.can_build_road(move_pos):
         c.build_road(move_pos)
     if not c.can_move(move_dir):
@@ -445,6 +454,12 @@ def _handle_pending_return_bridge(self, c) -> bool:
         self.return_bridge_fail_counts.pop(key, None)
         return True
 
+    # If we simply can't afford the bridge yet, wait without counting a failure.
+    ti, _ = c.get_global_resources()
+    bridge_cost_ti, _ = c.get_bridge_cost()
+    if ti < bridge_cost_ti:
+        return False
+
     fails = self.return_bridge_fail_counts.get(key, 0) + 1
     self.return_bridge_fail_counts[key] = fails
     if fails >= _MAX_BRIDGE_FAILS:
@@ -465,8 +480,11 @@ def _ensure_post_bridge_conveyor(self, c) -> bool:
         return True
 
     conveyor_dir = _planner_step_at(self, c, self.current_pos)
-    if conveyor_dir is None or conveyor_dir not in DIRECTIONS_4:
+    if conveyor_dir is None or conveyor_dir == Direction.CENTRE:
         conveyor_dir = get_direction_4(self.current_pos, self.core_pos)
+    elif conveyor_dir not in DIRECTIONS_4:
+        _, split, _ = _resolve_diagonal_plan(self, c, self.current_pos, conveyor_dir)
+        conveyor_dir = split[0] if split else get_direction_4(self.current_pos, self.core_pos)
     if conveyor_dir is None:
         self.post_bridge_conveyor = False
         return False
@@ -475,11 +493,14 @@ def _ensure_post_bridge_conveyor(self, c) -> bool:
     if not cleared:
         return False
 
-    can_build_conveyor = (
-        c.get_tile_env(self.current_pos) == Environment.EMPTY
-        and c.can_build_conveyor(self.current_pos, conveyor_dir)
-    )
-    if can_build_conveyor:
+    tile_empty = c.get_tile_env(self.current_pos) == Environment.EMPTY
+    if tile_empty:
+        ti, _ = c.get_global_resources()
+        conveyor_cost_ti, _ = c.get_conveyor_cost()
+        if ti < conveyor_cost_ti:
+            return False
+
+    if tile_empty and c.can_build_conveyor(self.current_pos, conveyor_dir):
         c.build_conveyor(self.current_pos, conveyor_dir)
         _mark_network_reach_dirty(self)
 

@@ -11,6 +11,7 @@ class Core:
             BuilderType.HARVESTER,
             BuilderType.ATTACKER,
             BuilderType.HEALER,
+            BuilderType.HEALER,
         ]
 
     def run(self, c: Controller):

@@ -25,13 +25,13 @@ class Attacker:
     def __init__(self, core_pos: Position):
         self.state = AttackState.NAVIGATE
         self.core_pos = core_pos
-        self.enemy_pos = None
-        self.current_pos = None
-        self.attack_target = None
-        self.turret_target = None
+        self.enemy_pos: Position | None = None
+        self.current_pos: Position = core_pos
+        self.attack_target: Position | None = None
+        self.turret_target: Position | None = None
         self.gunners_placed = 0
         self.enemy_core_candidate_idx = 0
-        self.enemy_core_candidates = []
+        self.enemy_core_candidates: list[Position] = []
         self._env_map: EnvironmentMap | None = None
         self._planner: DStarLite | None = None
         self._planner_goal: tuple[int, int] | None = None
@@ -42,11 +42,13 @@ class Attacker:
         if c.get_move_cooldown() > 0:
             return
 
+        env_map = self._env_map
+        assert env_map is not None
         pos = c.get_position()
         goal = (target.x, target.y)
         if self._planner is None or self._planner_goal != goal:
             self._planner = DStarLite(
-                self._env_map, target.x, target.y, block_mask=_ATTACK_BLOCK_MASK
+                env_map, target.x, target.y, block_mask=_ATTACK_BLOCK_MASK
             )
             self._planner_goal = goal
 
@@ -90,11 +92,13 @@ class Attacker:
     def _navigate(self, c: Controller):
         """Navigate towards {self.attack_target} next to enemy core"""
         if self.enemy_pos is not None:
-            self.target_pos = self.attack_target
-            if self.current_pos.distance_squared(self.attack_target) <= 4:
+            attack_target = self.attack_target
+            assert attack_target is not None
+            self.target_pos = attack_target
+            if self.current_pos.distance_squared(attack_target) <= 4:
                 self.state = AttackState.PLACE_SELF_DESTRUCT
             else:
-                self._search(c, self.attack_target)
+                self._search(c, attack_target)
         else:
             # Cycle through candidates
             if (
@@ -109,10 +113,14 @@ class Attacker:
 
     def _place_self_destruct(self, c: Controller):
         """Look for enemy logistics near the enemy core and self destruct"""
+        env_map = self._env_map
+        enemy_pos = self.enemy_pos
+        assert env_map is not None
+        assert enemy_pos is not None
         me = self.current_pos
 
         target_pos = self.turret_target
-        if target_pos is not None and self._env_map.tile(target_pos.x, target_pos.y) & (1 << WALL):
+        if target_pos is not None and env_map.tile(target_pos.x, target_pos.y) & (1 << WALL):
             self.turret_target = None
             target_pos = None
 
@@ -143,15 +151,15 @@ class Attacker:
                     bridge_target = c.get_bridge_target(eid)
                     if bridge_target is None:
                         continue
-                    dx = abs(bridge_target.x - self.enemy_pos.x)
-                    dy = abs(bridge_target.y - self.enemy_pos.y)
+                    dx = abs(bridge_target.x - enemy_pos.x)
+                    dy = abs(bridge_target.y - enemy_pos.y)
                 else:
-                    dx = abs(pos.x - self.enemy_pos.x)
-                    dy = abs(pos.y - self.enemy_pos.y)
+                    dx = abs(pos.x - enemy_pos.x)
+                    dy = abs(pos.y - enemy_pos.y)
 
                 if max(dx, dy) != 2 or (dx == 2 and dy == 2):
                     continue
-                dist = pos.distance_squared(self.enemy_pos)
+                dist = pos.distance_squared(enemy_pos)
                 if dist < best_dist:
                     best_dist = dist
                     target_pos = pos
@@ -172,7 +180,7 @@ class Attacker:
                 self.turret_target = target_pos
 
                 # Step off the target tile so we can replace it with a gunner
-                retreat_dir = self.enemy_pos.direction_to(self.core_pos)
+                retreat_dir = enemy_pos.direction_to(self.core_pos)
                 retreat_pos = me.add(retreat_dir)
                 # Back away from the enemy core
                 if c.can_move(retreat_dir):
@@ -210,7 +218,7 @@ class Attacker:
 
                 # Once the tile is clear, build a gunner facing the enemy core.
                 if building_id is None and me != target_pos:
-                    facing = target_pos.direction_to(self.enemy_pos)
+                    facing = target_pos.direction_to(enemy_pos)
                     if c.can_build_gunner(target_pos, facing):
                         c.build_gunner(target_pos, facing)
                         self.gunners_placed += 1
@@ -220,8 +228,8 @@ class Attacker:
             self._search(c, target_pos)
             return
 
-        self.target_pos = self.enemy_pos
-        self._search(c, self.enemy_pos)
+        self.target_pos = enemy_pos
+        self._search(c, enemy_pos)
 
     def _done(self, c: Controller):
         """TODO: Heal gunners & Supply ammo"""
@@ -262,7 +270,8 @@ class Attacker:
         # Once symmetry is resolved, jump to the matching candidate
         if self.enemy_pos is None and self._env_map.symmetry_resolved:
             _sym_idx = {Symmetry.ROTATIONAL: 0, Symmetry.HORIZONTAL: 1, Symmetry.VERTICAL: 2}
-            new_idx = _sym_idx.get(self._env_map.symmetry, 0)
+            sym = self._env_map.symmetry
+            new_idx = _sym_idx.get(sym, 0) if sym is not None else 0
             if new_idx != self.enemy_core_candidate_idx:
                 self.enemy_core_candidate_idx = new_idx
                 self._planner_goal = None  # force replanning to new target

@@ -8,7 +8,6 @@ class Core:
         self.spawn_plan = [
             BuilderType.HARVESTER,
             BuilderType.HARVESTER,
-            # BuilderType.HARVESTER,
             BuilderType.ATTACKER,
             BuilderType.ATTACKER,
             BuilderType.HEALER,

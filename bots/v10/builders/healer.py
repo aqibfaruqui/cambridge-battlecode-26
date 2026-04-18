@@ -20,7 +20,7 @@ class Healer:
         self.core_pos = core_pos
         self.core_id: int | None = None
         self.ring_idx = 0
-        self._perimeter_tiles: list[Position] | None = None
+        self._last_hp: int | None = None
 
     def _ring_pos(self, idx: int) -> Position:
         return self.core_pos.add(_RING_DIRECTIONS[idx % len(_RING_DIRECTIONS)])
@@ -43,62 +43,58 @@ class Healer:
             return False
         return c.get_hp(self.core_id) < c.get_max_hp(self.core_id)
 
-    def _compute_perimeter(self, c: Controller) -> list[Position]:
-        """Tiles at Chebyshev distance 2 from the core — the 5x5 perimeter."""
-        tiles: list[Position] = []
-        cx, cy = self.core_pos.x, self.core_pos.y
-        w, h = c.get_map_width(), c.get_map_height()
-        for dy in range(-2, 3):
-            for dx in range(-2, 3):
-                if max(abs(dx), abs(dy)) != 2:
-                    continue
-                x, y = cx + dx, cy + dy
-                if 0 <= x < w and 0 <= y < h:
-                    tiles.append(Position(x, y))
-        return tiles
-
-    def _has_adjacent_launcher(self, c: Controller, pos: Position) -> bool:
-        w, h = c.get_map_width(), c.get_map_height()
-        for d in Direction:
-            if d == Direction.CENTRE:
+    def _find_core_adjacent_enemy(self, c: Controller) -> Position | None:
+        """Return the position of an enemy builder bot on the 8-tile ring, if any."""
+        my_team = c.get_team()
+        for d in _RING_DIRECTIONS:
+            p = self.core_pos.add(d)
+            if not c.is_in_vision(p):
                 continue
-            n = pos.add(d)
-            if not (0 <= n.x < w and 0 <= n.y < h):
+            bot_id = c.get_tile_builder_bot_id(p)
+            if bot_id is None:
                 continue
-            if not c.is_in_vision(n):
-                continue
-            bid = c.get_tile_building_id(n)
-            if bid is None:
-                continue
-            if c.get_entity_type(bid) == EntityType.LAUNCHER:
-                return True
-        return False
+            if c.get_team(bot_id) != my_team:
+                return p
+        return None
 
     def _try_place_launcher(self, c: Controller) -> bool:
-        """Place a launcher on the nearest empty / own-road perimeter tile in action range."""
+        """Reactively drop a launcher near an enemy builder bot sitting on the ring."""
         if c.get_action_cooldown() > 0:
             return False
+        enemy_pos = self._find_core_adjacent_enemy(c)
+        if enemy_pos is None:
+            return False
+
         me = c.get_position()
         my_team = c.get_team()
+        w, h = c.get_map_width(), c.get_map_height()
         best: Position | None = None
         best_d = float("inf")
-        for pos in self._perimeter_tiles or ():
-            d = me.distance_squared(pos)
-            if d > 2:
-                continue
-            if not c.is_in_vision(pos):
-                continue
-            bid = c.get_tile_building_id(pos)
-            if bid is not None:
-                if c.get_team(bid) != my_team:
+        # Any tile within Chebyshev 2 of the enemy that we can reach this turn.
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                if dx == 0 and dy == 0:
                     continue
-                if c.get_entity_type(bid) != EntityType.ROAD:
+                x, y = enemy_pos.x + dx, enemy_pos.y + dy
+                if not (0 <= x < w and 0 <= y < h):
                     continue
-            if self._has_adjacent_launcher(c, pos):
-                continue
-            if d < best_d:
-                best_d = d
-                best = pos
+                p = Position(x, y)
+                if p == self.core_pos:
+                    continue
+                d = me.distance_squared(p)
+                if d > 2:
+                    continue
+                if not c.is_in_vision(p):
+                    continue
+                bid = c.get_tile_building_id(p)
+                if bid is not None:
+                    if c.get_team(bid) != my_team:
+                        continue
+                    if c.get_entity_type(bid) != EntityType.ROAD:
+                        continue
+                if d < best_d:
+                    best_d = d
+                    best = p
         if best is None:
             return False
         if c.get_tile_building_id(best) is not None:
@@ -110,6 +106,18 @@ class Healer:
         if not c.can_build(EntityType.LAUNCHER, best, None):
             return False
         c.build(EntityType.LAUNCHER, best, None)
+        return True
+
+    def _try_heal_self(self, c: Controller) -> bool:
+        if c.get_action_cooldown() > 0:
+            return False
+        my_id = c.get_id()
+        if c.get_hp(my_id) >= c.get_max_hp(my_id):
+            return False
+        me = c.get_position()
+        if not c.can_heal(me):
+            return False
+        c.heal(me)
         return True
 
     def _try_heal_core(self, c: Controller) -> bool:
@@ -189,13 +197,23 @@ class Healer:
     def run(self, c: Controller):
         if self.core_id is None:
             self._resolve_core_id(c)
-        if self._perimeter_tiles is None:
-            self._perimeter_tiles = self._compute_perimeter(c)
 
         self._align_ring_idx(c)
 
-        if not self._try_place_launcher(c):
-            if not self._try_heal_core(c):
-                self._try_heal_conveyor(c)
+        my_id = c.get_id()
+        hp_now = c.get_hp(my_id)
+        took_damage = self._last_hp is not None and hp_now < self._last_hp
 
-        self._patrol(c)
+        healed = False
+        if self._try_heal_self(c):
+            healed = True
+        elif not self._try_place_launcher(c):
+            if self._try_heal_core(c) or self._try_heal_conveyor(c):
+                healed = True
+
+        # Hold position while healing a stable situation — only move if we
+        # didn't heal, or if we took damage since last turn.
+        if took_damage or not healed:
+            self._patrol(c)
+
+        self._last_hp = c.get_hp(my_id)

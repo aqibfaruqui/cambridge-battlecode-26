@@ -65,7 +65,7 @@ def is_ore(c: Controller, pos: Position) -> bool:
     return is_ore_titanium(c, pos) or is_ore_axionite(c, pos)
 
 
-def _nearest_unclaimed(c: Controller, pos: Position, is_ore_type) -> Position:
+def _nearest_unclaimed(c: Controller, pos: Position, is_ore_type) -> Position | None:
     """Find closest visible ore tile (by is_ore_type) that isn't already harvested."""
     best_tile = None
     best_dist = float("inf")
@@ -90,11 +90,11 @@ def _nearest_unclaimed(c: Controller, pos: Position, is_ore_type) -> Position:
     return best_tile
 
 
-def nearby_titanium(c: Controller, pos: Position) -> Position:
+def nearby_titanium(c: Controller, pos: Position) -> Position | None:
     return _nearest_unclaimed(c, pos, is_ore_titanium)
 
 
-def nearby_ore(c: Controller, pos: Position) -> Position:
+def nearby_ore(c: Controller, pos: Position) -> Position | None:
     return _nearest_unclaimed(c, pos, is_ore)
 
 

@@ -174,14 +174,16 @@ class MapMemory:
 
     def _mark_core_footprint(self, centre: Position, state: int):
         """Mark the 3x3 footprint of a core with the given tile state."""
-        
+        tiles = self._tiles
+        if tiles is None:
+            return
         cx, cy = centre.x, centre.y
         for dy in range(-1, 2):
             for dx in range(-1, 2):
                 x, y = cx + dx, cy + dy
                 if 0 <= x < self._w and 0 <= y < self._h:
-                    if self._tiles[y][x] == UNKNOWN:
-                        self._tiles[y][x] = state
+                    if tiles[y][x] == UNKNOWN:
+                        tiles[y][x] = state
 
     def _update_ore_sets(self, x: int, y: int, new: int, observed: bool = True):
         key = (x, y)
@@ -210,6 +212,7 @@ class MapMemory:
 
     def _refine_symmetry(self, new_tiles: list[Position]):
         """Eliminate symmetry candidates that contradict observations"""
+        assert self._tiles is not None
         for pos in new_tiles:
             state = self._tiles[pos.y][pos.x]
             for sym in list(self._sym_candidates):
@@ -234,34 +237,40 @@ class MapMemory:
 
     def _project_all(self):
         """One-time back-fill: project every already-classified tile to its mirror."""
+        tiles = self._tiles
+        sym = self._sym_confirmed
+        assert tiles is not None
+        assert sym is not None
         for y in range(self._h):
             for x in range(self._w):
-                state = self._tiles[y][x]
+                state = tiles[y][x]
                 if state == UNKNOWN:
                     continue
-                mx, my = self._mirror(x, y, self._sym_confirmed)
+                mx, my = self._mirror(x, y, sym)
                 if not (0 <= mx < self._w and 0 <= my < self._h):
                     continue
-                if self._tiles[my][mx] != UNKNOWN:
+                if tiles[my][mx] != UNKNOWN:
                     continue
-                self._tiles[my][mx] = state
+                tiles[my][mx] = state
                 self._update_ore_sets(mx, my, state, observed=False)
                 if state != TRAVERSABLE:
                     self.version += 1
 
     def _project_symmetry(self, new_tiles: list[Position]):
         """If we know symmetry project other tiles onto the other side of the map"""
-        if self._sym_confirmed is None:
+        tiles = self._tiles
+        sym = self._sym_confirmed
+        if sym is None or tiles is None:
             return
 
         for pos in new_tiles:
-            state = self._tiles[pos.y][pos.x]
-            mx, my = self._mirror(pos.x, pos.y, self._sym_confirmed)
+            state = tiles[pos.y][pos.x]
+            mx, my = self._mirror(pos.x, pos.y, sym)
             if not (0 <= mx < self._w and 0 <= my < self._h):
                 continue
-            if self._tiles[my][mx] != UNKNOWN:
+            if tiles[my][mx] != UNKNOWN:
                 continue
-            self._tiles[my][mx] = state
+            tiles[my][mx] = state
             self._update_ore_sets(mx, my, state, observed=False)
             # Projected blocking tiles change the BFS topology, invalidate cache.
             if state != TRAVERSABLE:

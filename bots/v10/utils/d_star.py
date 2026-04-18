@@ -330,7 +330,7 @@ class DStarLite:
             return False
         if idx in self._dynamic_blocked:
             return True
-        return (self._block_mask >> self._env._array[idx]) & 1
+        return bool((self._block_mask >> self._env._array[idx]) & 1)
 
     def _to_idx(self, x: int, y: int) -> int:
         return y * self._w + x

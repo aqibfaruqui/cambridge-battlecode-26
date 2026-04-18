@@ -9,7 +9,7 @@ from utils.movement import (
     on_map,
     reached_core,
 )
-from utils.map_memory import UNKNOWN, WALL, TRAVERSABLE, ORE_TI, ORE_AX, CORE_OWN, CORE_ENEMY
+from utils.map_memory import UNKNOWN, WALL, TRAVERSABLE, ORE_TI, ORE_AX, CORE_OWN, CORE_ENEMY, MapMemory
 
 _WALKABLE_BUILDINGS = frozenset(
     {EntityType.ROAD, EntityType.CONVEYOR, EntityType.BRIDGE}
@@ -35,7 +35,7 @@ def _is_bfs_passable(tile: int) -> bool:
 class Pathfinding:
     def __init__(self):
         self._follow_state: dict | None = None
-        self._memory = None
+        self._memory: MapMemory | None = None
         self._map_version: int = -1
         self._reverse_bfs_cache: dict[tuple[str, int, int], dict] = {}
         self._return_bfs_cache: dict | None = None
@@ -258,9 +258,11 @@ class Pathfinding:
     def _build_reverse_bfs_cardinal(
         self, c: Controller, goals: list[Position]
     ) -> list[list[int | None]]:
+        assert self._memory is not None
         tiles = self._memory._tiles
         w = self._memory._w
         h = self._memory._h
+        assert tiles is not None
         distances: list[list[int | None]] = [[None] * w for _ in range(h)]
         queue = deque()
 

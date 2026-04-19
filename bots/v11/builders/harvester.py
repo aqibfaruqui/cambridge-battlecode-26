@@ -74,6 +74,7 @@ class Harvester:
         self.network_reach_round = -1
         self.network_reach_dirty = True
         self.reachable_to_core: set[tuple[int, int]] | None = None
+        self.spawn_pos: Position | None = None
         self.harvester_pos: Position | None = None
         self.just_placed = False
         self.bridge_from: Position | None = None
@@ -113,6 +114,10 @@ class Harvester:
             return
 
         move_pos = self.current_pos.add(move_dir)
+        build_id = c.get_tile_building_id(move_pos)
+        if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER and c.can_destroy(move_pos):
+            c.destroy(move_pos)
+
         if c.get_tile_env(move_pos) == Environment.EMPTY and c.can_build_road(move_pos):
             c.build_road(move_pos)
 
@@ -253,7 +258,11 @@ class Harvester:
             global _PROFILE_CALLS
             _PROFILER.enable()
         self.current_pos = c.get_position()
+        if self.spawn_pos is None:
+            self.spawn_pos = self.current_pos
         self.ti, self.ax = c.get_global_resources()
+        if self.ax > 0:
+            self.axionite_found = True
         if self.environment_map is None:
             self.environment_map = EnvironmentMap(c.get_map_width(), c.get_map_height())
         self.environment_map.update(c)

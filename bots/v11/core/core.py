@@ -6,8 +6,8 @@ class Core:
     def __init__(self):
         self.builders_spawned = 0
         self.spawn_plan = [
-            BuilderType.HARVESTER,
-            BuilderType.HARVESTER,
+            BuilderType.HARVESTER_1,
+            BuilderType.HARVESTER_2,
             BuilderType.ATTACKER,
             BuilderType.ATTACKER,
             BuilderType.HEALER,

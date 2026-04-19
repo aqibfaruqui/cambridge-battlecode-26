@@ -1,11 +1,12 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from cambc import Direction, Environment, Position, Controller
+from cambc import Direction, EntityType, Environment, Position, Controller
 
 from utils.pathfinding.d_star import DStarLite, _SEEK_BLOCK_MASK
 from utils.map.raw_map_representation import ORE_AXIONITE, ORE_TITANIUM
 from utils.pathfinding.movement import DIRECTIONS_4, _chebyshev, random_direction_4
+from utils.comms.marker import MarkerType, encode_seek_claim, decode_seek_claim, get_marker_id
 
 if TYPE_CHECKING:
     from builders.harvester import Harvester
@@ -16,6 +17,95 @@ def _ensure_seek_blacklists(self) -> None:
         self.blacklisted_seek_targets = set()
     if not hasattr(self, "seek_unreachable_counts"):
         self.seek_unreachable_counts = {}
+
+
+def _read_nearby_claims(c: Controller) -> set[tuple[int, int]]:
+    claimed: set[tuple[int, int]] = set()
+    for pos in c.get_nearby_tiles():
+        marker_id = get_marker_id(c, pos)
+        if marker_id is None:
+            continue
+        value = c.get_marker_value(marker_id)
+        if ((value >> 24) & 0xFF) != MarkerType.SEEK_CLAIM:
+            continue
+        target, _ = decode_seek_claim(value)
+        claimed.add((target.x, target.y))
+    return claimed
+
+
+_DEGENERATE_ROOM = 3
+
+
+def _explore_lane(self: Harvester, c: Controller) -> tuple[str, int]:
+    """Assign a soft exploration lane so harvesters peel away from each other."""
+    env = self.environment_map
+    if env is None:
+        return "x", 1
+
+    cx, cy = self.core_pos.x, self.core_pos.y
+    w, h = env.width, env.height
+
+    left_room  = cx
+    right_room = w - 1 - cx
+    up_room    = cy
+    down_room  = h - 1 - cy
+
+    # An axis is "splittable" only when there is meaningful room on BOTH sides.
+    # If the core is near an edge, splitting along that axis sends one harvester
+    # into the wall — use the other axis instead.
+    x_splittable = left_room > _DEGENERATE_ROOM and right_room > _DEGENERATE_ROOM
+    y_splittable = up_room   > _DEGENERATE_ROOM and down_room  > _DEGENERATE_ROOM
+
+    # Derive direction from which side of the core this harvester spawned on.
+    spawn = self.spawn_pos if self.spawn_pos is not None else self.current_pos
+    dx = spawn.x - cx
+    dy = spawn.y - cy
+
+    if x_splittable and y_splittable:
+        horizontal_balance = min(left_room, right_room)
+        vertical_balance   = min(up_room,   down_room)
+        if horizontal_balance > vertical_balance:
+            axis = "x"
+        elif vertical_balance > horizontal_balance:
+            axis = "y"
+        else:
+            axis = "x" if w >= h else "y"
+        sign = (1 if dx >= 0 else -1) if axis == "x" else (1 if dy >= 0 else -1)
+        return axis, sign
+
+    if x_splittable:
+        return "x", 1 if dx >= 0 else -1
+
+    if y_splittable:
+        return "y", 1 if dy >= 0 else -1
+
+    # Corner core: use the dominant spawn offset to pick axis and direction.
+    if abs(dx) >= abs(dy):
+        return "x", 1 if dx >= 0 else -1
+    return "y", 1 if dy >= 0 else -1
+
+
+def _ore_lane_score(
+    self: Harvester,
+    pos: Position,
+    ore_pos: Position,
+    lane_axis: str,
+    lane_sign: int,
+) -> float:
+    """Score an ore candidate: prefer ores on this harvester's assigned lane side."""
+    if lane_axis == "x":
+        preferred_offset = ore_pos.x - self.core_pos.x
+    else:
+        preferred_offset = ore_pos.y - self.core_pos.y
+
+    if preferred_offset * lane_sign > 0:
+        lane_bonus = 20.0
+    elif preferred_offset * lane_sign < 0:
+        lane_bonus = -20.0
+    else:
+        lane_bonus = 0.0
+
+    return lane_bonus - _chebyshev(pos, ore_pos)
 
 
 def _seek_dynamic_blockers(self: Harvester, c: Controller, move_target: Position) -> list[tuple[int, int]]:
@@ -77,7 +167,13 @@ def _best_ore_approach(
     return best_target
 
 
-def _frontier_score(self: Harvester, pos: Position, target: Position) -> float:
+def _frontier_score(
+    self: Harvester,
+    pos: Position,
+    target: Position,
+    lane_axis: str,
+    lane_sign: int,
+) -> float:
     """Score a frontier tile by exploration value and nearby ore density"""
     env = self.environment_map
     if env is None:
@@ -105,10 +201,36 @@ def _frontier_score(self: Harvester, pos: Position, target: Position) -> float:
     if (target.y < height_mid) != (self.core_pos.y < height_mid):
         quadrant_bonus += 1
 
-    return (unknown_neighbors * 80 + ore_neighbors * 50 + quadrant_bonus * 30) - distance
+    preferred_offset = target.x - self.core_pos.x
+    cross_offset = target.y - self.core_pos.y
+    if lane_axis == "y":
+        preferred_offset, cross_offset = cross_offset, preferred_offset
+
+    lane_bonus = 0.0
+    if preferred_offset != 0:
+        lane_distance = abs(preferred_offset)
+        lane_strength = max(20, 120 - (lane_distance * 8))
+        if preferred_offset * lane_sign > 0:
+            lane_bonus += lane_strength
+        else:
+            lane_bonus -= lane_strength * 0.75
+
+    # Avoid reusing the same narrow exit corridor near the core when a side lane exists.
+    core_distance = max(abs(target.x - self.core_pos.x), abs(target.y - self.core_pos.y))
+    if core_distance <= 5 and abs(cross_offset) <= 1:
+        if preferred_offset * lane_sign <= 0:
+            lane_bonus -= 45
+
+    return (unknown_neighbors * 80 + ore_neighbors * 50 + quadrant_bonus * 30 + lane_bonus) - distance
 
 
-def _pick_frontier_target(self: Harvester, pos: Position) -> Position | None:
+def _pick_frontier_target(
+    self: Harvester,
+    pos: Position,
+    lane_axis: str,
+    lane_sign: int,
+    claimed: set[tuple[int, int]] | None = None,
+) -> Position | None:
     """Pick the best frontier tile to continue exploration"""
     env = self.environment_map
     if env is None:
@@ -121,7 +243,9 @@ def _pick_frontier_target(self: Harvester, pos: Position) -> Position | None:
     best_target = None
     best_score = float("-inf")
     _ensure_seek_blacklists(self)
-    blocked = self.blacklisted_seek_targets
+    blocked = set(self.blacklisted_seek_targets)
+    if claimed:
+        blocked |= claimed
 
     # Frontier tiles are known-passable tiles bordering unseen space.
     for y in range(phase, env.height, stride):
@@ -139,7 +263,7 @@ def _pick_frontier_target(self: Harvester, pos: Position) -> Position | None:
                 if not env.is_unknown(neighbor.x, neighbor.y):
                     continue
 
-                score = _frontier_score(self, pos, target)
+                score = _frontier_score(self, pos, target, lane_axis, lane_sign)
                 if score > best_score:
                     best_score = score
                     best_target = target
@@ -148,19 +272,24 @@ def _pick_frontier_target(self: Harvester, pos: Position) -> Position | None:
     return best_target
 
 
-def _fallback_edge_target(self: Harvester) -> Position:
+def _fallback_edge_target(self: Harvester, lane_axis: str, lane_sign: int) -> Position:
     """Cycle through edge midpoints if no better exploration target exists"""
     env = self.environment_map
     if env is None:
         return self.current_pos.add(random_direction_4())
     w = env.width
     h = env.height
-    targets = [
-        Position(w // 2, 0),
-        Position(w - 1, h // 2),
-        Position(w // 2, h - 1),
-        Position(0, h // 2),
-    ]
+    north = Position(w // 2, 0)
+    east = Position(w - 1, h // 2)
+    south = Position(w // 2, h - 1)
+    west = Position(0, h // 2)
+    if lane_axis == "x":
+        primary = [east, west] if lane_sign > 0 else [west, east]
+        secondary = [south, north]
+    else:
+        primary = [south, north] if lane_sign > 0 else [north, south]
+        secondary = [east, west]
+    targets = primary + secondary
     _ensure_seek_blacklists(self)
     for _ in range(len(targets)):
         target = targets[self.edge_cycle_index % len(targets)]
@@ -170,55 +299,81 @@ def _fallback_edge_target(self: Harvester) -> Position:
     return targets[(self.edge_cycle_index - 1) % len(targets)]
 
 
-def _pick_seek_target(self: Harvester, pos: Position) -> tuple[Position | None, bool]:
+def _collect_ore_candidates(fetch_fn, blocked: set) -> list[Position]:
+    """Drain fetch_fn (nearest-ore query) into a list, skipping already-blocked positions."""
+    candidates: list[Position] = []
+    tmp = set(blocked)
+    while True:
+        ore = fetch_fn(tmp)
+        if ore is None:
+            break
+        candidates.append(ore)
+        tmp.add((ore.x, ore.y))
+    return candidates
+
+
+def _pick_seek_target(
+    self: Harvester,
+    pos: Position,
+    c: Controller,
+    claimed: set[tuple[int, int]] | None = None,
+) -> tuple[Position | None, bool]:
     """Choose between known titanium, predicted titanium, and frontier exploration."""
     env = self.environment_map
     if env is None:
         return pos.add(random_direction_4()), False
 
     _ensure_seek_blacklists(self)
-    # Prefer confirmed titanium before symmetry guesses or generic exploration.
     blocked = set(self.blacklisted_ores) | set(self.blacklisted_seek_targets)
-    while True:
-        known_ti = env.nearest_known_titanium(pos, blocked, observed_only=True)
-        if known_ti is None:
-            break
-        if _best_ore_approach(self, known_ti, pos) is not None:
-            return known_ti, True
-        key = (known_ti.x, known_ti.y)
+    if claimed:
+        blocked |= claimed
+
+    lane_axis, lane_sign = _explore_lane(self, c)
+
+    def score(p: Position) -> float:
+        return _ore_lane_score(self, pos, p, lane_axis, lane_sign)
+
+    # --- 1. Confirmed (observed) titanium, lane-biased ---
+    candidates = _collect_ore_candidates(
+        lambda tmp: env.nearest_known_titanium(pos, tmp, observed_only=True), blocked
+    )
+    for ti in sorted(candidates, key=score, reverse=True):
+        if _best_ore_approach(self, ti, pos) is not None:
+            return ti, True
+        key = (ti.x, ti.y)
         self.blacklisted_ores.add(key)
         blocked.add(key)
 
+    # --- 2. Symmetry-predicted titanium, lane-biased ---
     if env.symmetry is not None:
-        blocked = set(self.blacklisted_ores) | set(self.blacklisted_seek_targets)
-        while True:
-            predicted_ti = env.nearest_predicted_titanium(pos, blocked)
-            if predicted_ti is None:
-                break
-            if _best_ore_approach(self, predicted_ti, pos) is not None:
-                return predicted_ti, True
-            key = (predicted_ti.x, predicted_ti.y)
+        candidates = _collect_ore_candidates(
+            lambda tmp: env.nearest_predicted_titanium(pos, tmp), blocked
+        )
+        for ti in sorted(candidates, key=score, reverse=True):
+            if _best_ore_approach(self, ti, pos) is not None:
+                return ti, True
+            key = (ti.x, ti.y)
             self.blacklisted_ores.add(key)
             blocked.add(key)
 
-    # If we have titanium and haven't found axionite, try to find a known axionite.
+    # --- 3. Axionite (once titanium is secured) ---
     if self.titanium_found and not self.axionite_found and not self.foundry_prev_placed:
-        blocked_ax = set(self.blacklisted_ores) | set(self.blacklisted_seek_targets)
-        while True:
-            known_ax = env.nearest_known_axionite(pos, blocked_ax)
-            if known_ax is None:
-                break
-            if _best_ore_approach(self, known_ax, pos) is not None:
-                return known_ax, True
-            key = (known_ax.x, known_ax.y)
+        candidates = _collect_ore_candidates(
+            lambda tmp: env.nearest_known_axionite(pos, tmp), blocked
+        )
+        for ax in sorted(candidates, key=score, reverse=True):
+            if _best_ore_approach(self, ax, pos) is not None:
+                return ax, True
+            key = (ax.x, ax.y)
             self.blacklisted_ores.add(key)
-            blocked_ax.add(key)
+            blocked.add(key)
 
-    frontier = _pick_frontier_target(self, pos)
+    # --- 4. Frontier exploration ---
+    frontier = _pick_frontier_target(self, pos, lane_axis, lane_sign, claimed)
     if frontier is not None:
         return frontier, False
 
-    return _fallback_edge_target(self), False
+    return _fallback_edge_target(self, lane_axis, lane_sign), False
 
 
 def _target_still_viable(self: Harvester, target: Position, is_ore_target: bool) -> bool:
@@ -241,12 +396,16 @@ def _target_still_viable(self: Harvester, target: Position, is_ore_target: bool)
 
 def _can_execute_seek_step(self: Harvester, c: Controller, move_dir: Direction) -> bool:
     next_pos = self.current_pos.add(move_dir)
-    return c.can_move(move_dir) or (
-        0 <= next_pos.x < c.get_map_width()
-        and 0 <= next_pos.y < c.get_map_height()
-        and c.get_tile_env(next_pos) == Environment.EMPTY
-        and c.can_build_road(next_pos)
-    )
+    if c.can_move(move_dir):
+        return True
+    if not (0 <= next_pos.x < c.get_map_width() and 0 <= next_pos.y < c.get_map_height()):
+        return False
+    if c.get_tile_env(next_pos) != Environment.EMPTY:
+        return False
+    build_id = c.get_tile_building_id(next_pos)
+    if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER:
+        return True
+    return c.can_build_road(next_pos)
 
 
 def _seek_direction(self: Harvester, c: Controller, move_target: Position) -> Direction | None:
@@ -294,8 +453,15 @@ def _seek(self: Harvester, c: Controller):
         self.state = type(self.state).RETURN
         return
 
+    claimed = _read_nearby_claims(c)
+
     if self.target_pos is None or not _target_still_viable(self, self.target_pos, self.seek_target_is_ore):
-        self.target_pos, self.seek_target_is_ore = _pick_seek_target(self, self.current_pos)
+        self.target_pos, self.seek_target_is_ore = _pick_seek_target(
+            self,
+            self.current_pos,
+            c,
+            claimed,
+        )
         if self.target_pos is None:
             return
 
@@ -335,10 +501,24 @@ def _seek(self: Harvester, c: Controller):
             self.blacklisted_seek_targets.add(key)
             self.seek_unreachable_counts.pop(key, None)
             if is_ore_target:
-                self.blacklisted_ores.add(key)
+                self.blacklisted_ores.add((self.target_pos.x, self.target_pos.y))
             self.target_pos = None
             self.seek_target_is_ore = False
         return
 
     self.seek_unreachable_counts.pop((move_target.x, move_target.y), None)
+
+    claim_value = encode_seek_claim(self.target_pos, self.seek_target_is_ore)
+    best_claim_tile = None
+    best_claim_dist = float("inf")
+    for _mp in c.get_nearby_tiles():
+        if not c.can_place_marker(_mp):
+            continue
+        d = _chebyshev(_mp, self.target_pos)
+        if d < best_claim_dist:
+            best_claim_dist = d
+            best_claim_tile = _mp
+    if best_claim_tile is not None:
+        c.place_marker(best_claim_tile, claim_value)
+
     self._advance(c, move_dir)

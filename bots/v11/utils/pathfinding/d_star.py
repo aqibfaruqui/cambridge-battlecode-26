@@ -68,6 +68,7 @@ class DStarLite:
         "_snapshot",
         "_block_mask",
         "_dynamic_blocked",
+        "_unknown_cost",
     )
 
     def __init__(
@@ -77,6 +78,7 @@ class DStarLite:
         goal_y: int,
         *,
         block_mask: int = _DEFAULT_BLOCK_MASK,
+        unknown_cost: float = 1.0,
     ):
         self._env = env
         self._w = env._w
@@ -103,6 +105,7 @@ class DStarLite:
 
         self._snapshot = bytearray(env._array)
         self._dynamic_blocked: set[int] = set()
+        self._unknown_cost = unknown_cost
 
     # ---------- Public API ----------
 
@@ -377,6 +380,7 @@ class DStarLite:
         mask = self._block_mask
         start = self._start
         dyn = self._dynamic_blocked
+        unk_cost = self._unknown_cost
 
         min_rhs = _INF
 
@@ -388,56 +392,56 @@ class DStarLite:
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = 1.0 + gs
+                    v = (unk_cost if arr[s] == 0 else 1.0) + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u + w  # S
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = 1.0 + gs
+                    v = (unk_cost if arr[s] == 0 else 1.0) + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u - 1  # W
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = 1.0 + gs
+                    v = (unk_cost if arr[s] == 0 else 1.0) + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u + 1  # E
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = 1.0 + gs
+                    v = (unk_cost if arr[s] == 0 else 1.0) + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u - w - 1  # NW
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = _SQRT2 + gs
+                    v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u - w + 1  # NE
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = _SQRT2 + gs
+                    v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u + w - 1  # SW
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = _SQRT2 + gs
+                    v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u + w + 1  # SE
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = _SQRT2 + gs
+                    v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
                     if v < min_rhs:
                         min_rhs = v
         else:
@@ -447,7 +451,7 @@ class DStarLite:
                 if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                     gs = g[s]
                     if gs < min_rhs:
-                        v = 1.0 + gs
+                        v = (unk_cost if arr[s] == 0 else 1.0) + gs
                         if v < min_rhs:
                             min_rhs = v
                 if x > 0:
@@ -455,7 +459,7 @@ class DStarLite:
                     if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                         gs = g[s]
                         if gs < min_rhs:
-                            v = _SQRT2 + gs
+                            v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
                             if v < min_rhs:
                                 min_rhs = v
                 if x < w - 1:
@@ -463,7 +467,7 @@ class DStarLite:
                     if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                         gs = g[s]
                         if gs < min_rhs:
-                            v = _SQRT2 + gs
+                            v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
                             if v < min_rhs:
                                 min_rhs = v
             if y < h - 1:
@@ -471,7 +475,7 @@ class DStarLite:
                 if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                     gs = g[s]
                     if gs < min_rhs:
-                        v = 1.0 + gs
+                        v = (unk_cost if arr[s] == 0 else 1.0) + gs
                         if v < min_rhs:
                             min_rhs = v
                 if x > 0:
@@ -479,7 +483,7 @@ class DStarLite:
                     if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                         gs = g[s]
                         if gs < min_rhs:
-                            v = _SQRT2 + gs
+                            v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
                             if v < min_rhs:
                                 min_rhs = v
                 if x < w - 1:
@@ -487,7 +491,7 @@ class DStarLite:
                     if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                         gs = g[s]
                         if gs < min_rhs:
-                            v = _SQRT2 + gs
+                            v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
                             if v < min_rhs:
                                 min_rhs = v
             if x > 0:
@@ -495,7 +499,7 @@ class DStarLite:
                 if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                     gs = g[s]
                     if gs < min_rhs:
-                        v = 1.0 + gs
+                        v = (unk_cost if arr[s] == 0 else 1.0) + gs
                         if v < min_rhs:
                             min_rhs = v
             if x < w - 1:
@@ -503,7 +507,7 @@ class DStarLite:
                 if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                     gs = g[s]
                     if gs < min_rhs:
-                        v = 1.0 + gs
+                        v = (unk_cost if arr[s] == 0 else 1.0) + gs
                         if v < min_rhs:
                             min_rhs = v
 

@@ -12,6 +12,27 @@ if TYPE_CHECKING:
     from builders.harvester import Harvester
 
 
+def _find_damaged_conveyor(c: Controller) -> Position | None:
+    """Scan all buildings in vision for the most-damaged allied conveyor or bridge."""
+    my_team = c.get_team()
+    best_pos: Position | None = None
+    best_ratio = float("inf")
+    for bid in c.get_nearby_buildings():
+        if c.get_team(bid) != my_team:
+            continue
+        if c.get_entity_type(bid) not in (EntityType.CONVEYOR, EntityType.BRIDGE):
+            continue
+        max_hp = c.get_max_hp(bid)
+        hp = c.get_hp(bid)
+        if hp >= max_hp:
+            continue
+        ratio = hp / max_hp
+        if ratio < best_ratio:
+            best_ratio = ratio
+            best_pos = c.get_position(bid)
+    return best_pos
+
+
 def _ensure_seek_blacklists(self) -> None:
     if not hasattr(self, "blacklisted_seek_targets"):
         self.blacklisted_seek_targets = set()
@@ -451,6 +472,31 @@ def _seek(self: Harvester, c: Controller):
 
     if self._try_build_harvester(c):
         self.state = type(self.state).RETURN
+        return
+
+    # Validate existing heal target
+    if self.heal_target is not None:
+        bid = c.get_tile_building_id(self.heal_target)
+        if (
+            bid is None
+            or c.get_team(bid) != c.get_team()
+            or c.get_entity_type(bid) not in (EntityType.CONVEYOR, EntityType.BRIDGE)
+            or c.get_hp(bid) >= c.get_max_hp(bid)
+        ):
+            self.heal_target = None
+
+    # Scan vision for a new target if we don't have one
+    if self.heal_target is None:
+        self.heal_target = _find_damaged_conveyor(c)
+
+    # Pursue heal target: move toward it and heal when in range
+    if self.heal_target is not None:
+        if self.current_pos.distance_squared(self.heal_target) <= 2:
+            if c.get_action_cooldown() == 0 and c.can_heal(self.heal_target):
+                c.heal(self.heal_target)
+        else:
+            move_dir = _seek_direction(self, c, self.heal_target)
+            self._advance(c, move_dir)
         return
 
     claimed = _read_nearby_claims(c)

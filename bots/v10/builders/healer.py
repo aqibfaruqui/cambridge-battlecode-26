@@ -173,6 +173,9 @@ class Healer:
 
         me = c.get_position()
 
+        step1_idx = (self.ring_idx + 1) % len(_RING_DIRECTIONS)
+        step1_pos = self._ring_pos(step1_idx)
+
         # Prefer stepping one tile clockwise; fall back to step=2 (still
         # adjacent on diagonals) so a permanently-blocked tile can be skipped.
         for step in (1, 2):
@@ -188,11 +191,20 @@ class Healer:
                 self.ring_idx = next_idx
                 return
 
+        # Another builder bot is parked on the next tile — detour through
+        # the core (centre of the 3x3) and resume at the square past the
+        # blocker on the following tick.
+        if c.get_tile_builder_bot_id(step1_pos) is not None:
+            direction = me.direction_to(self.core_pos)
+            if direction != Direction.CENTRE and c.can_move(direction):
+                c.move(direction)
+                self.ring_idx = step1_idx
+                return
+
         # Nothing walkable ahead — pave the immediate next tile so we can
         # cross it next turn.
-        forward_pos = self._ring_pos(self.ring_idx + 1)
-        if c.get_action_cooldown() == 0 and c.can_build_road(forward_pos):
-            c.build_road(forward_pos)
+        if c.get_action_cooldown() == 0 and c.can_build_road(step1_pos):
+            c.build_road(step1_pos)
 
     def run(self, c: Controller):
         if self.core_id is None:

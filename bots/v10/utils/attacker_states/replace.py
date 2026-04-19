@@ -15,13 +15,7 @@ _CARDINAL_OFFSETS = ((0, 1), (0, -1), (1, 0), (-1, 0))
 def _cardinal_candidates(
     env, target: Position, W: int, H: int, primary: Position
 ) -> list[Position]:
-    """In-bounds, non-wall cardinals around `target`, `primary` first.
-
-    Putting the SCAN-time pick first biases every Stage 3 decision (empty,
-    enemy, reservation) toward the safer tile originally chosen, but we
-    still fall back to the other three cardinals if `primary` becomes
-    unusable.
-    """
+    """In-bounds, non-wall cardinals around `target`, `primary` first"""
     seen: set[tuple[int, int]] = set()
     order = [primary] + [
         Position(target.x + dx, target.y + dy) for dx, dy in _CARDINAL_OFFSETS
@@ -41,22 +35,7 @@ def _cardinal_candidates(
 
 
 def _execute_replacement(self: AttackerRevamped, c: Controller) -> bool:
-    """Clear target → splitter → sentinel (with cheap reservation).
-
-    Tile-clearing rule is uniform: enemy pieces get walked-onto and fired
-    (2 Ti/shot), friendly pieces get destroyed (free, any building in
-    action radius).
-
-    Flow:
-      1. Clear the target tile down to empty, then stand on it.
-      2. Build our splitter under ourselves (splitter is walkable).
-      3. Commit to a sentinel on *some* cardinal of the splitter. Re-scan
-         all four each tick and act on the most progressed one:
-           our sentinel → done,
-           our reservation conveyor → destroy once we can afford sentinel,
-           empty → build sentinel (or cheap reservation if short on Ti),
-           enemy → walk onto it and fire until gone, then step back.
-    """
+    """Clear target → splitter → sentinel (with cheap reservation)."""
     target = self.target_conveyor
     direction = self.target_direction
     sentinel_tile = self.sentinel_tile
@@ -131,40 +110,40 @@ def _execute_replacement(self: AttackerRevamped, c: Controller) -> bool:
         return True
 
     if reservation is not None:
-        # Our placeholder — swap to sentinel once we can afford it. Destroy
-        # is free, so no firing buffer needed.
+        # Upgrade single-tick once we can afford it: destroy is free of
+        # action cooldown, so we can follow it with build_sentinel.
         sent_cost = c.get_sentinel_cost()[0]
         ti = c.get_global_resources()[0]
-        if ti < sent_cost:
+        if ti < sent_cost or not c.can_destroy(reservation):
             return False
-        if c.can_destroy(reservation):
-            c.destroy(reservation)
+        c.destroy(reservation)
+        facing = reservation.direction_to(self.enemy_core_pos or target)
+        if reservation.add(facing) == target:
+            facing = facing.rotate_right()
+        if c.can_build_sentinel(reservation, facing):
+            c.build_sentinel(reservation, facing)
+            self.sentinels_placed += 1
+            return True
         return False
 
     if empty is not None:
-        # Sentinel is non-walkable — build it from the splitter, not from
-        # the sentinel tile itself.
+        # Sentinel is non-walkable — step off the tile before we can build.
         if me == empty:
             step = me.direction_to(target)
             if c.can_move(step):
                 c.move(step)
             return False
-        facing = empty.direction_to(self.enemy_core_pos or target)
-        # Never aim the sentinel back at our own splitter.
-        if empty.add(facing) == target:
-            facing = facing.rotate_right()
-        if c.can_build_sentinel(empty, facing):
-            c.build_sentinel(empty, facing)
-            self.sentinels_placed += 1
-            return True
-        # Short on Ti — drop a cheap conveyor to deny the tile until we top up.
+        # Always drop a cheap conveyor reservation immediately, even if
+        # we could afford a sentinel outright. Keeps the tile locked in
+        # a single tick regardless of Ti; the reservation branch above
+        # upgrades it to a sentinel the moment funds are there.
         if c.can_build_conveyor(empty, direction):
             c.build_conveyor(empty, direction)
         return False
 
     if enemy is not None:
-        # Every cardinal is blocked; fire one open and next tick will fall
-        # back into the empty branch above.
+        # No empty cardinal — walk onto this one and fire so next tick
+        # falls into the empty branch and reserves it with our conveyor.
         if me != enemy:
             step = me.direction_to(enemy)
             if c.can_move(step):
@@ -180,12 +159,7 @@ def _execute_replacement(self: AttackerRevamped, c: Controller) -> bool:
 
 
 def _target_still_valid(self: AttackerRevamped, c: Controller) -> bool:
-    """True if the locked-in target conveyor is still worth pursuing.
-
-    We only invalidate when we can *see* the tile and observe that it's no
-    longer an enemy conveyor (and we haven't yet turned it into our
-    splitter). Out of vision → assume still there.
-    """
+    """True if the locked-in target conveyor is still worth pursuing"""
     target = self.target_conveyor
     if target is None:
         return False

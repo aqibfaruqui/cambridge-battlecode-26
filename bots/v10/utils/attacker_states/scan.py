@@ -243,10 +243,15 @@ def _scan(self: AttackerRevamped, c: Controller) -> None:
     if self.enemy_core_pos is not None:
         if self.orbit_points is None:
             self.orbit_points = _build_orbit(self, c)
-        waypoint = self.orbit_points[self.orbit_idx]
-        if self.current_pos.distance_squared(waypoint) <= 20:
-            self.orbit_idx = (self.orbit_idx + 1) % len(self.orbit_points)
+        # Skip every waypoint we're already within range of, so _search
+        # always gets a destination worth pathing toward — two adjacent
+        # waypoints can otherwise leave us stalled between them.
+        for _ in range(len(self.orbit_points)):
             waypoint = self.orbit_points[self.orbit_idx]
+            if self.current_pos.distance_squared(waypoint) > 20:
+                break
+            self.orbit_idx = (self.orbit_idx + 1) % len(self.orbit_points)
+        waypoint = self.orbit_points[self.orbit_idx]
         self.target_pos = waypoint
         self._search(c, waypoint)
         return

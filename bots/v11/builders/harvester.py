@@ -74,6 +74,7 @@ class Harvester:
         self.network_reach_round = -1
         self.network_reach_dirty = True
         self.reachable_to_core: set[tuple[int, int]] | None = None
+        self.spawn_pos: Position | None = None
         self.harvester_pos: Position | None = None
         self.just_placed = False
         self.bridge_from: Position | None = None
@@ -257,7 +258,11 @@ class Harvester:
             global _PROFILE_CALLS
             _PROFILER.enable()
         self.current_pos = c.get_position()
+        if self.spawn_pos is None:
+            self.spawn_pos = self.current_pos
         self.ti, self.ax = c.get_global_resources()
+        if self.ax > 0:
+            self.axionite_found = True
         if self.environment_map is None:
             self.environment_map = EnvironmentMap(c.get_map_width(), c.get_map_height())
         self.environment_map.update(c)

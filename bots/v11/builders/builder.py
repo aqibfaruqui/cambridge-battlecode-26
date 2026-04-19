@@ -7,13 +7,13 @@ from builders.healer import Healer
 
 class BuilderType(IntEnum):
     EXTRA_ROLE_0 = 0     # (-1, -1)
-    HARVESTER = 1        # ( 0, -1)
+    HARVESTER_1 = 1        # ( 0, -1)
     EXTRA_ROLE_2 = 2     # ( 1, -1)
     ATTACKER = 3         # (-1,  0)
     EXTRA_ROLE_4 = 4     # ( 0,  0)
     HEALER = 5           # ( 1,  0)
     EXTRA_ROLE_6 = 6     # (-1,  1)
-    EXTRA_ROLE_7 = 7     # ( 0,  1)
+    HARVESTER_2 = 7     # ( 0,  1)
     EXTRA_ROLE_8 = 8     # ( 1,  1)
 
     @property
@@ -57,7 +57,7 @@ class Builder:
             builder_type = BuilderType.from_offset(dx, dy)
 
             match builder_type:
-                case BuilderType.HARVESTER:
+                case (BuilderType.HARVESTER_1 | BuilderType.HARVESTER_2):
                     self.role = Harvester(self.core_pos)
                 case BuilderType.ATTACKER:
                     self.role = Attacker(self.core_pos)

@@ -181,7 +181,7 @@ def _resolve_diagonal_plan(
     for first, second in [(ordered[0], ordered[1]), (ordered[1], ordered[0])]:
         first_pos = origin.add(first)
         second_pos = first_pos.add(second)
-        first_usable = _is_return_tile_usable(self, c, first_pos)
+        first_usable = _is_return_tile_routable(self, c, first_pos)
         second_usable = _is_return_tile_routable(self, c, second_pos)
         print(f"[DBG diag] origin={origin.x,origin.y} {first}->{first_pos.x,first_pos.y} usable={first_usable} | {second}->{second_pos.x,second_pos.y} routable={second_usable}")
         if not first_usable:

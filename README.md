@@ -95,3 +95,13 @@ Re-scrape documentation with:
 ```sh 
 uv run scripts/scrape_docs.py
 ```
+
+### Profile harvester_revamped
+
+Bots are bytecode-validated by `cambc` (no `try/finally`) and run in sub-interpreters, so `py-spy` can't see bot frames — profiling is done via in-bot `cProfile` instrumentation. `bots/v10/builders/harvester_revamped.py` is pre-instrumented and dumps `.pstats` files to `/tmp/harvester_profiles/`.
+
+```sh
+uv run scripts/profile.py run                       # run match, print top hotspots
+uv run scripts/profile.py report --filter d_star    # re-analyze, filtered
+uv run scripts/profile.py callers _succ             # who calls a hot function
+```

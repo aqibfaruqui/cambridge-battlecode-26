@@ -1,3 +1,5 @@
+import os
+import uuid
 from enum import Enum
 
 from cambc import Controller, Direction, EntityType, Environment, Position
@@ -20,6 +22,22 @@ from utils.pathfinding import Pathfinding
 from utils.raw_map_representation import EnvironmentMap
 from utils.d_star import DStarLite
 
+
+# Profiling is only available locally. AWS runners ship a stripped-down CPython
+# without _lsprof (the C extension cProfile depends on), so we probe for it
+# capability-style rather than sniffing env vars (which the sandbox may hide).
+try:
+    import cProfile
+    _PROFILER = cProfile.Profile()
+    _PROFILE_DIR = "/tmp/harvester_profiles"
+    _PROFILE_ID = f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    _PROFILE_PATH = os.path.join(_PROFILE_DIR, f"harv_{_PROFILE_ID}.pstats")
+    _PROFILE_CALLS = 0
+    _PROFILE_DUMP_EVERY = 100
+    os.makedirs(_PROFILE_DIR, exist_ok=True)
+    _PROFILE_ENABLED = True
+except ImportError:
+    _PROFILE_ENABLED = False
 
 class HarvestState(Enum):
     __slots__ = ()
@@ -238,6 +256,9 @@ class Harvester:
         _build_return_step(self, c)
 
     def run(self, c: Controller):
+        if _PROFILE_ENABLED:
+            global _PROFILE_CALLS
+            _PROFILER.enable()
         self.current_pos = c.get_position()
         self.ti, self.ax = c.get_global_resources()
         if self.environment_map is None:
@@ -254,3 +275,8 @@ class Harvester:
                 self._placing_foundry(c)
 
         self._draw_debug(c)
+        if _PROFILE_ENABLED:
+            _PROFILER.disable()
+            _PROFILE_CALLS += 1
+            if _PROFILE_CALLS % _PROFILE_DUMP_EVERY == 0:
+                _PROFILER.dump_stats(_PROFILE_PATH)

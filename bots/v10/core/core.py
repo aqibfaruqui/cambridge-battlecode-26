@@ -8,9 +8,10 @@ class Core:
         self.spawn_plan = [
             BuilderType.HARVESTER,
             BuilderType.HARVESTER,
-            BuilderType.ATTACKER,
-            BuilderType.ATTACKER,
+            BuilderType.ATTACKER_REVAMPED,
             BuilderType.HEALER,
+            BuilderType.HEALER,
+            BuilderType.ATTACKER_REVAMPED,
         ]
 
     def run(self, c: Controller):
@@ -20,7 +21,7 @@ class Core:
         core_pos = c.get_position()
         builder_type = self.spawn_plan[self.builders_spawned]
         tile_count = c.get_map_width() * c.get_map_height()
-        bound = 25 if tile_count < 700 else 35
+        bound = 25 if tile_count < 700 else 25
         if builder_type == BuilderType.HEALER and c.get_current_round() < bound:
             return
 

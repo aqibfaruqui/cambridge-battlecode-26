@@ -72,6 +72,13 @@ class Attacker:
             # Enemy core is impassable (only the allied core is in the passable list)
             if entity_type == EntityType.CORE and c.get_team(bld_id) != my_team:
                 blockers.append((p.x, p.y))
+                continue
+            # Enemy launchers throw adjacent builders — avoid the launcher tile
+            # and every neighbour within its pickup range (r² <= 2).
+            if entity_type == EntityType.LAUNCHER and c.get_team(bld_id) != my_team:
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        blockers.append((p.x + dx, p.y + dy))
 
         self._planner.set_position(pos.x, pos.y)
         self._planner.set_dynamic_blockers(blockers)

@@ -1,11 +1,12 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from cambc import Direction, Environment, Position, Controller
+from cambc import Direction, EntityType, Environment, Position, Controller
 
 from utils.pathfinding.d_star import DStarLite, _SEEK_BLOCK_MASK
 from utils.map.raw_map_representation import ORE_AXIONITE, ORE_TITANIUM
 from utils.pathfinding.movement import DIRECTIONS_4, _chebyshev, random_direction_4
+from utils.comms.marker import MarkerType, encode_seek_claim, decode_seek_claim, get_marker_id
 
 if TYPE_CHECKING:
     from builders.harvester import Harvester
@@ -16,6 +17,20 @@ def _ensure_seek_blacklists(self) -> None:
         self.blacklisted_seek_targets = set()
     if not hasattr(self, "seek_unreachable_counts"):
         self.seek_unreachable_counts = {}
+
+
+def _read_nearby_claims(c: Controller) -> set[tuple[int, int]]:
+    claimed: set[tuple[int, int]] = set()
+    for pos in c.get_nearby_tiles():
+        marker_id = get_marker_id(c, pos)
+        if marker_id is None:
+            continue
+        value = c.get_marker_value(marker_id)
+        if ((value >> 24) & 0xFF) != MarkerType.SEEK_CLAIM:
+            continue
+        target, _ = decode_seek_claim(value)
+        claimed.add((target.x, target.y))
+    return claimed
 
 
 def _seek_dynamic_blockers(self: Harvester, c: Controller, move_target: Position) -> list[tuple[int, int]]:
@@ -170,7 +185,7 @@ def _fallback_edge_target(self: Harvester) -> Position:
     return targets[(self.edge_cycle_index - 1) % len(targets)]
 
 
-def _pick_seek_target(self: Harvester, pos: Position) -> tuple[Position | None, bool]:
+def _pick_seek_target(self: Harvester, pos: Position, claimed: set[tuple[int, int]] | None = None) -> tuple[Position | None, bool]:
     """Choose between known titanium, predicted titanium, and frontier exploration."""
     env = self.environment_map
     if env is None:
@@ -179,6 +194,8 @@ def _pick_seek_target(self: Harvester, pos: Position) -> tuple[Position | None, 
     _ensure_seek_blacklists(self)
     # Prefer confirmed titanium before symmetry guesses or generic exploration.
     blocked = set(self.blacklisted_ores) | set(self.blacklisted_seek_targets)
+    if claimed:
+        blocked |= claimed
     while True:
         known_ti = env.nearest_known_titanium(pos, blocked, observed_only=True)
         if known_ti is None:
@@ -241,12 +258,16 @@ def _target_still_viable(self: Harvester, target: Position, is_ore_target: bool)
 
 def _can_execute_seek_step(self: Harvester, c: Controller, move_dir: Direction) -> bool:
     next_pos = self.current_pos.add(move_dir)
-    return c.can_move(move_dir) or (
-        0 <= next_pos.x < c.get_map_width()
-        and 0 <= next_pos.y < c.get_map_height()
-        and c.get_tile_env(next_pos) == Environment.EMPTY
-        and c.can_build_road(next_pos)
-    )
+    if c.can_move(move_dir):
+        return True
+    if not (0 <= next_pos.x < c.get_map_width() and 0 <= next_pos.y < c.get_map_height()):
+        return False
+    if c.get_tile_env(next_pos) != Environment.EMPTY:
+        return False
+    build_id = c.get_tile_building_id(next_pos)
+    if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER:
+        return True
+    return c.can_build_road(next_pos)
 
 
 def _seek_direction(self: Harvester, c: Controller, move_target: Position) -> Direction | None:
@@ -294,8 +315,10 @@ def _seek(self: Harvester, c: Controller):
         self.state = type(self.state).RETURN
         return
 
+    claimed = _read_nearby_claims(c)
+
     if self.target_pos is None or not _target_still_viable(self, self.target_pos, self.seek_target_is_ore):
-        self.target_pos, self.seek_target_is_ore = _pick_seek_target(self, self.current_pos)
+        self.target_pos, self.seek_target_is_ore = _pick_seek_target(self, self.current_pos, claimed)
         if self.target_pos is None:
             return
 
@@ -341,4 +364,12 @@ def _seek(self: Harvester, c: Controller):
         return
 
     self.seek_unreachable_counts.pop((move_target.x, move_target.y), None)
+
+    claim_value = encode_seek_claim(self.target_pos, self.seek_target_is_ore)
+    for _mp in c.get_nearby_tiles():
+        if c.can_place_marker(_mp):
+            c.place_marker(_mp, claim_value)
+            break
+
     self._advance(c, move_dir)
+

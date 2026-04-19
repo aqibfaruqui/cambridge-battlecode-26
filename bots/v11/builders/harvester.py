@@ -113,6 +113,10 @@ class Harvester:
             return
 
         move_pos = self.current_pos.add(move_dir)
+        build_id = c.get_tile_building_id(move_pos)
+        if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER and c.can_destroy(move_pos):
+            c.destroy(move_pos)
+
         if c.get_tile_env(move_pos) == Environment.EMPTY and c.can_build_road(move_pos):
             c.build_road(move_pos)
 

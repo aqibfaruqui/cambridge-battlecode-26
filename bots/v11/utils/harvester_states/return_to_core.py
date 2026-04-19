@@ -110,6 +110,8 @@ def _return_dynamic_blockers(c: Controller) -> list[tuple[int, int]]:
         if build_id is None:
             continue
         entity_type = c.get_entity_type(build_id)
+        if entity_type == EntityType.MARKER:
+            continue
         owner = c.get_team(build_id)
         if entity_type == EntityType.HARVESTER:
             blockers.append((pos.x, pos.y))
@@ -177,11 +179,15 @@ def _resolve_diagonal_plan(
 
     for first, second in [(ordered[0], ordered[1]), (ordered[1], ordered[0])]:
         first_pos = origin.add(first)
-        if not _is_return_tile_usable(self, c, first_pos):
+        second_pos = first_pos.add(second)
+        first_usable = _is_return_tile_usable(self, c, first_pos)
+        second_usable = _is_return_tile_routable(self, c, second_pos)
+        print(f"[DBG diag] origin={origin.x,origin.y} {first}->{first_pos.x,first_pos.y} usable={first_usable} | {second}->{second_pos.x,second_pos.y} routable={second_usable}")
+        if not first_usable:
             continue
         if reached_core(first_pos, self.core_pos):
             return _DiagonalKind.SPLIT, [first], None
-        if _is_return_tile_usable(self, c, first_pos.add(second)):
+        if second_usable:
             return _DiagonalKind.SPLIT, [first, second], None
 
     if origin == self.current_pos:
@@ -221,9 +227,38 @@ def _next_dir_after_move(
         return follow_dir
 
     _, split, _ = _resolve_diagonal_plan(self, c, move_pos, follow_dir)
-    return split[0] if split else None
+    if split:
+        return split[0]
+
+    # Diagonal split failed — fall back to either cardinal component of the diagonal.
+    ns, ew = split_diagonal(move_pos, move_pos.add(follow_dir))
+    return ns or ew
 
 
+
+
+def _is_return_tile_routable(self: Harvester, c: Controller, pos: Position) -> bool:
+    """Like _is_return_tile_usable but ignores temporary bot occupancy — for second-step lookahead."""
+    if reached_core(pos, self.core_pos):
+        return True
+    if not c.is_in_vision(pos):
+        if not on_map(c, pos):
+            return False
+        env = self.environment_map
+        if env is None:
+            return False
+        return env.tile(pos.x, pos.y) in (TRAVERSABLE, ORE_AXIONITE, CORE_OWN, UNKNOWN)
+    if c.get_tile_env(pos) == Environment.WALL:
+        return False
+    build_id = c.get_tile_building_id(pos)
+    if build_id is None:
+        return True
+    entity_type = c.get_entity_type(build_id)
+    if entity_type in (EntityType.ROAD, EntityType.CORE, EntityType.MARKER):
+        return True
+    if c.get_team(build_id) != c.get_team():
+        return False
+    return entity_type in (EntityType.CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER)
 
 
 def _is_return_tile_usable(self: Harvester, c: Controller, pos: Position) -> bool:
@@ -234,10 +269,10 @@ def _is_return_tile_usable(self: Harvester, c: Controller, pos: Position) -> boo
         if not on_map(c, pos):
             return False
         
-        if self.memory._tiles is None:
-            raise ValueError("Expected memory._tiles to be set")
-        
-        return self.memory._tiles[pos.y][pos.x] in (TRAVERSABLE, ORE_AXIONITE, CORE_OWN, UNKNOWN)
+        env = self.environment_map
+        if env is None:
+            return False
+        return env.tile(pos.x, pos.y) in (TRAVERSABLE, ORE_AXIONITE, CORE_OWN, UNKNOWN)
 
     if c.get_tile_env(pos) == Environment.WALL:
         return False
@@ -255,6 +290,8 @@ def _is_return_tile_usable(self: Harvester, c: Controller, pos: Position) -> boo
         return True
     if entity_type == EntityType.CORE:
         return True
+    if entity_type == EntityType.MARKER:
+        return True
     if c.get_team(build_id) != c.get_team():
         return False
     return entity_type in (EntityType.CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER)
@@ -266,6 +303,10 @@ def _clear_return_tile(_: Harvester, c: Controller, pos: Position) -> bool:
         return True
 
     entity_type = c.get_entity_type(build_id)
+    if entity_type == EntityType.MARKER:
+        if c.can_destroy(pos):
+            c.destroy(pos)
+        return True
     if entity_type == EntityType.ROAD:
         if c.can_destroy(pos):
             c.destroy(pos)
@@ -287,8 +328,12 @@ def _can_execute_return_step(self: Harvester, c: Controller, move_dir: Direction
         return True
 
     move_pos = self.current_pos.add(move_dir)
-    if c.get_tile_env(move_pos) == Environment.EMPTY and c.can_build_road(move_pos):
-        return True
+    if c.get_tile_env(move_pos) == Environment.EMPTY:
+        build_id = c.get_tile_building_id(move_pos)
+        if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER:
+            return True
+        if c.can_build_road(move_pos):
+            return True
 
     if next_move_dir is None:
         return False
@@ -345,6 +390,23 @@ def _build_first_connector(self: Harvester, c: Controller) -> bool:
     return True
 
 
+def _fix_current_conveyor(self: Harvester, c: Controller, intended_dir: Direction) -> None:
+    """If the conveyor under the bot points the wrong way, rebuild it."""
+    build_id = c.get_tile_building_id(self.current_pos)
+    if build_id is None:
+        return
+    if c.get_entity_type(build_id) != EntityType.CONVEYOR:
+        return
+    if c.get_direction(build_id) == intended_dir:
+        return
+    if c.can_destroy(self.current_pos):
+        c.destroy(self.current_pos)
+        _mark_network_reach_dirty(self)
+        if c.can_build_conveyor(self.current_pos, intended_dir):
+            c.build_conveyor(self.current_pos, intended_dir)
+            _mark_network_reach_dirty(self)
+
+
 def _build_return_step(self: Harvester, c: Controller) -> bool:
     planner_step, planner_path = _refresh_return_planner(self, c)
     carry_next: Direction | None = None
@@ -372,7 +434,9 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
 
     next_dir = _next_dir_after_move(self, c, move_dir, planner_path)
     if carry_next is not None:
-        next_dir = carry_next  # split's second step is more reliable than lookahead
+        next_dir = carry_next
+
+    _fix_current_conveyor(self, c, move_dir)
 
     move_pos = self.current_pos.add(move_dir)
 

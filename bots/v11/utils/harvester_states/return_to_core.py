@@ -128,6 +128,7 @@ def _ensure_return_planner(self: Harvester, c):
             self.core_pos.x,
             self.core_pos.y,
             block_mask=_RETURN_BLOCK_MASK,
+            unknown_cost=3.0,
         )
         self.return_planner = planner
     if planner is not None:
@@ -389,22 +390,22 @@ def _build_first_connector(self: Harvester, c: Controller) -> bool:
         return False
     return True
 
-
-def _fix_current_conveyor(self: Harvester, c: Controller, intended_dir: Direction) -> None:
-    """If the conveyor under the bot points the wrong way, rebuild it."""
-    build_id = c.get_tile_building_id(self.current_pos)
-    if build_id is None:
-        return
-    if c.get_entity_type(build_id) != EntityType.CONVEYOR:
-        return
-    if c.get_direction(build_id) == intended_dir:
-        return
-    if c.can_destroy(self.current_pos):
-        c.destroy(self.current_pos)
-        _mark_network_reach_dirty(self)
-        if c.can_build_conveyor(self.current_pos, intended_dir):
-            c.build_conveyor(self.current_pos, intended_dir)
-            _mark_network_reach_dirty(self)
+# Could be useful but it sometimes cooks our conveyors so we're disabling it for now
+# def _fix_current_conveyor(self: Harvester, c: Controller, intended_dir: Direction) -> None:
+#     """If the conveyor under the bot points the wrong way, rebuild it."""
+#     build_id = c.get_tile_building_id(self.current_pos)
+#     if build_id is None:
+#         return
+#     if c.get_entity_type(build_id) != EntityType.CONVEYOR:
+#         return
+#     if c.get_direction(build_id) == intended_dir:
+#         return
+#     if c.can_destroy(self.current_pos):
+#         c.destroy(self.current_pos)
+#         _mark_network_reach_dirty(self)
+#         if c.can_build_conveyor(self.current_pos, intended_dir):
+#             c.build_conveyor(self.current_pos, intended_dir)
+#             _mark_network_reach_dirty(self)
 
 
 def _build_return_step(self: Harvester, c: Controller) -> bool:
@@ -436,7 +437,7 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
     if carry_next is not None:
         next_dir = carry_next
 
-    _fix_current_conveyor(self, c, move_dir)
+    # _fix_current_conveyor(self, c, move_dir)
 
     move_pos = self.current_pos.add(move_dir)
 

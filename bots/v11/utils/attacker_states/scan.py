@@ -126,13 +126,7 @@ def _build_orbit(self: AttackerRevamped, c: Controller) -> list[Position]:
 
 
 def _scan(self: AttackerRevamped, c: Controller) -> None:
-    """Pick a new target if one is in sight; otherwise probe the map.
-
-    Before the enemy core is spotted, we walk toward the symmetry-based
-    core candidate. Once it's located, we switch to orbiting a ring around
-    it so we sweep past harvester conveyor belts instead of beelining at
-    the core itself.
-    """
+    """Pick a new target if one is in sight; otherwise probe the map."""
     _expire_blacklist(self, c)
     pick = _pick_target(self, c)
     if pick is not None:
@@ -144,9 +138,6 @@ def _scan(self: AttackerRevamped, c: Controller) -> None:
     if self.enemy_core_pos is not None:
         if self.orbit_points is None:
             self.orbit_points = _build_orbit(self, c)
-        # Skip every waypoint we're already within range of, so _search
-        # always gets a destination worth pathing toward — two adjacent
-        # waypoints can otherwise leave us stalled between them.
         for _ in range(len(self.orbit_points)):
             waypoint = self.orbit_points[self.orbit_idx]
             if self.current_pos.distance_squared(waypoint) > 20:

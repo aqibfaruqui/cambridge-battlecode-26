@@ -15,6 +15,22 @@ from utils.map.raw_map_representation import CORE_ENEMY, EnvironmentMap, WALL
 # CORE_ENEMY statically in the mask — no dynamic blocker needed.
 _ATTACK_BLOCK_MASK = (1 << WALL) | (1 << CORE_ENEMY)
 
+# Enemy turrets that can actually shoot us, keyed by their in-game attack r².
+_THREAT_R2 = {
+    EntityType.SENTINEL: 32,
+    EntityType.GUNNER: 13,
+}
+
+# Clockwise compass. Used to pick sidestep directions when the direct flee
+# vector is blocked — we only ever consider the primary dir and ±45°/±90° from
+# it, so we never walk back toward the threat.
+_CW_DIRS = (
+    Direction.NORTH, Direction.NORTHEAST,
+    Direction.EAST, Direction.SOUTHEAST,
+    Direction.SOUTH, Direction.SOUTHWEST,
+    Direction.WEST, Direction.NORTHWEST,
+)
+
 
 class AttackState(Enum):
     __slots__ = ()
@@ -119,6 +135,43 @@ class AttackerRevamped:
         if c.can_move(direction):
             c.move(direction)
 
+    # ---------- flee ----------
+
+    def _nearest_threat(self, c: Controller) -> Position | None:
+        """Closest enemy turret whose attack r² covers our current tile."""
+        my_team = c.get_team()
+        me = self.current_pos
+        nearest: Position | None = None
+        best_d2 = 1 << 30
+        for bld_id in c.get_nearby_buildings():
+            if c.get_team(bld_id) == my_team:
+                continue
+            r2 = _THREAT_R2.get(c.get_entity_type(bld_id))
+            if r2 is None:
+                continue
+            bp = c.get_position(bld_id)
+            d2 = (bp.x - me.x) ** 2 + (bp.y - me.y) ** 2
+            if d2 > r2:
+                continue
+            if d2 < best_d2:
+                best_d2 = d2
+                nearest = bp
+        return nearest
+
+    def _flee(self, c: Controller, threat: Position) -> None:
+        """Step one tile away from threat. Primary dir + ±45°/±90° sidesteps."""
+        if c.get_move_cooldown() > 0:
+            return
+        primary = threat.direction_to(self.current_pos)
+        if primary == Direction.CENTRE:
+            return
+        idx = _CW_DIRS.index(primary)
+        for offset in (0, -1, 1, -2, 2):
+            d = _CW_DIRS[(idx + offset) % 8]
+            if c.can_move(d):
+                c.move(d)
+                return
+
     # ---------- state handlers (delegate to utils.attacker_states) ----------
 
     def _scan(self, c: Controller):
@@ -176,23 +229,32 @@ class AttackerRevamped:
 
         my_id = c.get_id()
         hp_now = c.get_hp(my_id)
-        took_damage = self._last_hp is not None and hp_now < self._last_hp
+
+        # Priority 1 at every stage: self-heal if we're below max HP. Burns
+        # the action cooldown, so any fire/destroy/build below is deferred to
+        # the next tick — that's the intended trade.
+        if hp_now < c.get_max_hp(my_id) and c.can_heal(self.current_pos):
+            c.heal(self.current_pos)
+
         self._last_hp = hp_now
 
-        # Took damage this tick — abandon whatever we're doing, blacklist the
-        # tile (so SCAN stops re-picking the same death trap), advance the
-        # orbit so the next scan aims elsewhere, and self-heal on the spot.
-        # Forcing state back to SCAN also blocks any transition into REPLACE
-        # this tick.
-        if took_damage:
+        # Any enemy turret whose attack range covers us — flee before the
+        # state machine runs. Blacklist the current tile so SCAN stops
+        # re-picking it, drop any in-progress target, advance the orbit so the
+        # next scan aims elsewhere, and skip all state handlers this tick.
+        # Heal above has already been issued on action cooldown.
+        threat = self._nearest_threat(c)
+        if threat is not None:
+            self._flee(c, threat)
             self.blacklist[(self.current_pos.x, self.current_pos.y)] = c.get_current_round()
+            if self.target_conveyor is not None:
+                self.blacklist[(self.target_conveyor.x, self.target_conveyor.y)] = c.get_current_round()
             if self.orbit_points is not None:
                 self.orbit_idx = (self.orbit_idx + 1) % len(self.orbit_points)
-            if c.can_heal(self.current_pos):
-                c.heal(self.current_pos)
             self.target_conveyor = None
             self._planner_goal = None
             self.state = AttackState.SCAN
+            return
 
         # Drop stale targets before dispatching to a state handler.
         if self.target_conveyor is not None and not _target_still_valid(self, c):
@@ -202,13 +264,12 @@ class AttackerRevamped:
             self.state = AttackState.SCAN
 
         # Sequential (not elif) so SCAN→APPROACH and APPROACH→REPLACE can
-        # both fire in the same tick. REPLACE is skipped while under fire so
-        # we never commit to standing still on a contested tile.
+        # both fire in the same tick.
         if self.state == AttackState.SCAN:
             self._scan(c)
         if self.state == AttackState.APPROACH:
             self._approach(c)
-        if self.state == AttackState.REPLACE and not took_damage:
+        if self.state == AttackState.REPLACE:
             self._replace(c)
 
         # self._draw_debug(c)

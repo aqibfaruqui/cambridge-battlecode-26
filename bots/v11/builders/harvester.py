@@ -17,8 +17,10 @@ from utils.harvester_states.seek import (
     _seek as _seek_state,
 )
 from utils.pathfinding.movement import DIRECTIONS_4, reached_core
-from utils.map.raw_map_representation import EnvironmentMap
+from utils.map.raw_map_representation import EnvironmentMap, Symmetry
 from utils.pathfinding.d_star import DStarLite
+from utils.comms.broadcaster import Broadcaster
+from utils.comms.for_builder_bot import BuilderBotMessages
 
 
 # Profiling is only available locally. AWS runners ship a stripped-down CPython
@@ -82,6 +84,11 @@ class Harvester:
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
         self.heal_target: Position | None = None
+
+        self.broadcaster = Broadcaster()
+        self._symmetry_broadcasted = False
+        self._core_broadcasted = False
+        self._enemy_core_broadcasted = False
 
     def _check_for_foundry(self, c: Controller):
         """Identify if another builder has built a foundry"""
@@ -269,6 +276,33 @@ class Harvester:
         self.environment_map.update(c)
         self._check_for_foundry(c)
 
+        if not self.environment_map.symmetry_resolved:
+            raw = BuilderBotMessages.read_nearby_symmetry(c)
+            if raw is not None:
+                try:
+                    self.environment_map.force_symmetry(Symmetry(raw))
+                except ValueError:
+                    pass
+
+        if self.environment_map.symmetry is not None:
+            if not self._symmetry_broadcasted:
+                self.broadcaster.add_broadcast(
+                    BuilderBotMessages.encode_symmetry(self.environment_map.symmetry.value)
+                )
+                self._symmetry_broadcasted = True
+            if not self._core_broadcasted:
+                self.broadcaster.add_broadcast(
+                    BuilderBotMessages.encode_core_position(self.core_pos)
+                )
+                self._core_broadcasted = True
+            if not self._enemy_core_broadcasted:
+                enemy_core = self.environment_map.enemy_core_centre(self.core_pos)
+                if enemy_core is not None:
+                    self.broadcaster.add_broadcast(
+                        BuilderBotMessages.encode_enemy_core_position(enemy_core)
+                    )
+                    self._enemy_core_broadcasted = True
+
         match self.state:
             case HarvestState.SEEK:
                 self._seek(c)
@@ -276,6 +310,8 @@ class Harvester:
                 self._return(c)
             case HarvestState.PLACING_FOUNDRY:
                 self._placing_foundry(c)
+
+        self.broadcaster.run(c)
 
         self._draw_debug(c)
         if _PROFILE_ENABLED:

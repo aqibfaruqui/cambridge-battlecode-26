@@ -8,7 +8,9 @@ from utils.attacker_states.replace import (
 )
 from utils.attacker_states.scan import _scan as _scan_state
 from utils.pathfinding.d_star import DStarLite
-from utils.map.raw_map_representation import CORE_ENEMY, EnvironmentMap, WALL
+from utils.map.raw_map_representation import CORE_ENEMY, EnvironmentMap, Symmetry, WALL
+from utils.comms.broadcaster import Broadcaster
+from utils.comms.for_builder_bot import BuilderBotMessages
 
 # Builders cannot walk through the enemy core, and this attacker never targets
 # the enemy core itself (it hijacks conveyors near enemy harvesters), so block
@@ -82,6 +84,11 @@ class AttackerRevamped:
         self._planner: DStarLite | None = None
         self._planner_goal: tuple[int, int] | None = None
         self.target_pos: Position | None = None  # for debug lines
+
+        self.broadcaster = Broadcaster()
+        self._symmetry_broadcasted = False
+        self._core_broadcasted = False
+        self._enemy_core_broadcasted = False
 
     # ---------- navigation (shared by SCAN's idle probe and APPROACH) ----------
 
@@ -203,6 +210,33 @@ class AttackerRevamped:
             self._env_map = EnvironmentMap(c.get_map_width(), c.get_map_height())
         self._env_map.update(c)
 
+        if not self._env_map.symmetry_resolved:
+            raw = BuilderBotMessages.read_nearby_symmetry(c)
+            if raw is not None:
+                try:
+                    self._env_map.force_symmetry(Symmetry(raw))
+                except ValueError:
+                    pass
+
+        if self._env_map.symmetry is not None:
+            if not self._symmetry_broadcasted:
+                self.broadcaster.add_broadcast(
+                    BuilderBotMessages.encode_symmetry(self._env_map.symmetry.value)
+                )
+                self._symmetry_broadcasted = True
+            if not self._core_broadcasted:
+                self.broadcaster.add_broadcast(
+                    BuilderBotMessages.encode_core_position(self.core_pos)
+                )
+                self._core_broadcasted = True
+            if not self._enemy_core_broadcasted:
+                enemy_core = self._env_map.enemy_core_centre(self.core_pos)
+                if enemy_core is not None:
+                    self.broadcaster.add_broadcast(
+                        BuilderBotMessages.encode_enemy_core_position(enemy_core)
+                    )
+                    self._enemy_core_broadcasted = True
+
         # Seed enemy-core candidates once (SCAN uses these when idle).
         if not self.enemy_core_candidates:
             W, H = c.get_map_width(), c.get_map_height()
@@ -271,5 +305,7 @@ class AttackerRevamped:
             self._approach(c)
         if self.state == AttackState.REPLACE:
             self._replace(c)
+
+        self.broadcaster.run(c)
 
         # self._draw_debug(c)

@@ -6,7 +6,7 @@ from cambc import Direction, EntityType, Environment, Position, Controller
 from utils.pathfinding.d_star import DStarLite, _SEEK_BLOCK_MASK
 from utils.map.raw_map_representation import ORE_AXIONITE, ORE_TITANIUM
 from utils.pathfinding.movement import DIRECTIONS_4, _chebyshev, random_direction_4
-from utils.comms.marker import MarkerType, encode_seek_claim, decode_seek_claim, get_marker_id
+from utils.comms.for_builder_bot import BuilderBotMessages, BuilderBotMessageType
 
 if TYPE_CHECKING:
     from builders.harvester import Harvester
@@ -42,16 +42,23 @@ def _ensure_seek_blacklists(self) -> None:
 
 def _read_nearby_claims(c: Controller) -> set[tuple[int, int]]:
     claimed: set[tuple[int, int]] = set()
+    my_team = c.get_team()
     for pos in c.get_nearby_tiles():
-        marker_id = get_marker_id(c, pos)
-        if marker_id is None:
+        mid = c.get_tile_building_id(pos)
+        if mid is None:
             continue
-        if not c.get_team(marker_id) == c.get_team():
+        if c.get_entity_type(mid) != EntityType.MARKER:
             continue
-        value = c.get_marker_value(marker_id)
-        if ((value >> 24) & 0xFF) != MarkerType.SEEK_CLAIM:
+        if c.get_team(mid) != my_team:
             continue
-        target, _ = decode_seek_claim(value)
+        value = c.get_marker_value(mid)
+        msg_type = BuilderBotMessages.get_message_type(value)
+        if msg_type == BuilderBotMessageType.CLAIM_ORE:
+            target = BuilderBotMessages.decode_claim_ore(value)
+        elif msg_type == BuilderBotMessageType.CLAIM_POSITION:
+            target = BuilderBotMessages.decode_claim_position(value)
+        else:
+            continue
         claimed.add((target.x, target.y))
     return claimed
 
@@ -556,7 +563,10 @@ def _seek(self: Harvester, c: Controller):
 
     self.seek_unreachable_counts.pop((move_target.x, move_target.y), None)
 
-    claim_value = encode_seek_claim(self.target_pos, self.seek_target_is_ore)
+    if self.seek_target_is_ore:
+        claim_value = BuilderBotMessages.encode_claim_ore(self.target_pos)
+    else:
+        claim_value = BuilderBotMessages.encode_claim_position(self.target_pos)
     best_claim_tile = None
     best_claim_dist = float("inf")
     for _mp in c.get_nearby_tiles():

@@ -273,6 +273,47 @@ class EnvironmentMap:
     def symmetry(self) -> Symmetry | None:
         return _FLAG_TO_SYM.get(self._cand)
 
+    def force_symmetry(self, sym: Symmetry) -> None:
+        """Lock symmetry and mirror all observed tiles into their unknown counterparts.
+
+        Used when another bot broadcasts a resolved symmetry — we trust it and
+        immediately fill in the derived half of the map so D* planners (which
+        diff against EnvironmentMap on notify_map_changes) see the updated
+        terrain on their next step.
+        """
+        flag_for = {
+            Symmetry.HORIZONTAL: _SYM_H,
+            Symmetry.VERTICAL: _SYM_V,
+            Symmetry.ROTATIONAL: _SYM_R,
+        }[sym]
+        if self._cand == flag_for:
+            return
+        self._cand = flag_for
+
+        arr = self._array
+        observed = self._observed
+        w = self._w
+        h = self._h
+        wm1 = w - 1
+        hm1 = h - 1
+
+        for y in range(h):
+            for x in range(w):
+                idx = y * w + x
+                if observed[idx] == 0:
+                    continue
+                val = arr[idx]
+                if val == UNKNOWN:
+                    continue
+                if sym is Symmetry.HORIZONTAL:
+                    mx, my = wm1 - x, y
+                elif sym is Symmetry.VERTICAL:
+                    mx, my = x, hm1 - y
+                else:
+                    mx, my = wm1 - x, hm1 - y
+                if arr[my * w + mx] == UNKNOWN:
+                    self._set_tile(mx, my, val)
+
     def enemy_core_centre(self, own_core: Position) -> Position | None:
         """Centre of the enemy 3x3 core deduced from resolved symmetry, or None."""
         sym = _FLAG_TO_SYM.get(self._cand)

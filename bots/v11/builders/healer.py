@@ -41,7 +41,12 @@ class Healer:
     def _core_damaged(self, c: Controller) -> bool:
         if self.core_id is None:
             return False
-        return c.get_hp(self.core_id) < c.get_max_hp(self.core_id)
+        try:
+            hp = c.get_hp(self.core_id)
+            max_hp = c.get_max_hp(self.core_id)
+            return hp < max_hp
+        except Exception:
+            return False
 
     def _find_core_adjacent_enemy(self, c: Controller) -> Position | None:
         """Return the position of an enemy builder bot on the 8-tile ring, if any."""

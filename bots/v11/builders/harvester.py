@@ -81,6 +81,7 @@ class Harvester:
         self.return_next_dir: Direction | None = None
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
+        self.heal_target: Position | None = None
 
     def _check_for_foundry(self, c: Controller):
         """Identify if another builder has built a foundry"""

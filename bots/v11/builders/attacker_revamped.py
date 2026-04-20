@@ -50,13 +50,16 @@ class AttackerRevamped:
         self.target_conveyor: Position | None = None
         self.sentinels_placed = 0
 
-        # Hard-failed targets: never re-pick these.
-        self.blacklist: set[tuple[int, int]] = set()
+        # Hard-failed targets: skip for _BLACKLIST_TTL turns then retry.
+        self.blacklist: dict[tuple[int, int], int] = {}
 
         # On-tile attack stall detection — blacklist if HP stays above half
         # after 10 firing ticks (the belt is being out-healed).
         self._attack_target_key: tuple[int, int] | None = None
         self._attack_turns = 0
+
+        # HP delta tracking — used to bail out of REPLACE when we're being shot.
+        self._last_hp: int | None = None
         self._attack_max_hp = 0
 
         self._env_map: EnvironmentMap | None = None
@@ -171,20 +174,41 @@ class AttackerRevamped:
 
         self.current_pos = c.get_position()
 
+        my_id = c.get_id()
+        hp_now = c.get_hp(my_id)
+        took_damage = self._last_hp is not None and hp_now < self._last_hp
+        self._last_hp = hp_now
+
+        # Took damage this tick — abandon whatever we're doing, blacklist the
+        # tile (so SCAN stops re-picking the same death trap), advance the
+        # orbit so the next scan aims elsewhere, and self-heal on the spot.
+        # Forcing state back to SCAN also blocks any transition into REPLACE
+        # this tick.
+        if took_damage:
+            self.blacklist[(self.current_pos.x, self.current_pos.y)] = c.get_current_round()
+            if self.orbit_points is not None:
+                self.orbit_idx = (self.orbit_idx + 1) % len(self.orbit_points)
+            if c.can_heal(self.current_pos):
+                c.heal(self.current_pos)
+            self.target_conveyor = None
+            self._planner_goal = None
+            self.state = AttackState.SCAN
+
         # Drop stale targets before dispatching to a state handler.
         if self.target_conveyor is not None and not _target_still_valid(self, c):
-            self.blacklist.add((self.target_conveyor.x, self.target_conveyor.y))
+            self.blacklist[(self.target_conveyor.x, self.target_conveyor.y)] = c.get_current_round()
             self.target_conveyor = None
             self._planner_goal = None
             self.state = AttackState.SCAN
 
         # Sequential (not elif) so SCAN→APPROACH and APPROACH→REPLACE can
-        # both fire in the same tick.
+        # both fire in the same tick. REPLACE is skipped while under fire so
+        # we never commit to standing still on a contested tile.
         if self.state == AttackState.SCAN:
             self._scan(c)
         if self.state == AttackState.APPROACH:
             self._approach(c)
-        if self.state == AttackState.REPLACE:
+        if self.state == AttackState.REPLACE and not took_damage:
             self._replace(c)
 
         # self._draw_debug(c)

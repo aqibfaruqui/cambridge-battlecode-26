@@ -39,7 +39,7 @@ def _execute_replacement(self: AttackerRevamped, c: Controller) -> bool:
                 self._attack_max_hp = c.get_max_hp(bld_id)
             self._attack_turns += 1
             if self._attack_turns > 10 and c.get_hp(bld_id) * 2 >= self._attack_max_hp:
-                self.blacklist.add(key)
+                self.blacklist[key] = c.get_current_round()
                 return True
             if c.can_fire(me):
                 c.fire(me)
@@ -63,7 +63,7 @@ def _execute_replacement(self: AttackerRevamped, c: Controller) -> bool:
                 me = c.get_position()
                 break
         else:
-            self.blacklist.add((target.x, target.y))
+            self.blacklist[(target.x, target.y)] = c.get_current_round()
             return True
 
     facing = me.direction_to(target)

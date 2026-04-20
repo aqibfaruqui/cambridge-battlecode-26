@@ -13,6 +13,16 @@ if TYPE_CHECKING:
 # here and fall through to the enemy-core probe so we spread out.
 _MAX_FRIENDLY_SENTINELS_IN_VISION = 3
 
+# How many turns a hard-failed target stays blacklisted before we retry it.
+_BLACKLIST_TTL = 30
+
+
+def _expire_blacklist(self: AttackerRevamped, c: Controller) -> None:
+    cutoff = c.get_current_round() - _BLACKLIST_TTL
+    stale = [k for k, r in self.blacklist.items() if r < cutoff]
+    for k in stale:
+        del self.blacklist[k]
+
 # Chebyshev-radius ring around the enemy core used as SCAN waypoints once
 # the core is spotted — keeps the attacker circling harvester belts rather
 # than beelining at the core itself.
@@ -123,6 +133,7 @@ def _scan(self: AttackerRevamped, c: Controller) -> None:
     it so we sweep past harvester conveyor belts instead of beelining at
     the core itself.
     """
+    _expire_blacklist(self, c)
     pick = _pick_target(self, c)
     if pick is not None:
         self.target_conveyor = pick

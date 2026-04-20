@@ -46,6 +46,8 @@ def _read_nearby_claims(c: Controller) -> set[tuple[int, int]]:
         marker_id = get_marker_id(c, pos)
         if marker_id is None:
             continue
+        if not c.get_team(marker_id) == c.get_team():
+            continue
         value = c.get_marker_value(marker_id)
         if ((value >> 24) & 0xFF) != MarkerType.SEEK_CLAIM:
             continue

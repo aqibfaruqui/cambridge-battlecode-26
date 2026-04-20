@@ -1,6 +1,7 @@
 replay.replay*
 __pycache__/
 tmp/
+*_old/
 
 # RAG index cache
 .rag_index/

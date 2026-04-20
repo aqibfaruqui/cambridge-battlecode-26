@@ -48,6 +48,13 @@ _SEEK_BLOCK_MASK = (
     | (1 << _ENEMY_CORE)
 )
 
+# Symmetry bit flags — mirror EnvironmentMap's private encoding so we
+# can read env._cand directly without a cross-module import.
+_SYM_H = 1
+_SYM_V = 2
+_SYM_R = 4
+_SYM_SINGLE = frozenset({_SYM_H, _SYM_V, _SYM_R})
+
 
 class DStarLite:
     __slots__ = (
@@ -66,6 +73,9 @@ class DStarLite:
         "_goal",
         "_last",
         "_snapshot",
+        "_prev_arr",
+        "_sym_resolved",
+        "_sym_flag",
         "_block_mask",
         "_dynamic_blocked",
     )
@@ -101,8 +111,19 @@ class DStarLite:
         self._rhs[self._goal] = 0.0
         self._enqueue(self._goal)
 
+        # _snapshot is the effective view (env observations + symmetry
+        # predictions); _prev_arr mirrors env._array for the memcmp fast-path.
         self._snapshot = bytearray(env._array)
+        self._prev_arr = bytearray(env._array)
+        self._sym_resolved = False
+        self._sym_flag = 0
         self._dynamic_blocked: set[int] = set()
+
+        cand = env._cand
+        if cand in _SYM_SINGLE:
+            self._sym_resolved = True
+            self._sym_flag = cand
+            self._backfill_symmetric(trigger_recomputes=False)
 
     # ---------- Public API ----------
 
@@ -121,11 +142,24 @@ class DStarLite:
         self._start_y = sy
 
     def notify_map_changes(self) -> bool:
-        arr = self._env._array
+        env = self._env
+        arr = env._array
+        prev = self._prev_arr
         snapshot = self._snapshot
 
-        # Fast path: bytearray equality is a single C memcmp.
-        if arr == snapshot:
+        # memcmp fast-path against pure copy of arr (snapshot may diverge
+        # due to predictions, so we can't compare it directly).
+        arr_changed = arr != prev
+
+        sym_newly_resolved = False
+        if not self._sym_resolved:
+            cand = env._cand
+            if cand in _SYM_SINGLE:
+                self._sym_resolved = True
+                self._sym_flag = cand
+                sym_newly_resolved = True
+
+        if not arr_changed and not sym_newly_resolved:
             return False
 
         w = self._w
@@ -133,33 +167,41 @@ class DStarLite:
         n = self._n
         recompute = self._recompute_rhs
 
-        i = 0
-        while i < n:
-            if arr[i] != snapshot[i]:
-                snapshot[i] = arr[i]
+        if arr_changed:
+            i = 0
+            while i < n:
+                a = arr[i]
+                # `a != _UNKNOWN` preserves symmetry predictions in snapshot.
+                if a != snapshot[i] and a != _UNKNOWN:
+                    snapshot[i] = a
 
-                x = i % w
-                y = i // w
-                # Inlined: for pred in _pred(i): recompute(pred)
-                if y > 0:
-                    recompute(i - w)
+                    x = i % w
+                    y = i // w
+                    # Inlined: for pred in _pred(i): recompute(pred)
+                    if y > 0:
+                        recompute(i - w)
+                        if x > 0:
+                            recompute(i - w - 1)
+                        if x < w - 1:
+                            recompute(i - w + 1)
+                    if y < h - 1:
+                        recompute(i + w)
+                        if x > 0:
+                            recompute(i + w - 1)
+                        if x < w - 1:
+                            recompute(i + w + 1)
                     if x > 0:
-                        recompute(i - w - 1)
+                        recompute(i - 1)
                     if x < w - 1:
-                        recompute(i - w + 1)
-                if y < h - 1:
-                    recompute(i + w)
-                    if x > 0:
-                        recompute(i + w - 1)
-                    if x < w - 1:
-                        recompute(i + w + 1)
-                if x > 0:
-                    recompute(i - 1)
-                if x < w - 1:
-                    recompute(i + 1)
+                        recompute(i + 1)
 
-                recompute(i)
-            i += 1
+                    recompute(i)
+                i += 1
+            # Sync prev to arr in one C-level slice copy.
+            prev[:] = arr
+
+        if sym_newly_resolved:
+            self._backfill_symmetric(trigger_recomputes=True)
 
         self._compute_shortest_path()
         return True
@@ -201,7 +243,7 @@ class DStarLite:
         h = self._h
         x = start % w
         y = start // w
-        arr = self._env._array
+        arr = self._snapshot
         mask = self._block_mask
         dyn = self._dynamic_blocked
 
@@ -256,7 +298,7 @@ class DStarLite:
 
         w = self._w
         h = self._h
-        arr = self._env._array
+        arr = self._snapshot
         mask = self._block_mask
         dyn = self._dynamic_blocked
 
@@ -298,6 +340,61 @@ class DStarLite:
 
         path.append((goal % w, goal // w))
         return path
+
+    # ---------- Symmetry backfill ----------
+
+    def _backfill_symmetric(self, *, trigger_recomputes: bool) -> None:
+        # Runs at most once per instance — when env's symmetry candidate set
+        # narrows to a single bit. EnvironmentMap only mirrors newly-observed
+        # tiles, so existing observations need retroactive mirroring here.
+        # After this, env handles propagation for future observations.
+        sym_flag = self._sym_flag
+        snapshot = self._snapshot
+        w = self._w
+        h = self._h
+        n = self._n
+        wm1 = w - 1
+        hm1 = h - 1
+        recompute = self._recompute_rhs
+
+        i = 0
+        while i < n:
+            val = snapshot[i]
+            if val != _UNKNOWN:
+                x = i % w
+                y = i // w
+                if sym_flag == _SYM_H:
+                    mx = wm1 - x
+                    my = y
+                elif sym_flag == _SYM_V:
+                    mx = x
+                    my = hm1 - y
+                else:  # _SYM_R
+                    mx = wm1 - x
+                    my = hm1 - y
+                mi = my * w + mx
+                if snapshot[mi] == _UNKNOWN:
+                    snapshot[mi] = val
+                    if trigger_recomputes:
+                        # Inlined: for pred in _pred(mi): recompute(pred)
+                        if my > 0:
+                            recompute(mi - w)
+                            if mx > 0:
+                                recompute(mi - w - 1)
+                            if mx < w - 1:
+                                recompute(mi - w + 1)
+                        if my < h - 1:
+                            recompute(mi + w)
+                            if mx > 0:
+                                recompute(mi + w - 1)
+                            if mx < w - 1:
+                                recompute(mi + w + 1)
+                        if mx > 0:
+                            recompute(mi - 1)
+                        if mx < w - 1:
+                            recompute(mi + 1)
+                        recompute(mi)
+            i += 1
 
     # ---------- Core D* Lite ----------
 
@@ -373,7 +470,7 @@ class DStarLite:
         y = u // w
 
         g = self._g
-        arr = self._env._array
+        arr = self._snapshot
         mask = self._block_mask
         start = self._start
         dyn = self._dynamic_blocked
@@ -570,7 +667,7 @@ class DStarLite:
             return False
         if idx in self._dynamic_blocked:
             return True
-        return bool((self._block_mask >> self._env._array[idx]) & 1)
+        return bool((self._block_mask >> self._snapshot[idx]) & 1)
 
     def _to_idx(self, x: int, y: int) -> int:
         return y * self._w + x

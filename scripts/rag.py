@@ -20,7 +20,7 @@ DOCS_DIR = ROOT / "docs"
 INDEX_DIR = ROOT / ".rag_index"
 
 EMBEDDING_MODEL = "voyage-3-lite"
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-sonnet-4-6"
 TOP_K = 5
 
 

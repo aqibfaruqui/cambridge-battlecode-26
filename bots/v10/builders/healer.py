@@ -129,14 +129,14 @@ class Healer:
         return True
 
     def _try_heal_conveyor(self, c: Controller) -> bool:
-        """Heal the most-damaged allied conveyor within action radius 2."""
+        """Heal the lowest-HP allied conveyor within action radius 2."""
         if c.get_action_cooldown() > 0:
             return False
         me = c.get_position()
         my_team = c.get_team()
         w, h = c.get_map_width(), c.get_map_height()
         best: Position | None = None
-        best_ratio = float("inf")
+        best_hp = float("inf")
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
                 x, y = me.x + dx, me.y + dy
@@ -158,9 +158,8 @@ class Healer:
                     continue
                 if not c.can_heal(p):
                     continue
-                ratio = hp / max_hp
-                if ratio < best_ratio:
-                    best_ratio = ratio
+                if hp < best_hp:
+                    best_hp = hp
                     best = p
         if best is None:
             return False
@@ -172,6 +171,9 @@ class Healer:
             return
 
         me = c.get_position()
+
+        step1_idx = (self.ring_idx + 1) % len(_RING_DIRECTIONS)
+        step1_pos = self._ring_pos(step1_idx)
 
         # Prefer stepping one tile clockwise; fall back to step=2 (still
         # adjacent on diagonals) so a permanently-blocked tile can be skipped.
@@ -188,11 +190,20 @@ class Healer:
                 self.ring_idx = next_idx
                 return
 
+        # Another builder bot is parked on the next tile — detour through
+        # the core (centre of the 3x3) and resume at the square past the
+        # blocker on the following tick.
+        if c.get_tile_builder_bot_id(step1_pos) is not None:
+            direction = me.direction_to(self.core_pos)
+            if direction != Direction.CENTRE and c.can_move(direction):
+                c.move(direction)
+                self.ring_idx = step1_idx
+                return
+
         # Nothing walkable ahead — pave the immediate next tile so we can
         # cross it next turn.
-        forward_pos = self._ring_pos(self.ring_idx + 1)
-        if c.get_action_cooldown() == 0 and c.can_build_road(forward_pos):
-            c.build_road(forward_pos)
+        if c.get_action_cooldown() == 0 and c.can_build_road(step1_pos):
+            c.build_road(step1_pos)
 
     def run(self, c: Controller):
         if self.core_id is None:

@@ -1,11 +1,12 @@
 from cambc import Controller, EntityType
 from turrets.gunner import Gunner
 from turrets.launcher import Launcher
+from turrets.sentinel import Sentinel
 
 class Turret:
     def __init__(self, turret_etype: EntityType):
         self.etype = turret_etype
-        self.role: Gunner | Launcher | None = None
+        self.role: Gunner | Launcher | Sentinel | None = None
         self.core_pos = None
 
     def run(self, c: Controller):
@@ -23,8 +24,7 @@ class Turret:
                 case EntityType.GUNNER:
                     self.role = Gunner()
                 case EntityType.SENTINEL:
-                    # self.role = Sentinel()
-                    pass
+                    self.role = Sentinel()
                 case EntityType.BREACH:
                     # self.role = Breach()
                     pass

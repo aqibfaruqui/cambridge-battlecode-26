@@ -129,14 +129,14 @@ class Healer:
         return True
 
     def _try_heal_conveyor(self, c: Controller) -> bool:
-        """Heal the most-damaged allied conveyor within action radius 2."""
+        """Heal the lowest-HP allied conveyor within action radius 2."""
         if c.get_action_cooldown() > 0:
             return False
         me = c.get_position()
         my_team = c.get_team()
         w, h = c.get_map_width(), c.get_map_height()
         best: Position | None = None
-        best_ratio = float("inf")
+        best_hp = float("inf")
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
                 x, y = me.x + dx, me.y + dy
@@ -158,9 +158,8 @@ class Healer:
                     continue
                 if not c.can_heal(p):
                     continue
-                ratio = hp / max_hp
-                if ratio < best_ratio:
-                    best_ratio = ratio
+                if hp < best_hp:
+                    best_hp = hp
                     best = p
         if best is None:
             return False

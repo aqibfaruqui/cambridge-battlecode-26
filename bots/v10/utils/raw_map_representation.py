@@ -1,6 +1,6 @@
 from enum import Enum, auto
 
-from cambc import Controller, EntityType, Environment
+from cambc import Controller, EntityType, Environment, Position
 
 _ENV_MAP = {
     Environment.EMPTY: 1,
@@ -272,6 +272,20 @@ class EnvironmentMap:
     @property
     def symmetry(self) -> Symmetry | None:
         return _FLAG_TO_SYM.get(self._cand)
+
+    def enemy_core_centre(self, own_core: Position) -> Position | None:
+        """Centre of the enemy 3x3 core deduced from resolved symmetry, or None."""
+        sym = _FLAG_TO_SYM.get(self._cand)
+        if sym is None:
+            return None
+        wm1 = self._w - 1
+        hm1 = self._h - 1
+        cx, cy = own_core.x, own_core.y
+        if sym is Symmetry.ROTATIONAL:
+            return Position(wm1 - cx, hm1 - cy)
+        if sym is Symmetry.HORIZONTAL:
+            return Position(wm1 - cx, cy)
+        return Position(cx, hm1 - cy)
 
     def __str__(self) -> str:
         w, h, arr = self._w, self._h, self._array

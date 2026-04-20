@@ -8,7 +8,7 @@ from utils.attacker_states.replace import (
 )
 from utils.attacker_states.scan import _scan as _scan_state
 from utils.d_star import DStarLite
-from utils.raw_map_representation import CORE_ENEMY, EnvironmentMap, Symmetry, WALL
+from utils.raw_map_representation import CORE_ENEMY, EnvironmentMap, WALL
 
 # Builders cannot walk through the enemy core, and this attacker never targets
 # the enemy core itself (it hijacks conveyors near enemy harvesters), so block
@@ -21,17 +21,15 @@ class AttackState(Enum):
 
     SCAN = "scan"              # Probing for an enemy harvester→conveyor to hijack
     APPROACH = "approach"      # Walking onto a locked-in target conveyor
-    REPLACE = "replace"        # On-tile: fire conveyor → splitter → sentinel
+    REPLACE = "replace"        # On-tile: fire conveyor → step off → sentinel
 
 
 class AttackerRevamped:
     """Disruption-focused attacker.
 
-    Hijacks enemy conveyors that feed titanium harvesters: destroys the
-    conveyor, drops our splitter in the same facing (so the enemy stream flows
-    into a splitter with no useful downstream — most packets are wasted), and
-    plants a sentinel on an adjacent tile so the replacement is hard to
-    dislodge.
+    Hijacks enemy conveyors that feed titanium harvesters: walks onto the
+    conveyor, fires it down with the own-tile attack, steps off, and drops a
+    sentinel on the now-empty tile facing the enemy core.
     """
 
     def __init__(self, core_pos: Position):
@@ -50,12 +48,16 @@ class AttackerRevamped:
 
         # Locked-in target
         self.target_conveyor: Position | None = None
-        self.target_direction: Direction | None = None
-        self.sentinel_tile: Position | None = None
         self.sentinels_placed = 0
 
         # Hard-failed targets: never re-pick these.
         self.blacklist: set[tuple[int, int]] = set()
+
+        # On-tile attack stall detection — blacklist if HP stays above half
+        # after 10 firing ticks (the belt is being out-healed).
+        self._attack_target_key: tuple[int, int] | None = None
+        self._attack_turns = 0
+        self._attack_max_hp = 0
 
         self._env_map: EnvironmentMap | None = None
         self._planner: DStarLite | None = None
@@ -155,16 +157,11 @@ class AttackerRevamped:
                 Position(cx, H - 1 - cy),          # vertical
             ]
 
-        # Jump the SCAN probe index once map symmetry is known.
-        if self.enemy_core_pos is None and self._env_map.symmetry_resolved:
-            sym_idx = {Symmetry.ROTATIONAL: 0, Symmetry.HORIZONTAL: 1, Symmetry.VERTICAL: 2}
-            sym = self._env_map.symmetry
-            new_idx = sym_idx.get(sym, 0) if sym is not None else 0
-            if new_idx != self.enemy_core_candidate_idx:
-                self.enemy_core_candidate_idx = new_idx
-                self._planner_goal = None
-
-        # Lock the real enemy core position as soon as it's visible.
+        # Resolve the enemy core: prefer symmetry-deduced centre; fall back to
+        # direct sight for the rare case where we spot it before the map has
+        # enough data to narrow symmetry.
+        if self.enemy_core_pos is None:
+            self.enemy_core_pos = self._env_map.enemy_core_centre(self.core_pos)
         if self.enemy_core_pos is None:
             for eid in c.get_nearby_buildings():
                 if (c.get_entity_type(eid) == EntityType.CORE
@@ -178,8 +175,6 @@ class AttackerRevamped:
         if self.target_conveyor is not None and not _target_still_valid(self, c):
             self.blacklist.add((self.target_conveyor.x, self.target_conveyor.y))
             self.target_conveyor = None
-            self.target_direction = None
-            self.sentinel_tile = None
             self._planner_goal = None
             self.state = AttackState.SCAN
 

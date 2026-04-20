@@ -10,9 +10,17 @@ _PRIORITY = (
 
 class Sentinel:
     def __init__(self):
-        pass
+        self.empty_rounds = 0
 
     def run(self, c: Controller):
+        if c.get_ammo_amount() == 0:
+            self.empty_rounds += 1
+            if self.empty_rounds > 50:
+                c.self_destruct()
+                return
+        else:
+            self.empty_rounds = 0
+
         my_team = c.get_team()
         my_pos = c.get_position()
 

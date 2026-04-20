@@ -2,6 +2,10 @@ from cambc import Controller, EntityType, Position
 
 _PRIORITY = (
     EntityType.BUILDER_BOT,
+    EntityType.LAUNCHER,
+    EntityType.BREACH,
+    EntityType.SENTINEL,
+    EntityType.GUNNER,
     EntityType.FOUNDRY,
     EntityType.CORE,
     EntityType.BARRIER,

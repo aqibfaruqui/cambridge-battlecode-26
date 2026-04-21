@@ -9,9 +9,8 @@ from utils.harvester_states.return_to_core import (
     _attack_enemy_under_bot,
     _build_first_connector,
     _build_return_step,
-    _ensure_post_bridge_conveyor,
+    _handle_bridge_state,
     _harvester_attached_to_core,
-    _handle_pending_return_bridge,
     _reset_return_state,
 )
 from utils.harvester_states.seek import (
@@ -274,20 +273,7 @@ class Harvester:
                 self.just_placed = False
             return
 
-        if _harvester_attached_to_core(self, c):
-            self.state = HarvestState.PLACING_FOUNDRY if self._can_trigger_foundry(c) else HarvestState.SEEK
-            self.target_pos = None
-            self.seek_target_is_ore = False
-            self.harvester_pos = None
-            _reset_return_state(self)
-            return
-
-        if self.bridge_from is not None:
-            _handle_pending_return_bridge(self, c)
-            return
-
-        if self.post_bridge_conveyor:
-            _ensure_post_bridge_conveyor(self, c)
+        if _handle_bridge_state(self, c):
             return
 
         _build_return_step(self, c)

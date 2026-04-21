@@ -273,9 +273,70 @@ class EnvironmentMap:
     def symmetry(self) -> Symmetry | None:
         return _FLAG_TO_SYM.get(self._cand)
 
+    @property
+    def assumed_symmetry(self) -> Symmetry | None:
+        """Resolved symmetry if known, else ROTATIONAL while it's still a live candidate.
+
+        Lets navigation commit to a rotational enemy-core guess before elimination
+        completes — gives up (returns None) once the map disproves rotational.
+        """
+        resolved = _FLAG_TO_SYM.get(self._cand)
+        if resolved is not None:
+            return resolved
+        if self._cand & _SYM_R:
+            return Symmetry.ROTATIONAL
+        return None
+
+    def force_symmetry(self, sym: Symmetry) -> None:
+        """Lock symmetry and mirror all observed tiles into their unknown counterparts.
+
+        Used when another bot broadcasts a resolved symmetry — we trust it and
+        immediately fill in the derived half of the map so D* planners (which
+        diff against EnvironmentMap on notify_map_changes) see the updated
+        terrain on their next step.
+        """
+        flag_for = {
+            Symmetry.HORIZONTAL: _SYM_H,
+            Symmetry.VERTICAL: _SYM_V,
+            Symmetry.ROTATIONAL: _SYM_R,
+        }[sym]
+        if self._cand == flag_for:
+            return
+        self._cand = flag_for
+
+        arr = self._array
+        observed = self._observed
+        w = self._w
+        h = self._h
+        wm1 = w - 1
+        hm1 = h - 1
+
+        for y in range(h):
+            for x in range(w):
+                idx = y * w + x
+                if observed[idx] == 0:
+                    continue
+                val = arr[idx]
+                if val == UNKNOWN:
+                    continue
+                if sym is Symmetry.HORIZONTAL:
+                    mx, my = wm1 - x, y
+                elif sym is Symmetry.VERTICAL:
+                    mx, my = x, hm1 - y
+                else:
+                    mx, my = wm1 - x, hm1 - y
+                if arr[my * w + mx] == UNKNOWN:
+                    self._set_tile(mx, my, val)
+
     def enemy_core_centre(self, own_core: Position) -> Position | None:
         """Centre of the enemy 3x3 core deduced from resolved symmetry, or None."""
-        sym = _FLAG_TO_SYM.get(self._cand)
+        return self._core_centre_for(_FLAG_TO_SYM.get(self._cand), own_core)
+
+    def assumed_enemy_core_centre(self, own_core: Position) -> Position | None:
+        """Centre deduced from `assumed_symmetry` (rotational fallback while live)."""
+        return self._core_centre_for(self.assumed_symmetry, own_core)
+
+    def _core_centre_for(self, sym: "Symmetry | None", own_core: Position) -> Position | None:
         if sym is None:
             return None
         wm1 = self._w - 1

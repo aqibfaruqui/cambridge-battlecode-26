@@ -29,6 +29,13 @@ class _DiagonalKind(Enum):
 
 _MAX_BRIDGE_FAILS = 3
 
+_ENEMY_WALKABLE_TYPES = (
+    EntityType.CONVEYOR,
+    EntityType.BRIDGE,
+    EntityType.SPLITTER,
+    EntityType.ROAD,
+)
+
 
 def _mark_network_reach_dirty(self: Harvester) -> None:
     self.network_reach_dirty = True
@@ -100,6 +107,34 @@ def _reset_return_state(self: Harvester):
     self.return_planner = None
     self.post_bridge_conveyor = False
     self.return_bridge_fail_counts = {}
+    self.return_stall_pos = None
+    self.return_stall_count = 0
+
+
+def _enemy_walkable_at(c: Controller, pos: Position) -> bool:
+    bid = c.get_tile_building_id(pos)
+    if bid is None:
+        return False
+    if c.get_team(bid) == c.get_team():
+        return False
+    return c.get_entity_type(bid) in _ENEMY_WALKABLE_TYPES
+
+
+def _attack_enemy_under_bot(self: Harvester, c: Controller) -> bool:
+    """If standing on a damageable enemy walkable tile, fire at it.
+
+    Returns True when the bot is sitting on such a tile this turn — the caller
+    should return without running the rest of the return flow. When fire clears
+    the tile, queue a post-bridge conveyor placement so we rebuild the chain.
+    """
+    if not _enemy_walkable_at(c, self.current_pos):
+        return False
+    if c.can_fire(self.current_pos):
+        c.fire(self.current_pos)
+        if c.get_tile_building_id(self.current_pos) is None:
+            self.post_bridge_conveyor = True
+            _mark_network_reach_dirty(self)
+    return True
 
 
 def _return_dynamic_blockers(c: Controller) -> list[tuple[int, int]]:
@@ -183,7 +218,6 @@ def _resolve_diagonal_plan(
         second_pos = first_pos.add(second)
         first_usable = _is_return_tile_routable(self, c, first_pos)
         second_usable = _is_return_tile_routable(self, c, second_pos)
-        print(f"[DBG diag] origin={origin.x,origin.y} {first}->{first_pos.x,first_pos.y} usable={first_usable} | {second}->{second_pos.x,second_pos.y} routable={second_usable}")
         if not first_usable:
             continue
         if reached_core(first_pos, self.core_pos):
@@ -305,8 +339,6 @@ def _clear_return_tile(_: Harvester, c: Controller, pos: Position) -> bool:
 
     entity_type = c.get_entity_type(build_id)
     if entity_type == EntityType.MARKER:
-        if c.can_destroy(pos):
-            c.destroy(pos)
         return True
     if entity_type == EntityType.ROAD:
         if c.can_destroy(pos):
@@ -357,7 +389,7 @@ def _build_first_connector(self: Harvester, c: Controller) -> bool:
         )
 
     build_id = c.get_tile_building_id(move_pos)
-    if build_id is not None and c.get_entity_type(build_id) == EntityType.ROAD and c.can_destroy(move_pos):
+    if build_id is not None and c.get_entity_type(build_id) in {EntityType.ROAD, EntityType.CONVEYOR} and c.can_destroy(move_pos):
         c.destroy(move_pos)
 
     step = _planner_step_at(self, c, move_pos)
@@ -386,8 +418,10 @@ def _build_first_connector(self: Harvester, c: Controller) -> bool:
         step_dir = get_direction_4(self.current_pos, move_pos)
         if c.can_move(step_dir):
             c.move(step_dir)
+            self.return_next_dir = conveyor_dir
             return True
         return False
+    self.return_next_dir = conveyor_dir
     return True
 
 # Could be useful but it sometimes cooks our conveyors so we're disabling it for now
@@ -440,6 +474,18 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
     # _fix_current_conveyor(self, c, move_dir)
 
     move_pos = self.current_pos.add(move_dir)
+    if next_dir is not None:
+        bid = c.get_tile_building_id(move_pos)
+        if (
+            bid is not None
+            and c.get_entity_type(bid) == EntityType.CONVEYOR
+            and c.get_team(bid) == c.get_team()
+            and c.get_direction(bid) != next_dir
+            and c.can_destroy(move_pos)
+        ):
+            c.destroy(move_pos)
+            _mark_network_reach_dirty(self)
+            return False
 
     # Core entry — just move, no conveyor needed.
     build_id = c.get_tile_building_id(move_pos)
@@ -448,6 +494,13 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
     ):
         if not c.can_move(move_dir):
             return False
+        c.move(move_dir)
+        return True
+
+    if _enemy_walkable_at(c, move_pos):
+        if not c.can_move(move_dir):
+            return False
+        self.return_next_dir = next_dir
         c.move(move_dir)
         return True
 
@@ -469,7 +522,7 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
         c.build_road(move_pos)
     if not c.can_move(move_dir):
         return False
-    self.return_next_dir = carry_next
+    self.return_next_dir = next_dir
     c.move(move_dir)
     return True
 
@@ -576,6 +629,7 @@ def _ensure_post_bridge_conveyor(self: Harvester, c: Controller) -> bool:
     if tile_empty and c.can_build_conveyor(self.current_pos, conveyor_dir):
         c.build_conveyor(self.current_pos, conveyor_dir)
         _mark_network_reach_dirty(self)
+        self.return_next_dir = conveyor_dir
 
     self.post_bridge_conveyor = False
     return True

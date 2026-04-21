@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING
 
 from cambc import Controller, Direction, EntityType
 
+from utils.attacker_states.state import AttackState
+
 if TYPE_CHECKING:
     from builders.attacker_revamped import AttackerRevamped
 
@@ -12,9 +14,16 @@ _STEP_OFF = (
     Direction.NORTHEAST, Direction.SOUTHEAST, Direction.SOUTHWEST, Direction.NORTHWEST,
 )
 
+# Attack r² for each turret (same as its vision r²). Outside the sentinel's
+# range the sentinel can't hit the core anyway, and inside the gunner's range
+# both can reach it — either way the cheaper gunner is the right pick. Only
+# the in-between band (gunner < d² <= sentinel) warrants the pricier sentinel.
+_SENTINEL_ATTACK_RADIUS_SQ = 32
+_GUNNER_ATTACK_RADIUS_SQ = 9
+
 
 def _execute_replacement(self: AttackerRevamped, c: Controller) -> bool:
-    """Attack, step off, drop a sentinel on the same tile we attacked."""
+    """Attack, step off, drop a turret on the same tile we attacked."""
     target = self.target_conveyor
     assert target is not None
     me = self.current_pos
@@ -24,8 +33,8 @@ def _execute_replacement(self: AttackerRevamped, c: Controller) -> bool:
     team = c.get_team(bld_id) if bld_id is not None else None
     etype = c.get_entity_type(bld_id) if bld_id is not None else None
 
-    # Sentinel already placed — done.
-    if team == my_team and etype == EntityType.SENTINEL:
+    # Turret already placed — done.
+    if team == my_team and etype in (EntityType.SENTINEL, EntityType.GUNNER):
         self.sentinels_placed += 1
         return True
 
@@ -73,22 +82,39 @@ def _execute_replacement(self: AttackerRevamped, c: Controller) -> bool:
             facing = d
 
     ti = c.get_global_resources()[0]
-    sent_cost = c.get_sentinel_cost()[0]
+
+    # Gunner wins outside the sentinel's range (sentinel can't reach anyway)
+    # and inside the gunner's range (gunner also reaches, and is cheaper).
+    # Use the sentinel only in the middle band where only it can hit the core.
+    ec = self.enemy_core_pos
+    if ec is not None:
+        d2 = target.distance_squared(ec)
+        use_gunner = d2 > _SENTINEL_ATTACK_RADIUS_SQ or d2 <= _GUNNER_ATTACK_RADIUS_SQ
+    else:
+        use_gunner = False
+    if use_gunner:
+        turret_cost = c.get_gunner_cost()[0]
+        can_build_turret = c.can_build_gunner
+        build_turret = c.build_gunner
+    else:
+        turret_cost = c.get_sentinel_cost()[0]
+        can_build_turret = c.can_build_sentinel
+        build_turret = c.build_sentinel
 
     # Road reservation down — upgrade when Ti lands (destroy is action-free,
-    # so build_sentinel chains in).
+    # so build_turret chains in).
     if our_road:
-        if ti >= sent_cost and c.can_destroy(target):
+        if ti >= turret_cost and c.can_destroy(target):
             c.destroy(target)
-            if c.can_build_sentinel(target, facing):
-                c.build_sentinel(target, facing)
+            if can_build_turret(target, facing):
+                build_turret(target, facing)
                 self.sentinels_placed += 1
                 return True
         return False
 
-    # Empty target: sentinel if affordable, else a 1-Ti road to reserve.
-    if ti >= sent_cost and c.can_build_sentinel(target, facing):
-        c.build_sentinel(target, facing)
+    # Empty target: turret if affordable, else a 1-Ti road to reserve.
+    if ti >= turret_cost and can_build_turret(target, facing):
+        build_turret(target, facing)
         self.sentinels_placed += 1
         return True
     if c.can_build_road(target):
@@ -107,7 +133,7 @@ def _target_still_valid(self: AttackerRevamped, c: Controller) -> bool:
         return True
     et = c.get_entity_type(bld_id)
     if c.get_team(bld_id) == c.get_team():
-        return et in (EntityType.SENTINEL, EntityType.ROAD)
+        return et in (EntityType.SENTINEL, EntityType.GUNNER, EntityType.ROAD)
     return et in (EntityType.CONVEYOR, EntityType.BRIDGE)
 
 
@@ -115,4 +141,4 @@ def _replace(self: AttackerRevamped, c: Controller) -> None:
     if _execute_replacement(self, c):
         self.target_conveyor = None
         self._planner_goal = None
-        self.state = type(self.state).SCAN
+        self.state = AttackState.SCAN

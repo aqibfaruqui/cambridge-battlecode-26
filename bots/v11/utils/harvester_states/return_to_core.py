@@ -420,8 +420,10 @@ def _build_first_connector(self: Harvester, c: Controller) -> bool:
         step_dir = get_direction_4(self.current_pos, move_pos)
         if c.can_move(step_dir):
             c.move(step_dir)
+            self.return_next_dir = conveyor_dir
             return True
         return False
+    self.return_next_dir = conveyor_dir
     return True
 
 # Could be useful but it sometimes cooks our conveyors so we're disabling it for now
@@ -500,7 +502,7 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
     if _enemy_walkable_at(c, move_pos):
         if not c.can_move(move_dir):
             return False
-        self.return_next_dir = carry_next
+        self.return_next_dir = next_dir
         c.move(move_dir)
         return True
 
@@ -522,7 +524,7 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
         c.build_road(move_pos)
     if not c.can_move(move_dir):
         return False
-    self.return_next_dir = carry_next
+    self.return_next_dir = next_dir
     c.move(move_dir)
     return True
 
@@ -629,6 +631,7 @@ def _ensure_post_bridge_conveyor(self: Harvester, c: Controller) -> bool:
     if tile_empty and c.can_build_conveyor(self.current_pos, conveyor_dir):
         c.build_conveyor(self.current_pos, conveyor_dir)
         _mark_network_reach_dirty(self)
+        self.return_next_dir = conveyor_dir
 
     self.post_bridge_conveyor = False
     return True

@@ -1,4 +1,4 @@
-from cambc import Controller, EntityType, Position
+from cambc import Controller, EntityType, Position, Environment
 from utils.pathfinding.movement import DIRECTIONS_8
 
 _PRIORITY = (
@@ -10,6 +10,7 @@ _PRIORITY = (
     EntityType.FOUNDRY,
     EntityType.CORE,
     EntityType.BARRIER,
+    EntityType.CONVEYOR,
 )
 _FIRE_TYPES = frozenset(_PRIORITY)
 
@@ -50,6 +51,9 @@ class Gunner:
                 if not c.is_in_vision(target):
                     break
 
+                if c.get_tile_env(target) == Environment.WALL:
+                    break
+
                 bid = c.get_tile_building_id(target)
                 builder = c.get_tile_builder_bot_id(target)
                 if builder is not None and c.get_team(builder) != my_team:
@@ -63,9 +67,13 @@ class Gunner:
                     break
                 elif bid is not None:
                     etype = c.get_entity_type(bid)
-                    if etype in _FIRE_TYPES:
+                    if etype in _FIRE_TYPES and etype not in {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR}:
                         priority = _PRIORITY.index(etype)
                         best[priority] = (target, dist)
+                    elif etype in {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR}:
+                        if c.get_direction(bid) != target.direction_to(c.get_position()):
+                            priority = _PRIORITY.index(EntityType.CONVEYOR)
+                            best[priority] = (target, dist)
                     break
                     
 

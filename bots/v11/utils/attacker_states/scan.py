@@ -181,11 +181,12 @@ def _pick_target(self: AttackerRevamped, c: Controller):
             continue
 
         dist_me = max(abs(conv_pos.x - me.x), abs(conv_pos.y - me.y))
-        dist_core = max(abs(conv_pos.x - self.core_pos.x),
-                        abs(conv_pos.y - self.core_pos.y))
-        score = dist_me * 2 + dist_core
-        if enemy_core is not None and conv_pos.distance_squared(enemy_core) < 25:
-            score -= 1000
+        score = dist_me * 2
+        if enemy_core is not None:
+            score += max(abs(conv_pos.x - enemy_core.x),
+                         abs(conv_pos.y - enemy_core.y))
+            if conv_pos.distance_squared(enemy_core) < 25:
+                score -= 1000
         if score < best_score:
             best_score = score
             best = conv_pos

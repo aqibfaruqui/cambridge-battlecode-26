@@ -15,7 +15,6 @@ from utils.pathfinding.movement import (
     reached_core,
     split_diagonal,
 )
-from utils.comms.network_connectivity import compute_reachable_to_core
 
 if TYPE_CHECKING:
     from builders.harvester import Harvester
@@ -37,66 +36,7 @@ _ENEMY_WALKABLE_TYPES = (
 )
 
 
-def _mark_network_reach_dirty(self: Harvester) -> None:
-    self.network_reach_dirty = True
-
-
-def _reachable_to_core(self: Harvester, c) -> set[tuple[int, int]]:
-    current_round = c.get_current_round()
-    if (
-        self.reachable_to_core is None
-        or self.network_reach_dirty
-        or self.network_reach_round != current_round
-    ):
-        self.reachable_to_core = compute_reachable_to_core(c, self.core_pos)
-        self.network_reach_round = current_round
-        self.network_reach_dirty = False
-    return self.reachable_to_core
-
-
-def _receiver_accepts_from(self: Harvester, c, source_pos: Position, receiver_pos: Position, receiver_id: int) -> bool:
-    if c.get_team(receiver_id) != c.get_team():
-        return False
-
-    entity_type = c.get_entity_type(receiver_id)
-    if entity_type == EntityType.CORE:
-        return True
-
-    if entity_type == EntityType.BRIDGE:
-        return True
-
-    if entity_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR):
-        out_dir = c.get_direction(receiver_id)
-        return receiver_pos.add(out_dir) != source_pos
-
-    if entity_type == EntityType.SPLITTER:
-        out_dir = c.get_direction(receiver_id)
-        return receiver_pos.add(out_dir.opposite()) == source_pos
-
-    return False
-
-
-def _harvester_attached_to_core(self: Harvester, c) -> bool:
-    if self.harvester_pos is None:
-        return False
-
-    reachable_to_core = _reachable_to_core(self, c)
-
-    for step_dir in DIRECTIONS_4:
-        receiver_pos = self.harvester_pos.add(step_dir)
-        if not c.is_in_vision(receiver_pos):
-            continue
-
-        if (receiver_pos.x, receiver_pos.y) not in reachable_to_core:
-            continue
-
-        receiver_id = c.get_tile_building_id(receiver_pos)
-        if receiver_id is None:
-            continue
-
-        if _receiver_accepts_from(self, c, self.harvester_pos, receiver_pos, receiver_id):
-            return True
-
+def _harvester_attached_to_core(self: Harvester, c) -> bool:    
     return False
 
 
@@ -133,7 +73,6 @@ def _attack_enemy_under_bot(self: Harvester, c: Controller) -> bool:
         c.fire(self.current_pos)
         if c.get_tile_building_id(self.current_pos) is None:
             self.post_bridge_conveyor = True
-            _mark_network_reach_dirty(self)
     return True
 
 
@@ -412,7 +351,6 @@ def _build_first_connector(self: Harvester, c: Controller) -> bool:
             return False
     if c.can_build_conveyor(move_pos, conveyor_dir):
         c.build_conveyor(move_pos, conveyor_dir)
-        _mark_network_reach_dirty(self)
 
     if self.current_pos != move_pos:
         step_dir = get_direction_4(self.current_pos, move_pos)
@@ -423,23 +361,6 @@ def _build_first_connector(self: Harvester, c: Controller) -> bool:
         return False
     self.return_next_dir = conveyor_dir
     return True
-
-# Could be useful but it sometimes cooks our conveyors so we're disabling it for now
-# def _fix_current_conveyor(self: Harvester, c: Controller, intended_dir: Direction) -> None:
-#     """If the conveyor under the bot points the wrong way, rebuild it."""
-#     build_id = c.get_tile_building_id(self.current_pos)
-#     if build_id is None:
-#         return
-#     if c.get_entity_type(build_id) != EntityType.CONVEYOR:
-#         return
-#     if c.get_direction(build_id) == intended_dir:
-#         return
-#     if c.can_destroy(self.current_pos):
-#         c.destroy(self.current_pos)
-#         _mark_network_reach_dirty(self)
-#         if c.can_build_conveyor(self.current_pos, intended_dir):
-#             c.build_conveyor(self.current_pos, intended_dir)
-#             _mark_network_reach_dirty(self)
 
 
 def _build_return_step(self: Harvester, c: Controller) -> bool:
@@ -484,7 +405,6 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
             and c.can_destroy(move_pos)
         ):
             c.destroy(move_pos)
-            _mark_network_reach_dirty(self)
             return False
 
     # Core entry — just move, no conveyor needed.
@@ -517,7 +437,6 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
                 return False
         if c.can_build_conveyor(move_pos, next_dir):
             c.build_conveyor(move_pos, next_dir)
-            _mark_network_reach_dirty(self)
     elif dest_empty and c.can_build_road(move_pos):
         c.build_road(move_pos)
     if not c.can_move(move_dir):
@@ -569,12 +488,10 @@ def _handle_pending_return_bridge(self: Harvester, c: Controller) -> bool:
         and c.can_destroy(bridge_pos)
     ):
         c.destroy(bridge_pos)
-        _mark_network_reach_dirty(self)
 
     can_build_bridge = c.can_build_bridge(bridge_pos, self.current_pos)
     if can_build_bridge:
         c.build_bridge(bridge_pos, self.current_pos)
-        _mark_network_reach_dirty(self)
         self.bridge_from = None
         self.post_bridge_conveyor = True
         self.return_bridge_fail_counts.pop(key, None)
@@ -628,7 +545,6 @@ def _ensure_post_bridge_conveyor(self: Harvester, c: Controller) -> bool:
 
     if tile_empty and c.can_build_conveyor(self.current_pos, conveyor_dir):
         c.build_conveyor(self.current_pos, conveyor_dir)
-        _mark_network_reach_dirty(self)
         self.return_next_dir = conveyor_dir
 
     self.post_bridge_conveyor = False

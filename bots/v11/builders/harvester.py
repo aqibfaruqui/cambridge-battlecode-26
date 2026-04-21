@@ -25,9 +25,6 @@ from utils.harvester_states.defend import (
     _defend as _defend_state,
     _try_enter_defend,
 )
-from utils.harvester_states.standby import (
-    _standby as _standby_state,
-)
 from utils.pathfinding.movement import DIRECTIONS_4, reached_core
 from utils.map.raw_map_representation import EnvironmentMap, Symmetry
 from utils.pathfinding.d_star import DStarLite
@@ -59,7 +56,6 @@ class HarvestState(Enum):
     RETURN = "return"
     PLACING_FOUNDRY = "placing_foundry"
     DEFEND = "defend"
-    STANDBY = "standby"
 
 
 _HARVESTER_PLACEMENT_CAP = 3
@@ -93,9 +89,6 @@ class Harvester:
         self.seek_stall_target: Position | None = None
         self.seek_target_turns: int = 0
         self.edge_cycle_index = 0
-        self.network_reach_round = -1
-        self.network_reach_dirty = True
-        self.reachable_to_core: set[tuple[int, int]] | None = None
         self.spawn_pos: Position | None = None
         self.harvester_pos: Position | None = None
         self.just_placed = False
@@ -103,8 +96,6 @@ class Harvester:
         self.return_next_dir: Direction | None = None
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
-        self.return_stall_pos: Position | None = None
-        self.return_stall_count: int = 0
         self.heal_target: Position | None = None
 
         self.placing_ore_pos: Position | None = None
@@ -122,7 +113,6 @@ class Harvester:
         self.enemy_tile_hp: dict[tuple[int, int], int] = {}
 
         self.harvesters_placed = 0
-        self.standby_prev_pos: Position | None = None
 
         self.broadcaster = Broadcaster()
         self._symmetry_broadcasted = False
@@ -242,7 +232,6 @@ class Harvester:
             HarvestState.RETURN: (255, 165, 0),
             HarvestState.PLACING_FOUNDRY: (255, 255, 0),
             HarvestState.DEFEND: (255, 0, 0),
-            HarvestState.STANDBY: (0, 200, 200),
         }
         r, g, b = state_colors.get(self.state, (255, 255, 255))
         c.draw_indicator_dot(self.current_pos, r, g, b)
@@ -261,9 +250,6 @@ class Harvester:
     def _defend(self, c: Controller):
         _defend_state(self, c)
 
-    def _standby(self, c: Controller):
-        _standby_state(self, c)
-
     def _seek(self, c: Controller):
         _seek_state(self, c)
 
@@ -274,18 +260,6 @@ class Harvester:
             self.state = HarvestState.PLACING_FOUNDRY if self._can_trigger_foundry(c) else HarvestState.SEEK
             self.target_pos = None
             self.seek_target_is_ore = False
-            self.harvester_pos = None
-            _reset_return_state(self)
-            return
-
-        if self.return_stall_pos == self.current_pos:
-            self.return_stall_count += 1
-        else:
-            self.return_stall_pos = self.current_pos
-            self.return_stall_count = 1
-        if self.return_stall_count >= 50:
-            self.state = HarvestState.STANDBY
-            self.target_pos = None
             self.harvester_pos = None
             _reset_return_state(self)
             return
@@ -363,10 +337,6 @@ class Harvester:
         if self.state not in (HarvestState.PLACING_HARVESTER, HarvestState.DEFEND):
             _try_enter_defend(self, c)
 
-        # Once we've placed our quota, SEEK has no more work — divert to STANDBY.
-        if self.state == HarvestState.SEEK and self.harvesters_placed >= _HARVESTER_PLACEMENT_CAP:
-            self.state = HarvestState.STANDBY
-
         match self.state:
             case HarvestState.SEEK:
                 self._seek(c)
@@ -378,8 +348,6 @@ class Harvester:
                 self._placing_foundry(c)
             case HarvestState.DEFEND:
                 self._defend(c)
-            case HarvestState.STANDBY:
-                self._standby(c)
 
         self.broadcaster.run(c)
 

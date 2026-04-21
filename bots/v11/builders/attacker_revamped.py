@@ -1,12 +1,8 @@
-from enum import Enum
-
 from cambc import Controller, Direction, EntityType, Position
-from utils.attacker_states.approach import _approach as _approach_state
-from utils.attacker_states.replace import (
-    _replace as _replace_state,
-    _target_still_valid,
-)
-from utils.attacker_states.scan import _scan as _scan_state
+from utils.attacker_states.approach import _approach
+from utils.attacker_states.replace import _replace, _target_still_valid
+from utils.attacker_states.scan import _scan
+from utils.attacker_states.state import AttackState
 from utils.pathfinding.d_star import DStarLite
 from utils.map.raw_map_representation import CORE_ENEMY, EnvironmentMap, Symmetry, WALL
 from utils.comms.broadcaster import Broadcaster
@@ -32,14 +28,6 @@ _CW_DIRS = (
     Direction.SOUTH, Direction.SOUTHWEST,
     Direction.WEST, Direction.NORTHWEST,
 )
-
-
-class AttackState(Enum):
-    __slots__ = ()
-
-    SCAN = "scan"              # Probing for an enemy harvester→conveyor to hijack
-    APPROACH = "approach"      # Walking onto a locked-in target conveyor
-    REPLACE = "replace"        # On-tile: fire conveyor → step off → sentinel
 
 
 class AttackerRevamped:
@@ -70,9 +58,6 @@ class AttackerRevamped:
         # after 10 firing ticks (the belt is being out-healed).
         self._attack_target_key: tuple[int, int] | None = None
         self._attack_turns = 0
-
-        # HP delta tracking — used to bail out of REPLACE when we're being shot.
-        self._last_hp: int | None = None
         self._attack_max_hp = 0
 
         self._env_map: EnvironmentMap | None = None
@@ -174,30 +159,6 @@ class AttackerRevamped:
                 c.move(d)
                 return
 
-    # ---------- state handlers (delegate to utils.attacker_states) ----------
-
-    def _scan(self, c: Controller):
-        _scan_state(self, c)
-
-    def _approach(self, c: Controller):
-        _approach_state(self, c)
-
-    def _replace(self, c: Controller):
-        _replace_state(self, c)
-
-    # ---------- debug ----------
-
-    def _draw_debug(self, c: Controller):
-        state_colors = {
-            AttackState.SCAN: (0, 180, 255),
-            AttackState.APPROACH: (0, 255, 0),
-            AttackState.REPLACE: (255, 0, 0),
-        }
-        r, g, b = state_colors.get(self.state, (255, 255, 255))
-        c.draw_indicator_dot(self.current_pos, r, g, b)
-        if self.target_pos is not None and self.target_pos != self.current_pos:
-            c.draw_indicator_line(self.current_pos, self.target_pos, r, g, b)
-
     # ---------- main loop ----------
 
     def run(self, c: Controller):
@@ -260,8 +221,6 @@ class AttackerRevamped:
         if hp_now < c.get_max_hp(my_id) and c.can_heal(self.current_pos):
             c.heal(self.current_pos)
 
-        self._last_hp = hp_now
-
         threat = self._nearest_threat(c)
         if threat is not None:
             self._flee(c, threat)
@@ -296,12 +255,10 @@ class AttackerRevamped:
         # Sequential (not elif) so SCAN→APPROACH and APPROACH→REPLACE can
         # both fire in the same tick.
         if self.state == AttackState.SCAN:
-            self._scan(c)
+            _scan(self, c)
         if self.state == AttackState.APPROACH:
-            self._approach(c)
+            _approach(self, c)
         if self.state == AttackState.REPLACE:
-            self._replace(c)
+            _replace(self, c)
 
         self.broadcaster.run(c)
-
-        # self._draw_debug(c)

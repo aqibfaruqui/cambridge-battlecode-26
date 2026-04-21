@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING
 
 from cambc import Controller, Direction, EntityType
 
+from utils.attacker_states.state import AttackState
+
 if TYPE_CHECKING:
     from builders.attacker_revamped import AttackerRevamped
 
@@ -115,4 +117,4 @@ def _replace(self: AttackerRevamped, c: Controller) -> None:
     if _execute_replacement(self, c):
         self.target_conveyor = None
         self._planner_goal = None
-        self.state = type(self.state).SCAN
+        self.state = AttackState.SCAN

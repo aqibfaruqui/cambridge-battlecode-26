@@ -2,23 +2,36 @@ from cambc import Controller, EntityType, Position
 from builders.builder import BuilderType
 
 
+_ENEMY_THREAT_TYPES = frozenset(
+    {
+        EntityType.BUILDER_BOT,
+        EntityType.CONVEYOR,
+        EntityType.GUNNER,
+        EntityType.SENTINEL,
+        EntityType.BREACH,
+        EntityType.LAUNCHER,
+    }
+)
+
+
 class Core:
     def __init__(self):
         self.builders_spawned = 0
         self.spawn_plan = [
             BuilderType.HARVESTER_1,
+            BuilderType.ATTACKER_REVAMPED,
             BuilderType.HARVESTER_2,
             BuilderType.ATTACKER_REVAMPED,
-            BuilderType.ATTACKER_REVAMPED,
+            BuilderType.HARVESTER_1,
         ]
         self.healer_id: int | None = None
 
-    def _has_friendly_conveyor_in_vision(self, c: Controller) -> bool:
+    def _has_enemy_threat_in_vision(self, c: Controller) -> bool:
         my_team = c.get_team()
-        for bid in c.get_nearby_buildings(16):
-            if c.get_team(bid) != my_team:
+        for eid in c.get_nearby_entities():
+            if c.get_team(eid) == my_team:
                 continue
-            if c.get_entity_type(bid) == EntityType.CONVEYOR:
+            if c.get_entity_type(eid) in _ENEMY_THREAT_TYPES:
                 return True
         return False
 
@@ -59,7 +72,7 @@ class Core:
             return
         if c.get_current_round() < 10:
             return
-        if not self._has_friendly_conveyor_in_vision(c):
+        if not self._has_enemy_threat_in_vision(c):
             return
         new_id = self._try_spawn(c, BuilderType.HEALER)
         if new_id is not None:

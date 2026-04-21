@@ -43,12 +43,7 @@ class AttackState(Enum):
 
 
 class AttackerRevamped:
-    """Disruption-focused attacker.
-
-    Hijacks enemy conveyors that feed titanium harvesters: walks onto the
-    conveyor, fires it down with the own-tile attack, steps off, and drops a
-    sentinel on the now-empty tile facing the enemy core.
-    """
+    """Disruption-focused attacker"""
 
     def __init__(self, core_pos: Position):
         self.state = AttackState.SCAN
@@ -217,6 +212,9 @@ class AttackerRevamped:
                     self._env_map.force_symmetry(Symmetry(raw))
                 except ValueError:
                     pass
+        assumed_centre = self._env_map.assumed_enemy_core_centre(self.core_pos)
+        if assumed_centre is not None:
+            self.enemy_core_pos = assumed_centre
 
         if self._env_map.symmetry is not None:
             if not self._symmetry_broadcasted:
@@ -229,13 +227,12 @@ class AttackerRevamped:
                     BuilderBotMessages.encode_core_position(self.core_pos)
                 )
                 self._core_broadcasted = True
-            if not self._enemy_core_broadcasted:
-                enemy_core = self._env_map.enemy_core_centre(self.core_pos)
-                if enemy_core is not None:
-                    self.broadcaster.add_broadcast(
-                        BuilderBotMessages.encode_enemy_core_position(enemy_core)
-                    )
-                    self._enemy_core_broadcasted = True
+            # Resolved symmetry implies assumed_centre is non-None.
+            if not self._enemy_core_broadcasted and assumed_centre is not None:
+                self.broadcaster.add_broadcast(
+                    BuilderBotMessages.encode_enemy_core_position(assumed_centre)
+                )
+                self._enemy_core_broadcasted = True
 
         # Seed enemy-core candidates once (SCAN uses these when idle).
         if not self.enemy_core_candidates:
@@ -247,11 +244,7 @@ class AttackerRevamped:
                 Position(cx, H - 1 - cy),          # vertical
             ]
 
-        # Resolve the enemy core: prefer symmetry-deduced centre; fall back to
-        # direct sight for the rare case where we spot it before the map has
-        # enough data to narrow symmetry.
-        if self.enemy_core_pos is None:
-            self.enemy_core_pos = self._env_map.enemy_core_centre(self.core_pos)
+        # Direct-sight fallback: spot the enemy core before symmetry narrows.
         if self.enemy_core_pos is None:
             for eid in c.get_nearby_buildings():
                 if (c.get_entity_type(eid) == EntityType.CORE
@@ -264,19 +257,11 @@ class AttackerRevamped:
         my_id = c.get_id()
         hp_now = c.get_hp(my_id)
 
-        # Priority 1 at every stage: self-heal if we're below max HP. Burns
-        # the action cooldown, so any fire/destroy/build below is deferred to
-        # the next tick — that's the intended trade.
         if hp_now < c.get_max_hp(my_id) and c.can_heal(self.current_pos):
             c.heal(self.current_pos)
 
         self._last_hp = hp_now
 
-        # Any enemy turret whose attack range covers us — flee before the
-        # state machine runs. Blacklist the current tile so SCAN stops
-        # re-picking it, drop any in-progress target, advance the orbit so the
-        # next scan aims elsewhere, and skip all state handlers this tick.
-        # Heal above has already been issued on action cooldown.
         threat = self._nearest_threat(c)
         if threat is not None:
             self._flee(c, threat)
@@ -296,6 +281,17 @@ class AttackerRevamped:
             self.target_conveyor = None
             self._planner_goal = None
             self.state = AttackState.SCAN
+
+        print(
+            f"[attacker {my_id}] r={c.get_current_round()} "
+            f"pos=({self.current_pos.x},{self.current_pos.y}) "
+            f"state={self.state.value} "
+            f"target={self.target_conveyor} "
+            f"ecore={self.enemy_core_pos} "
+            f"sym={self._env_map.symmetry} "
+            f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
+            f"hp={hp_now}/{c.get_max_hp(my_id)}"
+        )
 
         # Sequential (not elif) so SCAN→APPROACH and APPROACH→REPLACE can
         # both fire in the same tick.

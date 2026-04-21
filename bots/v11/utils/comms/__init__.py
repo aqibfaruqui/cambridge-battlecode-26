@@ -2,8 +2,8 @@ from cambc import Position
 
 
 class Encryption:
-    # key = 0x3C4E123F
-    key = 0x00000000
+    key = 0x3C4E123F
+    # key = 0x00000000
 
     @classmethod
     def encrypt(cls, data: int) -> int:

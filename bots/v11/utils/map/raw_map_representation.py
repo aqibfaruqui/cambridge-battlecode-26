@@ -273,6 +273,20 @@ class EnvironmentMap:
     def symmetry(self) -> Symmetry | None:
         return _FLAG_TO_SYM.get(self._cand)
 
+    @property
+    def assumed_symmetry(self) -> Symmetry | None:
+        """Resolved symmetry if known, else ROTATIONAL while it's still a live candidate.
+
+        Lets navigation commit to a rotational enemy-core guess before elimination
+        completes — gives up (returns None) once the map disproves rotational.
+        """
+        resolved = _FLAG_TO_SYM.get(self._cand)
+        if resolved is not None:
+            return resolved
+        if self._cand & _SYM_R:
+            return Symmetry.ROTATIONAL
+        return None
+
     def force_symmetry(self, sym: Symmetry) -> None:
         """Lock symmetry and mirror all observed tiles into their unknown counterparts.
 
@@ -316,7 +330,13 @@ class EnvironmentMap:
 
     def enemy_core_centre(self, own_core: Position) -> Position | None:
         """Centre of the enemy 3x3 core deduced from resolved symmetry, or None."""
-        sym = _FLAG_TO_SYM.get(self._cand)
+        return self._core_centre_for(_FLAG_TO_SYM.get(self._cand), own_core)
+
+    def assumed_enemy_core_centre(self, own_core: Position) -> Position | None:
+        """Centre deduced from `assumed_symmetry` (rotational fallback while live)."""
+        return self._core_centre_for(self.assumed_symmetry, own_core)
+
+    def _core_centre_for(self, sym: "Symmetry | None", own_core: Position) -> Position | None:
         if sym is None:
             return None
         wm1 = self._w - 1

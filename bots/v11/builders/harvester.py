@@ -6,6 +6,7 @@ from cambc import Controller, Direction, EntityType, Environment, Position
 from utils.map.board import is_ore_axionite, is_ore_titanium
 from utils.harvester_states.foundry import _placing_foundry as _foundry_state
 from utils.harvester_states.return_to_core import (
+    _attack_enemy_under_bot,
     _build_first_connector,
     _build_return_step,
     _ensure_post_bridge_conveyor,
@@ -19,6 +20,13 @@ from utils.harvester_states.seek import (
 from utils.harvester_states.placing_harvester import (
     STEP_ON as _PLACING_STEP_ON,
     _placing_harvester as _placing_harvester_state,
+)
+from utils.harvester_states.defend import (
+    _defend as _defend_state,
+    _try_enter_defend,
+)
+from utils.harvester_states.standby import (
+    _standby as _standby_state,
 )
 from utils.pathfinding.movement import DIRECTIONS_4, reached_core
 from utils.map.raw_map_representation import EnvironmentMap, Symmetry
@@ -50,6 +58,11 @@ class HarvestState(Enum):
     PLACING_HARVESTER = "placing_harvester"
     RETURN = "return"
     PLACING_FOUNDRY = "placing_foundry"
+    DEFEND = "defend"
+    STANDBY = "standby"
+
+
+_HARVESTER_PLACEMENT_CAP = 3
 
 
 class Harvester:
@@ -88,6 +101,8 @@ class Harvester:
         self.return_next_dir: Direction | None = None
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
+        self.return_stall_pos: Position | None = None
+        self.return_stall_count: int = 0
         self.heal_target: Position | None = None
 
         self.placing_ore_pos: Position | None = None
@@ -96,6 +111,14 @@ class Harvester:
         self.placing_phase: str = _PLACING_STEP_ON
         self.placing_ring_turns: int = 0
         self.placing_is_titanium: bool = False
+
+        self.defend_prev_state: HarvestState | None = None
+        self.defend_enemy_id: int | None = None
+        self.defend_target_tile: Position | None = None
+        self.enemy_tile_hp: dict[tuple[int, int], int] = {}
+
+        self.harvesters_placed = 0
+        self.standby_prev_pos: Position | None = None
 
         self.broadcaster = Broadcaster()
         self._symmetry_broadcasted = False
@@ -151,7 +174,7 @@ class Harvester:
         build_id = c.get_tile_building_id(ore_pos)
         if build_id is None:
             return True
-        return c.get_entity_type(build_id) != EntityType.HARVESTER
+        return c.get_entity_type(build_id) not in {EntityType.HARVESTER, EntityType.GUNNER}
 
     def _is_valid_axionite_target(self, c: Controller, ore_pos: Position) -> bool:
         if not is_ore_axionite(c, ore_pos):
@@ -160,7 +183,7 @@ class Harvester:
         build_id = c.get_tile_building_id(ore_pos)
         if build_id is None:
             return True
-        return c.get_entity_type(build_id) != EntityType.HARVESTER
+        return c.get_entity_type(build_id) not in {EntityType.HARVESTER, EntityType.GUNNER}
 
     def _is_valid_ore_target(self, c: Controller, ore_pos: Position) -> bool:
         return self._is_valid_titanium_target(c, ore_pos) or (
@@ -172,6 +195,8 @@ class Harvester:
 
     def _try_build_harvester(self, c: Controller) -> bool:
         """Detect a valid adjacent ore and enter the placing-harvester sequence."""
+        if self.harvesters_placed >= _HARVESTER_PLACEMENT_CAP:
+            return False
         ore_pos, is_titanium = self._pick_adjacent_ore(c)
         if ore_pos is None:
             return False
@@ -212,6 +237,8 @@ class Harvester:
             HarvestState.PLACING_HARVESTER: (200, 0, 200),
             HarvestState.RETURN: (255, 165, 0),
             HarvestState.PLACING_FOUNDRY: (255, 255, 0),
+            HarvestState.DEFEND: (255, 0, 0),
+            HarvestState.STANDBY: (0, 200, 200),
         }
         r, g, b = state_colors.get(self.state, (255, 255, 255))
         c.draw_indicator_dot(self.current_pos, r, g, b)
@@ -227,6 +254,12 @@ class Harvester:
     def _placing_harvester(self, c: Controller):
         _placing_harvester_state(self, c)
 
+    def _defend(self, c: Controller):
+        _defend_state(self, c)
+
+    def _standby(self, c: Controller):
+        _standby_state(self, c)
+
     def _seek(self, c: Controller):
         _seek_state(self, c)
 
@@ -239,6 +272,23 @@ class Harvester:
             self.seek_target_is_ore = False
             self.harvester_pos = None
             _reset_return_state(self)
+            return
+
+        if self.return_stall_pos == self.current_pos:
+            self.return_stall_count += 1
+        else:
+            self.return_stall_pos = self.current_pos
+            self.return_stall_count = 1
+        if self.return_stall_count >= 50:
+            self.state = HarvestState.STANDBY
+            self.target_pos = None
+            self.harvester_pos = None
+            _reset_return_state(self)
+            return
+
+        # Standing on an enemy walkable tile: fire until it's destroyed, then
+        # resume the normal flow (post_bridge_conveyor will rebuild the chain).
+        if _attack_enemy_under_bot(self, c):
             return
 
         if self.just_placed:
@@ -306,6 +356,13 @@ class Harvester:
                     )
                     self._enemy_core_broadcasted = True
 
+        if self.state not in (HarvestState.PLACING_HARVESTER, HarvestState.DEFEND):
+            _try_enter_defend(self, c)
+
+        # Once we've placed our quota, SEEK has no more work — divert to STANDBY.
+        if self.state == HarvestState.SEEK and self.harvesters_placed >= _HARVESTER_PLACEMENT_CAP:
+            self.state = HarvestState.STANDBY
+
         match self.state:
             case HarvestState.SEEK:
                 self._seek(c)
@@ -315,12 +372,38 @@ class Harvester:
                 self._return(c)
             case HarvestState.PLACING_FOUNDRY:
                 self._placing_foundry(c)
+            case HarvestState.DEFEND:
+                self._defend(c)
+            case HarvestState.STANDBY:
+                self._standby(c)
 
         self.broadcaster.run(c)
 
         self._draw_debug(c)
+        self._log_turn_state(c)
         if _PROFILE_ENABLED:
             _PROFILER.disable()
             _PROFILE_CALLS += 1
             if _PROFILE_CALLS % _PROFILE_DUMP_EVERY == 0:
                 _PROFILER.dump_stats(_PROFILE_PATH)
+
+    def _log_turn_state(self, c: Controller):
+        under_id = c.get_tile_building_id(self.current_pos)
+        under = "-"
+        if under_id is not None:
+            et = c.get_entity_type(under_id)
+            team_tag = "us" if c.get_team(under_id) == c.get_team() else "enemy"
+            under = f"{et.name}({team_tag})"
+            if et in (EntityType.CONVEYOR, EntityType.SPLITTER, EntityType.BRIDGE):
+                under += f",dir={c.get_direction(under_id).name if et != EntityType.BRIDGE else c.get_bridge_target(under_id)}"
+        print(
+            f"[harv {c.get_id()}] r={c.get_current_round()} "
+            f"pos=({self.current_pos.x},{self.current_pos.y}) "
+            f"state={self.state.value} "
+            f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
+            f"under={under} "
+            f"next_dir={self.return_next_dir.name if self.return_next_dir else '-'} "
+            f"bridge_from={(self.bridge_from.x, self.bridge_from.y) if self.bridge_from else '-'} "
+            f"post_bridge={self.post_bridge_conveyor} "
+            f"just_placed={self.just_placed}"
+        )

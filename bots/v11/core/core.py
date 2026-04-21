@@ -17,13 +17,14 @@ _ENEMY_THREAT_TYPES = frozenset(
 class Core:
     def __init__(self):
         self.builders_spawned = 0
-        self.spawn_plan = [
+        self.default_spawn_plan = [
             BuilderType.HARVESTER_1,
             BuilderType.ATTACKER_REVAMPED,
             BuilderType.HARVESTER_2,
             BuilderType.ATTACKER_REVAMPED,
-            BuilderType.HARVESTER_1,
+            # BuilderType.HARVESTER_1,
         ]
+        self.spawn_plan = self.default_spawn_plan.copy()
         self.healer_id: int | None = None
 
     def _has_enemy_threat_in_vision(self, c: Controller) -> bool:
@@ -58,6 +59,8 @@ class Core:
         return c.spawn_builder(spawn_pos)
 
     def run(self, c: Controller):
+        if c.get_current_round() in {1000, 1001}:
+            self.spawn_plan = self.default_spawn_plan.copy()
         # Hold the core's 3x3 clear so only one builder is spawning at a time.
         if self._builder_bot_on_core_ring(c):
             return

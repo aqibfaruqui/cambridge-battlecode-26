@@ -168,6 +168,7 @@ def ask(question: str, top_k: int = TOP_K):
             "Answer the user's question using ONLY the provided documentation excerpts. "
             "If the answer isn't in the excerpts, say so. "
             "Be concise and cite specific API methods or game constants when relevant."
+            "Your output format should not contain prose. List relevant API methods and constraints in bullet points."
         ),
         messages=[
             {

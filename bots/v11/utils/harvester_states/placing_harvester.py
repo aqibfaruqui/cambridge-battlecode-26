@@ -61,6 +61,7 @@ def _finish_build(self: Harvester, c: Controller) -> None:
         return
 
     c.build_harvester(ore_pos)
+    self.harvesters_placed += 1
     if self.placing_is_titanium:
         self.titanium_found = True
     else:
@@ -114,8 +115,6 @@ def _do_ring(self: Harvester, c: Controller, ore_pos: Position) -> None:
         if c.can_build_conveyor(side_pos, flow):
             c.build_conveyor(side_pos, flow)
             built = True
-        else:
-            remaining.append(side)
     self.placing_sides_pending = remaining
 
     if not self.placing_sides_pending or self.placing_ring_turns >= _RING_TURN_CAP:

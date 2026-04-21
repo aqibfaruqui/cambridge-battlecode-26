@@ -13,22 +13,6 @@ from utils.comms.for_builder_bot import BuilderBotMessages
 # CORE_ENEMY statically in the mask — no dynamic blocker needed.
 _ATTACK_BLOCK_MASK = (1 << WALL) | (1 << CORE_ENEMY)
 
-# Enemy turrets that can actually shoot us, keyed by their in-game attack r².
-_THREAT_R2 = {
-    EntityType.SENTINEL: 32,
-    EntityType.GUNNER: 13,
-}
-
-# Clockwise compass. Used to pick sidestep directions when the direct flee
-# vector is blocked — we only ever consider the primary dir and ±45°/±90° from
-# it, so we never walk back toward the threat.
-_CW_DIRS = (
-    Direction.NORTH, Direction.NORTHEAST,
-    Direction.EAST, Direction.SOUTHEAST,
-    Direction.SOUTH, Direction.SOUTHWEST,
-    Direction.WEST, Direction.NORTHWEST,
-)
-
 
 class AttackerRevamped:
     """Disruption-focused attacker"""
@@ -46,6 +30,9 @@ class AttackerRevamped:
         # Post-core-found orbit waypoints (built lazily once enemy_core_pos is set).
         self.orbit_points: list[Position] | None = None
         self.orbit_idx = 0
+        # Skip an orbit waypoint if we fail to reach it within this many turns.
+        self._orbit_pursuit_idx: int | None = None
+        self._orbit_pursuit_round: int = 0
 
         # Locked-in target
         self.target_conveyor: Position | None = None
@@ -64,6 +51,8 @@ class AttackerRevamped:
         self._planner: DStarLite | None = None
         self._planner_goal: tuple[int, int] | None = None
         self.target_pos: Position | None = None  # for debug lines
+
+        self._hp_prev: int | None = None
 
         self.broadcaster = Broadcaster()
         self._symmetry_broadcasted = False
@@ -122,43 +111,6 @@ class AttackerRevamped:
         if c.can_move(direction):
             c.move(direction)
 
-    # ---------- flee ----------
-
-    def _nearest_threat(self, c: Controller) -> Position | None:
-        """Closest enemy turret whose attack r² covers our current tile."""
-        my_team = c.get_team()
-        me = self.current_pos
-        nearest: Position | None = None
-        best_d2 = 1 << 30
-        for bld_id in c.get_nearby_buildings():
-            if c.get_team(bld_id) == my_team:
-                continue
-            r2 = _THREAT_R2.get(c.get_entity_type(bld_id))
-            if r2 is None:
-                continue
-            bp = c.get_position(bld_id)
-            d2 = (bp.x - me.x) ** 2 + (bp.y - me.y) ** 2
-            if d2 > r2:
-                continue
-            if d2 < best_d2:
-                best_d2 = d2
-                nearest = bp
-        return nearest
-
-    def _flee(self, c: Controller, threat: Position) -> None:
-        """Step one tile away from threat. Primary dir + ±45°/±90° sidesteps."""
-        if c.get_move_cooldown() > 0:
-            return
-        primary = threat.direction_to(self.current_pos)
-        if primary == Direction.CENTRE:
-            return
-        idx = _CW_DIRS.index(primary)
-        for offset in (0, -1, 1, -2, 2):
-            d = _CW_DIRS[(idx + offset) % 8]
-            if c.can_move(d):
-                c.move(d)
-                return
-
     # ---------- main loop ----------
 
     def run(self, c: Controller):
@@ -174,8 +126,24 @@ class AttackerRevamped:
                 except ValueError:
                     pass
         assumed_centre = self._env_map.assumed_enemy_core_centre(self.core_pos)
-        if assumed_centre is not None:
-            self.enemy_core_pos = assumed_centre
+
+        # Direct sight > symmetry inference. Fall through to assumed_centre only
+        # if the core isn't in vision this tick. We deliberately let the result
+        # be None during the ambiguous window (rotational eliminated, H/V still
+        # live) so we don't hang onto a stale rotational guess — SCAN falls
+        # back to `enemy_core_candidates` when `enemy_core_pos is None`.
+        direct_enemy_core: Position | None = None
+        for eid in c.get_nearby_buildings():
+            if (c.get_entity_type(eid) == EntityType.CORE
+                    and c.get_team(eid) != c.get_team()):
+                direct_enemy_core = c.get_position(eid)
+                break
+        new_enemy_core_pos = direct_enemy_core if direct_enemy_core is not None else assumed_centre
+        if self.enemy_core_pos != new_enemy_core_pos:
+            self.enemy_core_pos = new_enemy_core_pos
+            self.orbit_points = None
+            self.orbit_idx = 0
+            self._orbit_pursuit_idx = None
 
         if self._env_map.symmetry is not None:
             if not self._symmetry_broadcasted:
@@ -205,34 +173,17 @@ class AttackerRevamped:
                 Position(cx, H - 1 - cy),          # vertical
             ]
 
-        # Direct-sight fallback: spot the enemy core before symmetry narrows.
-        if self.enemy_core_pos is None:
-            for eid in c.get_nearby_buildings():
-                if (c.get_entity_type(eid) == EntityType.CORE
-                        and c.get_team(eid) != c.get_team()):
-                    self.enemy_core_pos = c.get_position(eid)
-                    break
-
         self.current_pos = c.get_position()
 
         my_id = c.get_id()
         hp_now = c.get_hp(my_id)
 
+        if self._hp_prev is not None and hp_now < self._hp_prev:
+            self.blacklist[(self.current_pos.x, self.current_pos.y)] = c.get_current_round()
+        self._hp_prev = hp_now
+
         if hp_now < c.get_max_hp(my_id) and c.can_heal(self.current_pos):
             c.heal(self.current_pos)
-
-        threat = self._nearest_threat(c)
-        if threat is not None:
-            self._flee(c, threat)
-            self.blacklist[(self.current_pos.x, self.current_pos.y)] = c.get_current_round()
-            if self.target_conveyor is not None:
-                self.blacklist[(self.target_conveyor.x, self.target_conveyor.y)] = c.get_current_round()
-            if self.orbit_points is not None:
-                self.orbit_idx = (self.orbit_idx + 1) % len(self.orbit_points)
-            self.target_conveyor = None
-            self._planner_goal = None
-            self.state = AttackState.SCAN
-            return
 
         # Drop stale targets before dispatching to a state handler.
         if self.target_conveyor is not None and not _target_still_valid(self, c):

@@ -14,7 +14,7 @@ class Broadcaster:
             bid = c.get_tile_building_id(tile)
             our_road_or_marker = (
                 bid is not None 
-                and c.get_entity_type(bid) == EntityType.ROAD
+                and c.get_entity_type(bid) in {EntityType.ROAD, EntityType.MARKER}
                 and c.get_team(bid) == c.get_team()
                 and c.get_tile_builder_bot_id(tile) is None
             )

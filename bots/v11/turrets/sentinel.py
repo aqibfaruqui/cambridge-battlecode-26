@@ -56,6 +56,10 @@ class Sentinel:
                 continue
             if et in _RELAY_TYPES and feeds_friendly_turret(c, pos, my_team):
                 continue
+
+            bb = c.get_tile_builder_bot_id(pos)
+            if bb is not None and c.get_team(bb) == my_team:
+                continue
             d2 = my_pos.distance_squared(pos)
             cur = best[tier]
             if cur is None or d2 < cur[1]:

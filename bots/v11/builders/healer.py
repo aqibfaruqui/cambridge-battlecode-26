@@ -1,4 +1,17 @@
+from enum import Enum
+
 from cambc import Controller, Direction, EntityType, Position
+
+from utils.healer_states.defend import _defend_healer
+from utils.healer_states.follow import _follow, _try_enter_follow
+
+
+class HealState(Enum):
+    __slots__ = ()
+
+    PATROL = "patrol"
+    FOLLOW = "follow"
+    DEFEND = "defend"
 
 
 # Clockwise ordering of the eight tiles surrounding the core, starting at EAST
@@ -21,6 +34,18 @@ class Healer:
         self.core_id: int | None = None
         self.ring_idx = 0
         self._last_hp: int | None = None
+
+        self.state = HealState.PATROL
+        self.current_pos = Position(0, 0)
+        self.ti = 0
+        self.ax = 0
+
+        self.follow_enemy_id: int | None = None
+        self.defend_enemy_id: int | None = None
+        self.defend_target_tile: Position | None = None
+        self.defend_gunner_pos: Position | None = None
+        self.defend_orig_conveyor_dir: Direction | None = None
+        self.enemy_tile_hp: dict[tuple[int, int], int] = {}
 
     def _ring_pos(self, idx: int) -> Position:
         return self.core_pos.add(_RING_DIRECTIONS[idx % len(_RING_DIRECTIONS)])
@@ -47,71 +72,6 @@ class Healer:
             return hp < max_hp
         except Exception:
             return False
-
-    def _find_core_adjacent_enemy(self, c: Controller) -> Position | None:
-        """Return the position of an enemy builder bot on the 8-tile ring, if any."""
-        my_team = c.get_team()
-        for d in _RING_DIRECTIONS:
-            p = self.core_pos.add(d)
-            if not c.is_in_vision(p):
-                continue
-            bot_id = c.get_tile_builder_bot_id(p)
-            if bot_id is None:
-                continue
-            if c.get_team(bot_id) != my_team:
-                return p
-        return None
-
-    def _try_place_launcher(self, c: Controller) -> bool:
-        """Reactively drop a launcher near an enemy builder bot sitting on the ring."""
-        if c.get_action_cooldown() > 0:
-            return False
-        enemy_pos = self._find_core_adjacent_enemy(c)
-        if enemy_pos is None:
-            return False
-
-        me = c.get_position()
-        my_team = c.get_team()
-        w, h = c.get_map_width(), c.get_map_height()
-        best: Position | None = None
-        best_d = float("inf")
-        # Any tile within Chebyshev 2 of the enemy that we can reach this turn.
-        for dy in range(-2, 3):
-            for dx in range(-2, 3):
-                if dx == 0 and dy == 0:
-                    continue
-                x, y = enemy_pos.x + dx, enemy_pos.y + dy
-                if not (0 <= x < w and 0 <= y < h):
-                    continue
-                p = Position(x, y)
-                if p == self.core_pos:
-                    continue
-                d = me.distance_squared(p)
-                if d > 2:
-                    continue
-                if not c.is_in_vision(p):
-                    continue
-                bid = c.get_tile_building_id(p)
-                if bid is not None:
-                    if c.get_team(bid) != my_team:
-                        continue
-                    if c.get_entity_type(bid) != EntityType.ROAD:
-                        continue
-                if d < best_d:
-                    best_d = d
-                    best = p
-        if best is None:
-            return False
-        if c.get_tile_building_id(best) is not None:
-            # Clear our own road so we can upgrade the tile. Destroy is free of
-            # action cooldown, so we can still build the launcher this turn.
-            if not c.can_destroy(best):
-                return False
-            c.destroy(best)
-        if not c.can_build(EntityType.LAUNCHER, best, None):
-            return False
-        c.build(EntityType.LAUNCHER, best, None)
-        return True
 
     def _try_heal_self(self, c: Controller) -> bool:
         if c.get_action_cooldown() > 0:
@@ -210,26 +170,38 @@ class Healer:
         if c.get_action_cooldown() == 0 and c.can_build_road(step1_pos):
             c.build_road(step1_pos)
 
+    def _run_patrol(self, c: Controller, took_damage: bool) -> None:
+        # Try to acquire a target. If we do, the state change takes effect
+        # next turn; this turn we still heal + walk the ring.
+        _try_enter_follow(self, c)
+
+        healed = False
+        if self._try_heal_self(c):
+            healed = True
+        elif self._try_heal_core(c) or self._try_heal_conveyor(c):
+            healed = True
+
+        if took_damage or not healed:
+            self._patrol(c)
+
     def run(self, c: Controller):
         if self.core_id is None:
             self._resolve_core_id(c)
 
+        self.current_pos = c.get_position()
+        self.ti, self.ax = c.get_global_resources()
         self._align_ring_idx(c)
 
         my_id = c.get_id()
         hp_now = c.get_hp(my_id)
         took_damage = self._last_hp is not None and hp_now < self._last_hp
 
-        healed = False
-        if self._try_heal_self(c):
-            healed = True
-        elif not self._try_place_launcher(c):
-            if self._try_heal_core(c) or self._try_heal_conveyor(c):
-                healed = True
-
-        # Hold position while healing a stable situation — only move if we
-        # didn't heal, or if we took damage since last turn.
-        if took_damage or not healed:
-            self._patrol(c)
+        match self.state:
+            case HealState.PATROL:
+                self._run_patrol(c, took_damage)
+            case HealState.FOLLOW:
+                _follow(self, c)
+            case HealState.DEFEND:
+                _defend_healer(self, c)
 
         self._last_hp = c.get_hp(my_id)

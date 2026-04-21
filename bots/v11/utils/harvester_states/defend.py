@@ -3,79 +3,18 @@ from typing import TYPE_CHECKING
 
 from cambc import Controller, Direction, EntityType, Position
 
+from utils.defense.combat import (
+    area_is_safe as _area_is_safe,
+    detect_attacked_tile as _detect_attacked_tile,
+    find_enemy_pos as _find_enemy_pos,
+    nearest_enemy_pos as _nearest_enemy_pos,
+    step_toward as _step_toward,
+)
 from utils.harvester_states.return_to_core import _planner_step_at, _reset_return_state
 from utils.pathfinding.movement import DIRECTIONS_4
 
 if TYPE_CHECKING:
     from builders.harvester import Harvester
-
-
-_VISION_RADIUS_SQ = 20
-
-# Only infrastructure types a builder bot can actually chew through on its own tile.
-_ATTACKABLE_TYPES = {EntityType.CONVEYOR, EntityType.BRIDGE}
-
-# LAUNCHER excluded: it throws builders, doesn't shoot on its own.
-_UNSAFE_ENEMY_TYPES = frozenset({
-    EntityType.BUILDER_BOT,
-    EntityType.GUNNER,
-    EntityType.SENTINEL,
-    EntityType.BREACH,
-})
-
-
-def _nearest_enemy_pos(c: Controller) -> Position | None:
-    my_team = c.get_team()
-    me = c.get_position()
-    best_pos: Position | None = None
-    best_d = _VISION_RADIUS_SQ + 1
-    for uid in c.get_nearby_units(_VISION_RADIUS_SQ):
-        if c.get_team(uid) == my_team:
-            continue
-        pos = c.get_position(uid)
-        d = me.distance_squared(pos)
-        if d < best_d:
-            best_d = d
-            best_pos = pos
-    return best_pos
-
-
-def _area_is_safe(c: Controller) -> bool:
-    my_team = c.get_team()
-    for uid in c.get_nearby_units(_VISION_RADIUS_SQ):
-        if c.get_team(uid) == my_team:
-            continue
-        if c.get_entity_type(uid) in _UNSAFE_ENEMY_TYPES:
-            return False
-    return True
-
-
-def _detect_attacked_tile(self: Harvester, c: Controller) -> tuple[int, Position] | None:
-    """Track HP of ally conveyor/bridge tiles currently occupied by enemies."""
-    my_team = c.get_team()
-    new_tracking: dict[tuple[int, int], int] = {}
-    attack: tuple[int, Position] | None = None
-    for uid in c.get_nearby_units():
-        if c.get_team(uid) == my_team:
-            continue
-        pos = c.get_position(uid)
-        if not c.is_in_vision(pos):
-            continue
-        bid = c.get_tile_building_id(pos)
-        if bid is None:
-            continue
-        if c.get_team(bid) != my_team:
-            continue
-        if c.get_entity_type(bid) not in _ATTACKABLE_TYPES:
-            continue
-        hp = c.get_hp(bid)
-        key = (pos.x, pos.y)
-        prev = self.enemy_tile_hp.get(key)
-        new_tracking[key] = hp
-        if attack is None and prev is not None and hp < prev:
-            attack = (uid, pos)
-    self.enemy_tile_hp = new_tracking
-    return attack
 
 
 def _try_enter_defend(self: Harvester, c: Controller) -> bool:
@@ -135,32 +74,6 @@ def _splitter_facing(self: Harvester, c: Controller, tile: Position) -> Directio
     if fallback in DIRECTIONS_4:
         return fallback
     return None
-
-
-def _find_enemy_pos(c: Controller, enemy_id: int) -> Position | None:
-    for uid in c.get_nearby_units(_VISION_RADIUS_SQ):
-        if uid == enemy_id:
-            return c.get_position(uid)
-    return None
-
-
-def _step_toward(c: Controller, me: Position, target: Position) -> None:
-    preferred = me.direction_to(target)
-    if c.can_move(preferred):
-        c.move(preferred)
-        return
-    cur_dist = me.distance_squared(target)
-    best_d = None
-    best_dist = cur_dist
-    for d in DIRECTIONS_4:
-        if d == preferred or not c.can_move(d):
-            continue
-        nd = me.add(d).distance_squared(target)
-        if nd < best_dist:
-            best_dist = nd
-            best_d = d
-    if best_d is not None:
-        c.move(best_d)
 
 
 def _handle_post_build(self: Harvester, c: Controller) -> None:

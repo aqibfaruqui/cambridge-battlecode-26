@@ -13,7 +13,7 @@ class BuilderType(IntEnum):
     ATTACKER = 3         # (-1,  0)
     ATTACKER_REVAMPED = 4     # ( 0,  0)
     HEALER = 5           # ( 1,  0)
-    EXTRA_ROLE_6 = 6     # (-1,  1)
+    HARVESTER_3 = 6     # (-1,  1)
     HARVESTER_2 = 7     # ( 0,  1)
     EXTRA_ROLE_8 = 8     # ( 1,  1)
 
@@ -58,7 +58,7 @@ class Builder:
             builder_type = BuilderType.from_offset(dx, dy)
 
             match builder_type:
-                case (BuilderType.HARVESTER_1 | BuilderType.HARVESTER_2):
+                case (BuilderType.HARVESTER_1 | BuilderType.HARVESTER_2 | BuilderType.HARVESTER_3):
                     self.role = Harvester(self.core_pos)
                 case BuilderType.ATTACKER:
                     self.role = Attacker(self.core_pos)

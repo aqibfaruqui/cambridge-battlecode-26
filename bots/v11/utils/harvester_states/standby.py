@@ -26,6 +26,8 @@ _CONVEYOR_TYPES = (
 
 
 def _is_friendly_walkable(c: Controller, pos: Position) -> bool:
+    if pos.x < 0 or pos.y < 0 or pos.x >= c.get_map_width() or pos.y >= c.get_map_height():
+        return False
     if not c.is_in_vision(pos):
         return False
     bid = c.get_tile_building_id(pos)

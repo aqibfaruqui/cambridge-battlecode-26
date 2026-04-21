@@ -16,6 +16,10 @@ from utils.harvester_states.return_to_core import (
 from utils.harvester_states.seek import (
     _seek as _seek_state,
 )
+from utils.harvester_states.placing_harvester import (
+    STEP_ON as _PLACING_STEP_ON,
+    _placing_harvester as _placing_harvester_state,
+)
 from utils.pathfinding.movement import DIRECTIONS_4, reached_core
 from utils.map.raw_map_representation import EnvironmentMap, Symmetry
 from utils.pathfinding.d_star import DStarLite
@@ -43,6 +47,7 @@ class HarvestState(Enum):
     __slots__ = ()
 
     SEEK = "seek"
+    PLACING_HARVESTER = "placing_harvester"
     RETURN = "return"
     PLACING_FOUNDRY = "placing_foundry"
 
@@ -84,6 +89,13 @@ class Harvester:
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
         self.heal_target: Position | None = None
+
+        self.placing_ore_pos: Position | None = None
+        self.placing_exit_pos: Position | None = None
+        self.placing_sides_pending: list[Direction] = []
+        self.placing_phase: str = _PLACING_STEP_ON
+        self.placing_ring_turns: int = 0
+        self.placing_is_titanium: bool = False
 
         self.broadcaster = Broadcaster()
         self._symmetry_broadcasted = False
@@ -159,57 +171,45 @@ class Harvester:
         )
 
     def _try_build_harvester(self, c: Controller) -> bool:
-        """Check cardinal directions and place a harvester (titanium first, then axionite)"""
+        """Detect a valid adjacent ore and enter the placing-harvester sequence."""
+        ore_pos, is_titanium = self._pick_adjacent_ore(c)
+        if ore_pos is None:
+            return False
+
+        self.placing_ore_pos = ore_pos
+        self.placing_exit_pos = self.current_pos
+        self.placing_is_titanium = is_titanium
+        self.placing_phase = _PLACING_STEP_ON
+        self.placing_sides_pending = list(DIRECTIONS_4)
+        self.placing_ring_turns = 0
+        self.state = HarvestState.PLACING_HARVESTER
+        # Kick off step_on this turn so we don't lose a tick on the transition.
+        _placing_harvester_state(self, c)
+        return True
+
+    def _pick_adjacent_ore(self, c: Controller) -> tuple[Position | None, bool]:
         for direction in DIRECTIONS_4:
             ore_pos = self.current_pos.add(direction)
-            if not self._is_valid_titanium_target(c, ore_pos):
-                continue
+            if self._is_valid_titanium_target(c, ore_pos):
+                return ore_pos, True
 
-            self._clear_if_road(c, ore_pos)
-            if not c.can_build_harvester(ore_pos):
-                continue
+        if (
+            self.titanium_found
+            and not self.axionite_found
+            and not self.foundry_prev_placed
+        ):
+            for direction in DIRECTIONS_4:
+                ore_pos = self.current_pos.add(direction)
+                if self._is_valid_axionite_target(c, ore_pos):
+                    return ore_pos, False
 
-            c.build_harvester(ore_pos)
-            self.titanium_found = True
-            self.blacklisted_ores.discard((ore_pos.x, ore_pos.y))
-            self.target_pos = None
-            self.seek_target_is_ore = False
-            self.harvester_pos = ore_pos
-            self.just_placed = True
-            _reset_return_state(self)
-            self.state = HarvestState.RETURN
-            return True
-
-        for direction in DIRECTIONS_4:
-            ore_pos = self.current_pos.add(direction)
-            if not (
-                self.titanium_found
-                and not self.axionite_found
-                and not self.foundry_prev_placed
-                and self._is_valid_axionite_target(c, ore_pos)
-            ):
-                continue
-
-            self._clear_if_road(c, ore_pos)
-            if not c.can_build_harvester(ore_pos):
-                continue
-
-            c.build_harvester(ore_pos)
-            self.axionite_found = True
-            self.target_pos = None
-            self.seek_target_is_ore = False
-            self.harvester_pos = ore_pos
-            self.just_placed = True
-            _reset_return_state(self)
-            self.state = HarvestState.RETURN
-            return True
-
-        return False
+        return None, False
 
     def _draw_debug(self, c: Controller):
         """Draw state-based dot and target line for debugging"""
         state_colors = {
             HarvestState.SEEK: (0, 0, 255),
+            HarvestState.PLACING_HARVESTER: (200, 0, 200),
             HarvestState.RETURN: (255, 165, 0),
             HarvestState.PLACING_FOUNDRY: (255, 255, 0),
         }
@@ -223,6 +223,9 @@ class Harvester:
 
     def _placing_foundry(self, c: Controller):
         _foundry_state(self, c)
+
+    def _placing_harvester(self, c: Controller):
+        _placing_harvester_state(self, c)
 
     def _seek(self, c: Controller):
         _seek_state(self, c)
@@ -306,6 +309,8 @@ class Harvester:
         match self.state:
             case HarvestState.SEEK:
                 self._seek(c)
+            case HarvestState.PLACING_HARVESTER:
+                self._placing_harvester(c)
             case HarvestState.RETURN:
                 self._return(c)
             case HarvestState.PLACING_FOUNDRY:

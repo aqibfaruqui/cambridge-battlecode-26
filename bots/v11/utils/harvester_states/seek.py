@@ -480,7 +480,6 @@ def _seek(self: Harvester, c: Controller):
     _ensure_seek_blacklists(self)
 
     if self._try_build_harvester(c):
-        self.state = type(self.state).RETURN
         return
 
     # Validate existing heal target

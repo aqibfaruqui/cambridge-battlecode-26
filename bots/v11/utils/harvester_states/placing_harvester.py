@@ -110,8 +110,9 @@ def _do_ring(self: Harvester, c: Controller, ore_pos: Position) -> None:
             remaining.append(side)
             continue
         side_pos = ore_pos.add(side)
-        if c.can_build_conveyor(side_pos, side):
-            c.build_conveyor(side_pos, side)
+        flow = side.opposite()
+        if c.can_build_conveyor(side_pos, flow):
+            c.build_conveyor(side_pos, flow)
             built = True
         else:
             remaining.append(side)

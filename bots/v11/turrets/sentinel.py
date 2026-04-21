@@ -1,5 +1,7 @@
 from cambc import Controller, EntityType, Position
 
+from turrets.resource_trace import feeds_friendly_turret
+
 _PRIORITY = (
     EntityType.BUILDER_BOT,
     EntityType.LAUNCHER,
@@ -9,7 +11,18 @@ _PRIORITY = (
     EntityType.FOUNDRY,
     EntityType.CORE,
     EntityType.BARRIER,
+    EntityType.CONVEYOR,
+    EntityType.ARMOURED_CONVEYOR,
+    EntityType.BRIDGE,
+    EntityType.SPLITTER,
 )
+
+_RELAY_TYPES = frozenset({
+    EntityType.CONVEYOR,
+    EntityType.ARMOURED_CONVEYOR,
+    EntityType.BRIDGE,
+    EntityType.SPLITTER,
+})
 
 
 class Sentinel:
@@ -40,6 +53,8 @@ class Sentinel:
                 continue
             pos = c.get_position(eid)
             if not c.can_fire(pos):
+                continue
+            if et in _RELAY_TYPES and feeds_friendly_turret(c, pos, my_team):
                 continue
             d2 = my_pos.distance_squared(pos)
             cur = best[tier]

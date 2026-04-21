@@ -19,7 +19,7 @@ _STEP_OFF = (
 # both can reach it — either way the cheaper gunner is the right pick. Only
 # the in-between band (gunner < d² <= sentinel) warrants the pricier sentinel.
 _SENTINEL_ATTACK_RADIUS_SQ = 32
-_GUNNER_ATTACK_RADIUS_SQ = 13
+_GUNNER_ATTACK_RADIUS_SQ = 9
 
 
 def _execute_replacement(self: AttackerRevamped, c: Controller) -> bool:

@@ -26,6 +26,7 @@ class Core:
         ]
         self.spawn_plan = self.default_spawn_plan.copy()
         self.healer_id: int | None = None
+        self.last_periodic_attacker_round = 0
 
     def _has_enemy_threat_in_vision(self, c: Controller) -> bool:
         my_team = c.get_team()
@@ -61,9 +62,6 @@ class Core:
     def run(self, c: Controller):
         if c.get_current_round() in {1000, 1001}:
             self.spawn_plan = self.default_spawn_plan.copy()
-        # Hold the core's 3x3 clear so only one builder is spawning at a time.
-        if self._builder_bot_on_core_ring(c):
-            return
 
         if self.builders_spawned < len(self.spawn_plan):
             builder_type = self.spawn_plan[self.builders_spawned]
@@ -71,9 +69,21 @@ class Core:
                 self.builders_spawned += 1
             return
 
+        round_now = c.get_current_round()
+        if (
+            round_now > 200
+            and round_now - self.last_periodic_attacker_round >= 50
+            and c.get_scale_percent() < 600
+        ):
+            print("Periodic attacker spawn check")
+            if self._try_spawn(c, BuilderType.ATTACKER_REVAMPED) is not None:
+                print("Spawned periodic attacker")
+                self.last_periodic_attacker_round = round_now
+                return
+
         if self._healer_alive(c):
             return
-        if c.get_current_round() < 10:
+        if round_now < 10:
             return
         if not self._has_enemy_threat_in_vision(c):
             return

@@ -1,5 +1,6 @@
 from cambc import Controller, EntityType, Position, Environment
 from utils.pathfinding.movement import DIRECTIONS_8
+from turrets.resource_trace import feeds_friendly_turret
 
 _PRIORITY = (
     EntityType.BUILDER_BOT,
@@ -9,10 +10,20 @@ _PRIORITY = (
     EntityType.GUNNER,
     EntityType.FOUNDRY,
     EntityType.CORE,
+    EntityType.MARKER,
     EntityType.BARRIER,
     EntityType.CONVEYOR,
+    EntityType.ARMOURED_CONVEYOR,
+    EntityType.BRIDGE,
+    EntityType.SPLITTER,
 )
 _FIRE_TYPES = frozenset(_PRIORITY)
+_RELAY_TYPES = frozenset({
+    EntityType.CONVEYOR,
+    EntityType.ARMOURED_CONVEYOR,
+    EntityType.BRIDGE,
+    EntityType.SPLITTER,
+})
 
 
 class Gunner:
@@ -39,6 +50,13 @@ class Gunner:
                 c.draw_indicator_line(my_pos, target, 200, 0, 255)
                 return
 
+        if target is not None and self._is_friendly_destroyable(c, target, my_team):
+            if c.can_fire(target):
+                c.fire(target)
+                c.draw_indicator_dot(my_pos, 100, 100, 100)
+                c.draw_indicator_line(my_pos, target, 100, 100, 100)
+                return
+
         # No worthwhile target ahead: rotate toward the best-priority enemy
         # sitting on one of the 8 rays from this tile.
         best: list[tuple[Position, int] | None] = [None] * len(_PRIORITY)
@@ -62,18 +80,26 @@ class Gunner:
                         priority = _PRIORITY.index(etype)
                         best[priority] = (target, dist)
                     break
+                elif builder is not None:
+                    break
 
                 if bid is not None and c.get_team(bid) == my_team:
+                    etype = c.get_entity_type(bid)
+                    if etype == EntityType.MARKER:
+                        best[_PRIORITY.index(EntityType.MARKER)] = (target, dist)
+                    elif etype in _RELAY_TYPES:
+                        if not feeds_friendly_turret(c, target, my_team):
+                            best[_PRIORITY.index(etype)] = (target, dist)
                     break
                 elif bid is not None:
                     etype = c.get_entity_type(bid)
-                    if etype in _FIRE_TYPES and etype not in {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR}:
+                    if etype in _RELAY_TYPES:
+                        if not feeds_friendly_turret(c, target, my_team):
+                            priority = _PRIORITY.index(etype)
+                            best[priority] = (target, dist)
+                    elif etype in _FIRE_TYPES:
                         priority = _PRIORITY.index(etype)
                         best[priority] = (target, dist)
-                    elif etype in {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR}:
-                        if c.get_direction(bid) != target.direction_to(c.get_position()):
-                            priority = _PRIORITY.index(EntityType.CONVEYOR)
-                            best[priority] = (target, dist)
                     break
                     
 
@@ -96,3 +122,16 @@ class Gunner:
         if c.get_team(eid) == my_team:
             return False
         return c.get_entity_type(eid) in _FIRE_TYPES
+
+    def _is_friendly_destroyable(self, c: Controller, pos: Position, my_team) -> bool:
+        if c.get_tile_builder_bot_id(pos) is not None:
+            return False
+        bid = c.get_tile_building_id(pos)
+        if bid is None:
+            return False
+        if c.get_team(bid) != my_team:
+            return False
+        etype = c.get_entity_type(bid)
+        if etype == EntityType.MARKER:
+            return True
+        return False

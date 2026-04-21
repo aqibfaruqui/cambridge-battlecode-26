@@ -339,8 +339,6 @@ def _clear_return_tile(_: Harvester, c: Controller, pos: Position) -> bool:
 
     entity_type = c.get_entity_type(build_id)
     if entity_type == EntityType.MARKER:
-        if c.can_destroy(pos):
-            c.destroy(pos)
         return True
     if entity_type == EntityType.ROAD:
         if c.can_destroy(pos):

@@ -38,6 +38,10 @@ def _ensure_seek_blacklists(self) -> None:
         self.blacklisted_seek_targets = set()
     if not hasattr(self, "seek_unreachable_counts"):
         self.seek_unreachable_counts = {}
+    if not hasattr(self, "seek_stall_target"):
+        self.seek_stall_target = None
+    if not hasattr(self, "seek_target_turns"):
+        self.seek_target_turns = 0
 
 
 def _read_nearby_claims(c: Controller) -> set[tuple[int, int]]:
@@ -518,6 +522,25 @@ def _seek(self: Harvester, c: Controller):
         )
         if self.target_pos is None:
             return
+
+    # Stall detection: if we've chased this target for 50 turns without success,
+    # blacklist it and reset so a new target gets picked next turn.
+    if self.seek_stall_target == self.target_pos:
+        self.seek_target_turns += 1
+    else:
+        self.seek_stall_target = self.target_pos
+        self.seek_target_turns = 1
+    if self.seek_target_turns >= 50:
+        key = (self.target_pos.x, self.target_pos.y)
+        if self.seek_target_is_ore:
+            self.blacklisted_ores.add(key)
+        else:
+            self.blacklisted_seek_targets.add(key)
+        self.target_pos = None
+        self.seek_target_is_ore = False
+        self.seek_stall_target = None
+        self.seek_target_turns = 0
+        return
 
     move_target = self.target_pos
     is_ore_target = self.seek_target_is_ore

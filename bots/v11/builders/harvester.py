@@ -90,6 +90,8 @@ class Harvester:
         self.blacklisted_ores: set[tuple[int, int]] = set()
         self.blacklisted_seek_targets: set[tuple[int, int]] = set()
         self.seek_unreachable_counts: dict[tuple[int, int], int] = {}
+        self.seek_stall_target: Position | None = None
+        self.seek_target_turns: int = 0
         self.edge_cycle_index = 0
         self.network_reach_round = -1
         self.network_reach_dirty = True
@@ -115,6 +117,8 @@ class Harvester:
         self.defend_prev_state: HarvestState | None = None
         self.defend_enemy_id: int | None = None
         self.defend_target_tile: Position | None = None
+        self.defend_gunner_pos: Position | None = None
+        self.defend_orig_conveyor_dir: Direction | None = None
         self.enemy_tile_hp: dict[tuple[int, int], int] = {}
 
         self.harvesters_placed = 0

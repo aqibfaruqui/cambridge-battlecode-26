@@ -36,7 +36,9 @@ _ENEMY_WALKABLE_TYPES = (
 )
 
 
-def _harvester_attached_to_core(self: Harvester, c) -> bool:    
+def _harvester_attached_to_core(self: Harvester, c) -> bool:
+    """Check if the current conveyor you are on now is attached to core"""
+    # TODO: Implement this    
     return False
 
 
@@ -47,9 +49,6 @@ def _reset_return_state(self: Harvester):
     self.return_planner = None
     self.post_bridge_conveyor = False
     self.return_bridge_fail_counts = {}
-    self.return_stall_pos = None
-    self.return_stall_count = 0
-
 
 def _enemy_walkable_at(c: Controller, pos: Position) -> bool:
     bid = c.get_tile_building_id(pos)
@@ -77,6 +76,7 @@ def _attack_enemy_under_bot(self: Harvester, c: Controller) -> bool:
 
 
 def _return_dynamic_blockers(c: Controller) -> list[tuple[int, int]]:
+    """Blockers for pathfinding we currently block: harvesters and enemy buildings"""
     blockers: list[tuple[int, int]] = []
     team = c.get_team()
     for pos in c.get_nearby_tiles():
@@ -110,15 +110,6 @@ def _ensure_return_planner(self: Harvester, c):
         planner.notify_map_changes()
     return planner
 
-
-def _refresh_return_planner(self: Harvester, c) -> tuple[Direction | None, list[tuple[int, int]]]:
-    planner = _ensure_return_planner(self, c)
-    if planner is None:
-        return None, []
-    planner.set_position(self.current_pos.x, self.current_pos.y)
-    step = planner.step()
-    path = planner.extract_path()
-    return step, path
 
 
 def _planner_step_at(self: Harvester, c: Controller, pos: Position) -> Direction | None:
@@ -155,8 +146,8 @@ def _resolve_diagonal_plan(
     for first, second in [(ordered[0], ordered[1]), (ordered[1], ordered[0])]:
         first_pos = origin.add(first)
         second_pos = first_pos.add(second)
-        first_usable = _is_return_tile_routable(self, c, first_pos)
-        second_usable = _is_return_tile_routable(self, c, second_pos)
+        first_usable = _is_return_tile_usable(self, c, first_pos, check_occupancy=False)
+        second_usable = _is_return_tile_usable(self, c, second_pos, check_occupancy=False)
         if not first_usable:
             continue
         if reached_core(first_pos, self.core_pos):
@@ -211,8 +202,7 @@ def _next_dir_after_move(
 
 
 
-def _is_return_tile_routable(self: Harvester, c: Controller, pos: Position) -> bool:
-    """Like _is_return_tile_usable but ignores temporary bot occupancy — for second-step lookahead."""
+def _is_return_tile_usable(self: Harvester, c: Controller, pos: Position, check_occupancy: bool = True) -> bool:
     if reached_core(pos, self.core_pos):
         return True
     if not c.is_in_vision(pos):
@@ -224,47 +214,15 @@ def _is_return_tile_routable(self: Harvester, c: Controller, pos: Position) -> b
         return env.tile(pos.x, pos.y) in (TRAVERSABLE, ORE_AXIONITE, CORE_OWN, UNKNOWN)
     if c.get_tile_env(pos) == Environment.WALL:
         return False
+    if check_occupancy:
+        occupier = c.get_tile_builder_bot_id(pos)
+        if occupier is not None and occupier != c.get_id():
+            return False
     build_id = c.get_tile_building_id(pos)
     if build_id is None:
         return True
     entity_type = c.get_entity_type(build_id)
     if entity_type in (EntityType.ROAD, EntityType.CORE, EntityType.MARKER):
-        return True
-    if c.get_team(build_id) != c.get_team():
-        return False
-    return entity_type in (EntityType.CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER)
-
-
-def _is_return_tile_usable(self: Harvester, c: Controller, pos: Position) -> bool:
-    if reached_core(pos, self.core_pos):
-        return True
-
-    if not c.is_in_vision(pos):
-        if not on_map(c, pos):
-            return False
-        
-        env = self.environment_map
-        if env is None:
-            return False
-        return env.tile(pos.x, pos.y) in (TRAVERSABLE, ORE_AXIONITE, CORE_OWN, UNKNOWN)
-
-    if c.get_tile_env(pos) == Environment.WALL:
-        return False
-
-    occupier = c.get_tile_builder_bot_id(pos)
-    if occupier is not None and occupier != c.get_id():
-        return False
-
-    build_id = c.get_tile_building_id(pos)
-    if build_id is None:
-        return True
-
-    entity_type = c.get_entity_type(build_id)
-    if entity_type == EntityType.ROAD:
-        return True
-    if entity_type == EntityType.CORE:
-        return True
-    if entity_type == EntityType.MARKER:
         return True
     if c.get_team(build_id) != c.get_team():
         return False
@@ -364,7 +322,13 @@ def _build_first_connector(self: Harvester, c: Controller) -> bool:
 
 
 def _build_return_step(self: Harvester, c: Controller) -> bool:
-    planner_step, planner_path = _refresh_return_planner(self, c)
+    planner = _ensure_return_planner(self, c)
+    planner_step: Direction | None = None
+    planner_path: list[tuple[int, int]] = []
+    if planner is not None:
+        planner.set_position(self.current_pos.x, self.current_pos.y)
+        planner_step = planner.step()
+        planner_path = planner.extract_path()
     carry_next: Direction | None = None
 
     # Determine move_dir — consume carry-forward from previous split, or plan fresh.

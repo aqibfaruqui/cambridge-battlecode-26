@@ -3,13 +3,9 @@ from cambc import Position, Controller, EntityType
 from utils.comms.for_launcher import LauncherMessages, LauncherMessageType
 
 
-# Launcher throw range (r² ≤ 26) and builder action radius (r² = 2).
 _THROW_RANGE_SQ = 26
 _ACTION_RADIUS_SQ = 2
-# |dx|,|dy| bound s.t. dx²+dy² ≤ 26.
 _THROW_SPAN = 5
-
-# ONETIME_SEND_OURS encodes only the low 12 bits of the requester's bot id.
 _BOT_ID_MASK = 0xFFF
 
 
@@ -17,9 +13,7 @@ class Launcher:
     def __init__(self, core_pos: Position | None):
         self.core_pos = core_pos
         self.idle_rounds = 0
-        # Bots we've already thrown whose request marker we couldn't destroy
-        # (marker out of our r²≤2 destroy range). Prevents re-throwing them
-        # while the stale marker lingers in our vision.
+
         self._serviced_bot_ids: set[int] = set()
 
     def _read_launch_requests(

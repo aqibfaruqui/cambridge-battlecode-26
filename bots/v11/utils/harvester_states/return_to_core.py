@@ -449,6 +449,7 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
     # Determine move_dir — consume carry-forward from previous split, or plan fresh.
     if self.return_next_dir is not None:
         move_dir = self.return_next_dir
+        self.return_next_dir = None
     else:
         move_dir = planner_step
         if move_dir is None or move_dir == Direction.CENTRE:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from itertools import product
 from typing import TYPE_CHECKING
 
 from cambc import Controller, Direction, EntityType, Position, ResourceType
@@ -7,22 +8,20 @@ from utils.attacker_states.state import AttackState
 from utils.map.raw_map_representation import WALL
 
 if TYPE_CHECKING:
-    from builders.attacker_revamped import AttackerRevamped
+    from builders.attacker import Attacker
 
 
-# Once this many friendly sentinels are already in vision, stop hijacking
-# here and fall through to the enemy-core probe so we spread out.
+# Stop hijacking here once this many friendly sentinels are in vision.
 _MAX_FRIENDLY_SENTINELS_IN_VISION = 3
 
-# How many turns a hard-failed target stays blacklisted before we retry it.
+# Turns a hard-failed target stays blacklisted before we retry.
 _BLACKLIST_TTL = 30
 
 # Give up on an orbit waypoint after this many turns pursuing it.
 _ORBIT_STUCK_TURNS = 30
 
-# Chebyshev-radius ring around the enemy core used as SCAN waypoints once
-# the core is spotted — keeps the attacker circling harvester belts rather
-# than beelining at the core itself.
+# Chebyshev-radius ring around the enemy core — keeps us circling belts
+# rather than beelining at the core.
 _ORBIT_RADIUS = 7
 _ORBIT_OFFSETS = (
     (0, _ORBIT_RADIUS),
@@ -37,8 +36,8 @@ _ORBIT_OFFSETS = (
 
 _HIJACK_TYPES = (EntityType.CONVEYOR, EntityType.BRIDGE)
 
-# Relays that forward resources — traced through when checking whether a
-# candidate conveyor/bridge ultimately feeds one of our own turrets.
+# Relays that forward resources — traced to see if a candidate conveyor
+# ultimately feeds one of our own turrets.
 _RELAY_TYPES = frozenset({
     EntityType.CONVEYOR,
     EntityType.ARMOURED_CONVEYOR,
@@ -50,18 +49,13 @@ _FRIENDLY_TURRET_TYPES = frozenset({EntityType.GUNNER, EntityType.SENTINEL})
 
 
 def _chain_feeds_friendly_turret(
-    self: AttackerRevamped,
+    self: Attacker,
     c: Controller,
     start_pos: Position,
     my_team,
 ) -> bool:
-    """Trace resource flow forward from start_pos through relay tiles.
-
-    Returns True iff some path reaches a friendly gunner/sentinel; in that
-    case every relay tile walked through is added to self.blacklist so we
-    also skip those candidates in this and future scans.
-
-    Unknown tiles (out of vision, OOB) terminate a branch as safe.
+    """Trace relay tiles forward. If any branch reaches a friendly turret,
+    blacklist every visited relay and return True. OOV/OOB ends a branch.
     """
     touched: list[tuple[int, int]] = []
     visited: set[tuple[int, int]] = set()
@@ -76,40 +70,33 @@ def _chain_feeds_friendly_turret(
             continue
         visited.add(key)
 
-        if not (0 <= pos.x < W and 0 <= pos.y < H):
-            continue
-        if not c.is_in_vision(pos):
-            continue
-
-        bld_id = c.get_tile_building_id(pos)
-        if bld_id is None:
+        if (not (0 <= pos.x < W and 0 <= pos.y < H)
+                or not c.is_in_vision(pos)
+                or (bld_id := c.get_tile_building_id(pos)) is None):
             continue
 
         etype = c.get_entity_type(bld_id)
         if c.get_team(bld_id) == my_team and etype in _FRIENDLY_TURRET_TYPES:
             hits_turret = True
             continue
-
         if etype not in _RELAY_TYPES:
             continue
 
         touched.append(key)
-
+        # Bridges carry a target, not a direction — others have a facing.
         if etype == EntityType.BRIDGE:
             stack.append(c.get_bridge_target(bld_id))
             continue
-
         facing = c.get_direction(bld_id)
         if facing == Direction.CENTRE:
             continue
-
         if etype == EntityType.SPLITTER:
-            # Splitter outputs to facing + two perpendicular cardinals.
-            stack.append(pos.add(facing))
-            stack.append(pos.add(facing.rotate_left().rotate_left()))
-            stack.append(pos.add(facing.rotate_right().rotate_right()))
+            stack += [
+                pos.add(facing),
+                pos.add(facing.rotate_left().rotate_left()),
+                pos.add(facing.rotate_right().rotate_right()),
+            ]
         else:
-            # CONVEYOR / ARMOURED_CONVEYOR: single output in facing direction.
             stack.append(pos.add(facing))
 
     if hits_turret:
@@ -120,33 +107,8 @@ def _chain_feeds_friendly_turret(
     return hits_turret
 
 
-def _expire_blacklist(self: AttackerRevamped, c: Controller) -> None:
-    cutoff = c.get_current_round() - _BLACKLIST_TTL
-    stale = [k for k, r in self.blacklist.items() if r < cutoff]
-    for k in stale:
-        del self.blacklist[k]
-
-
-def _has_nearby_enemy_launcher(c: Controller, pos: Position, my_team) -> bool:
-    """Any enemy launcher in the 3x3 around pos (the pickup range)."""
-    for dx in (-1, 0, 1):
-        for dy in (-1, 0, 1):
-            if dx == 0 and dy == 0:
-                continue
-            np = Position(pos.x + dx, pos.y + dy)
-            if not c.is_in_vision(np):
-                continue
-            bld_id = c.get_tile_building_id(np)
-            if bld_id is None:
-                continue
-            if (c.get_entity_type(bld_id) == EntityType.LAUNCHER
-                    and c.get_team(bld_id) != my_team):
-                return True
-    return False
-
-
-def _pick_target(self: AttackerRevamped, c: Controller):
-    """Find the best enemy conveyor/bridge currently carrying a titanium stack."""
+def _pick_target(self: Attacker, c: Controller):
+    """Find the best enemy conveyor/bridge currently carrying titanium."""
     my_team = c.get_team()
     me = self.current_pos
     enemy_core = self.enemy_core_pos
@@ -174,8 +136,18 @@ def _pick_target(self: AttackerRevamped, c: Controller):
         key = (conv_pos.x, conv_pos.y)
         if key in self.blacklist:
             continue
-        if _has_nearby_enemy_launcher(c, conv_pos, my_team):
+
+        # Skip if any enemy launcher is in the 3x3 pickup ring.
+        if any(
+            c.is_in_vision(np := Position(conv_pos.x + dx, conv_pos.y + dy))
+            and (lid := c.get_tile_building_id(np)) is not None
+            and c.get_entity_type(lid) == EntityType.LAUNCHER
+            and c.get_team(lid) != my_team
+            for dx, dy in product((-1, 0, 1), repeat=2)
+            if dx or dy
+        ):
             continue
+
         if _chain_feeds_friendly_turret(self, c, conv_pos, my_team):
             # helper already blacklisted the full traced chain
             continue
@@ -194,27 +166,26 @@ def _pick_target(self: AttackerRevamped, c: Controller):
     return best
 
 
-def _build_orbit(self: AttackerRevamped, c: Controller) -> list[Position]:
-    """Ring of waypoints at `_ORBIT_RADIUS` around the enemy core"""
+def _build_orbit(self: Attacker, c: Controller) -> list[Position]:
+    """Ring of waypoints at `_ORBIT_RADIUS` around the enemy core."""
     env = self._env_map
     assert env is not None and self.enemy_core_pos is not None
-    W, H = c.get_map_width(), c.get_map_height()
-    ec = self.enemy_core_pos
+    W, H, ec = c.get_map_width(), c.get_map_height(), self.enemy_core_pos
     pts: list[Position] = []
     for dx, dy in _ORBIT_OFFSETS:
         nx = max(0, min(W - 1, ec.x + dx))
         ny = max(0, min(H - 1, ec.y + dy))
-        if env.tile(nx, ny) & (1 << WALL):
-            continue
-        pts.append(Position(nx, ny))
+        if env.tile(nx, ny) != WALL:
+            pts.append(Position(nx, ny))
     return pts or [ec]
 
 
-def _scan(self: AttackerRevamped, c: Controller) -> None:
+def _scan(self: Attacker, c: Controller) -> None:
     """Pick a new target if one is in sight; otherwise probe the map."""
-    _expire_blacklist(self, c)
-    pick = _pick_target(self, c)
-    if pick is not None:
+    cutoff = c.get_current_round() - _BLACKLIST_TTL
+    self.blacklist = {k: r for k, r in self.blacklist.items() if r >= cutoff}
+
+    if (pick := _pick_target(self, c)) is not None:
         self.target_conveyor = pick
         self._planner_goal = None
         self.state = AttackState.APPROACH

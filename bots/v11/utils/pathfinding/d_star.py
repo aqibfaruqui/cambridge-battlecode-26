@@ -217,6 +217,10 @@ class DStarLite:
         return True
 
     def step(self) -> Direction | None:
+        if self._allow_jumps:
+            raise RuntimeError(
+                "step() is undefined when allow_jumps=True; use extract_path()"
+            )
         if self._start == self._goal:
             return Direction.CENTRE
 

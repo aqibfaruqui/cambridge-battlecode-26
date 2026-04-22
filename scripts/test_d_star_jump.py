@@ -49,10 +49,33 @@ def test_construction_both_modes():
     assert custom._jump_cost == 7.5
 
 
+def test_step_raises_in_jump_mode():
+    env = _make_env(10, 10)
+    jump = DStarLite(env, 9, 9, allow_jumps=True)
+    jump.set_position(0, 0)
+    jump.plan()
+    try:
+        jump.step()
+    except RuntimeError as exc:
+        assert "allow_jumps" in str(exc), f"unexpected message: {exc}"
+        return
+    assert False, "expected RuntimeError from step() in jump mode"
+
+
+def test_step_works_in_walk_mode():
+    env = _make_env(10, 10)
+    walk = DStarLite(env, 9, 9)
+    walk.set_position(0, 0)
+    direction = walk.step()
+    assert direction is not None, "walk mode should return a Direction"
+
+
 # -------- Runner --------
 
 TESTS = [
     test_construction_both_modes,
+    test_step_raises_in_jump_mode,
+    test_step_works_in_walk_mode,
 ]
 
 

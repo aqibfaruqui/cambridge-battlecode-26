@@ -82,6 +82,10 @@ class Harvester:
         self.seek_planner: DStarLite | None = None
         self.seek_planner_goal: tuple[int, int] | None = None
         self.return_planner: DStarLite | None = None
+        self.return_jump_planner: DStarLite | None = None
+        self.return_jump_blacklist: set[tuple[int, int]] = set()
+        self.return_jump_walker: DStarLite | None = None
+        self.return_jump_landing: tuple[int, int] | None = None
         self.target_pos: Position | None = None
         self.seek_target_is_ore = False
         self.blacklisted_ores: set[tuple[int, int]] = set()

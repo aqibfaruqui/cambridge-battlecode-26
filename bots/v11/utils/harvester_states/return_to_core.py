@@ -41,6 +41,8 @@ def _reset_return_state(self: Harvester):
     self.return_planner = None
     self.post_bridge_conveyor = False
     self.return_bridge_fail_counts = {}
+    self.return_jump_walker = None
+    self.return_jump_landing = None
 
 
 def _enemy_walkable_at(c: Controller, pos: Position) -> bool:

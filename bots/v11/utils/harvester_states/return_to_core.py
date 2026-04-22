@@ -174,6 +174,7 @@ def _ensure_return_jump_planner(self: Harvester, c: Controller):
             unknown_cost=3.0,
             allow_jumps=True,
         )
+        self.return_jump_planner.plan()
     p = self.return_jump_planner
     if p is not None:
         blockers = _return_dynamic_blockers(c) + list(self.return_jump_blacklist)

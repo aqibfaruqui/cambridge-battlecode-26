@@ -39,7 +39,7 @@ Two new `__slots__`: `_allow_jumps`, `_jump_cost`.
 - **Walk mode** (`allow_jumps=False`, default): behaviour is bit-identical to today.
 - **Jump mode** (`allow_jumps=True`): `step()` raises `RuntimeError("step() is undefined when allow_jumps=True; use extract_path()")` — `Direction` cannot express a jump. All other public methods (`set_goal`, `set_position`, `plan`, `extract_path`, `extract_path_lines`, `notify_map_changes`, `set_dynamic_blockers`) work in both modes.
 
-Path consumption in jump mode: `extract_path()` returns the existing `list[tuple[int, int]]`. A segment `(pts[i], pts[i+1])` is a jump iff `max(|dx|, |dy|) > 1`. No new data type.
+Path consumption in jump mode: `extract_path()` returns the existing `list[tuple[int, int]]`. A segment between consecutive points is a jump iff `max(|dx|, |dy|) > 1`. No new data type.
 
 ## Jump edge set
 
@@ -60,7 +60,7 @@ _JUMP_OFFSETS = (
 Rationale for the set:
 - `dist_sq ≤ 2` is the existing walk set.
 - `dist_sq = 4` offsets (`(±2, 0)`, `(0, ±2)`) are deliberately excluded — a jump across a single orthogonally-adjacent gap is not modelled. The planner routes around via a `(2, ±1)` / `(±1, 2)` jump instead.
-- Max reach is `±3`, so the interior fast path in `_recompute_rhs` must require `3 ≤ x < w − 3 and 3 ≤ y < h − 3`.
+- Max reach is `±3`, so the interior fast path in `_recompute_rhs` must require `3 ≤ x < width − 3 and 3 ≤ y < height − 3`.
 
 Symmetry: every offset's negative is also in the set, so predecessor = successor just like the walk set.
 
@@ -69,52 +69,58 @@ Symmetry: every offset's negative is also in the set, so predecessor = successor
 - **Jump endpoint rules** are identical to walk endpoint rules: the destination cell must not be in `_dynamic_blocked` and must pass `block_mask`. In particular, `unknown` / wall / ore / enemy core are endpoint-rejected whenever the active mask says so.
 - **Path between endpoints** is ignored — any cell type between source and destination is permitted, including dynamic blockers. No ray-casting or line-of-sight check.
 - `unknown_cost` is applied only to walk edges (as today). Jumps cost a flat `jump_cost` regardless of endpoint terrain or anything along the way.
-- `_km` and `_calc_key` are unchanged. The octile heuristic remains admissible and consistent because the smallest jump has `octile ≈ 2.41` and every jump costs 5, so `h(u) − h(s) ≤ octile(u, s) ≤ 3 ≤ 5 = jump_cost`.
+- `_km` and `_calc_key` are unchanged. The octile heuristic remains admissible and consistent because the smallest jump has octile distance `≈ 2.41` and every jump costs 5, so for any jump edge from a source cell to a successor cell, `h(source) − h(successor) ≤ octile(source, successor) ≤ 3 ≤ 5 = jump_cost`.
 
 ## Method-by-method changes
 
-Each hot method branches once on `self._allow_jumps` at the top level. The walk-only code paths are preserved verbatim.
+Each hot method branches once on `self._allow_jumps` at the top level. The walk-only code paths are preserved verbatim. The snippets below use descriptive local names; the existing walk code uses shorter aliases (`w`, `h`, `u`, `s`, `arr`, `dyn`, etc.) for hot-path terseness — the implementation may keep those aliases or expand them at its discretion.
 
-### `_recompute_rhs(u)`
+### `_recompute_rhs(cell_index)`
 
 After the existing walk-edge relaxation produces `min_rhs`, if `_allow_jumps` is set, scan jump edges as an additive block:
 
 ```python
 if self._allow_jumps:
-    jc = self._jump_cost
-    if 3 <= x < w - 3 and 3 <= y < h - 3:
+    jump_cost = self._jump_cost
+    if 3 <= x < width - 3 and 3 <= y < height - 3:
         # Interior fast path — every offset lands in bounds.
         for dx, dy in _JUMP_OFFSETS:
-            s = u + dy * w + dx
-            if s != start and (s in dyn or (mask >> arr[s]) & 1):
+            successor_index = cell_index + dy * width + dx
+            if successor_index != start and (
+                successor_index in dynamic_blocked
+                or (block_mask >> environment_array[successor_index]) & 1
+            ):
                 continue
-            gs = g[s]
-            if gs < min_rhs:
-                v = jc + gs
-                if v < min_rhs:
-                    min_rhs = v
+            successor_g = g[successor_index]
+            if successor_g < min_rhs:
+                candidate_cost = jump_cost + successor_g
+                if candidate_cost < min_rhs:
+                    min_rhs = candidate_cost
     else:
         # Border — per-offset bounds checks.
         for dx, dy in _JUMP_OFFSETS:
-            xx = x + dx
-            if xx < 0 or xx >= w:
+            neighbour_x = x + dx
+            if neighbour_x < 0 or neighbour_x >= width:
                 continue
-            yy = y + dy
-            if yy < 0 or yy >= h:
+            neighbour_y = y + dy
+            if neighbour_y < 0 or neighbour_y >= height:
                 continue
-            s = yy * w + xx
-            if s != start and (s in dyn or (mask >> arr[s]) & 1):
+            successor_index = neighbour_y * width + neighbour_x
+            if successor_index != start and (
+                successor_index in dynamic_blocked
+                or (block_mask >> environment_array[successor_index]) & 1
+            ):
                 continue
-            gs = g[s]
-            if gs < min_rhs:
-                v = jc + gs
-                if v < min_rhs:
-                    min_rhs = v
+            successor_g = g[successor_index]
+            if successor_g < min_rhs:
+                candidate_cost = jump_cost + successor_g
+                if candidate_cost < min_rhs:
+                    min_rhs = candidate_cost
 ```
 
-The `gs < min_rhs` early prune remains valid: `v = jc + gs`, and with `jc > 0`, `gs ≥ min_rhs` implies `v > min_rhs`, so the candidate can be skipped.
+The `successor_g < min_rhs` early prune remains valid: `candidate_cost = jump_cost + successor_g`, and with `jump_cost > 0`, `successor_g ≥ min_rhs` implies `candidate_cost > min_rhs`, so the candidate can be skipped.
 
-The downstream enqueue logic (comparing `g[u]` vs `min_rhs`, computing key, pushing to `_open`) is untouched.
+The downstream enqueue logic (comparing `g[cell_index]` vs `min_rhs`, computing key, pushing to `_open`) is untouched.
 
 ### `step()`
 
@@ -129,25 +135,25 @@ def step(self):
 
 ### `extract_path()`
 
-Inside the `while cur != goal` loop, after the existing walk-edge scan selects `(best, best_cost)`, if `_allow_jumps` is set, also scan jump edges using the same best-tracking:
+Inside the `while current_index != goal` loop, after the existing walk-edge scan selects `(best, best_cost)`, if `_allow_jumps` is set, also scan jump edges using the same best-tracking:
 
 ```python
 if self._allow_jumps:
-    jc = self._jump_cost
+    jump_cost = self._jump_cost
     for dx, dy in _JUMP_OFFSETS:
-        xx = x + dx
-        if xx < 0 or xx >= w:
+        neighbour_x = x + dx
+        if neighbour_x < 0 or neighbour_x >= width:
             continue
-        yy = y + dy
-        if yy < 0 or yy >= h:
+        neighbour_y = y + dy
+        if neighbour_y < 0 or neighbour_y >= height:
             continue
-        nxt = yy * w + xx
-        if nxt in dyn or (mask >> arr[nxt]) & 1:
+        successor_index = neighbour_y * width + neighbour_x
+        if successor_index in dynamic_blocked or (block_mask >> environment_array[successor_index]) & 1:
             continue
-        v = jc + g[nxt]
-        if v < best_cost:
-            best_cost = v
-            best = nxt
+        candidate_cost = jump_cost + g[successor_index]
+        if candidate_cost < best_cost:
+            best_cost = candidate_cost
+            best = successor_index
 ```
 
 The `visited` loop-guard is retained.
@@ -158,42 +164,42 @@ No change. Still returns `(x1, y1, x2, y2)` segments; renderers can colour by di
 
 ### `notify_map_changes()`
 
-Per changed cell `i`, after recomputing `i` itself and its 8 walk predecessors, if `_allow_jumps` is set, also recompute each jump predecessor:
+Per changed cell, after recomputing that cell itself and its 8 walk predecessors, if `_allow_jumps` is set, also recompute each jump predecessor:
 
 ```python
 if self._allow_jumps:
     for dx, dy in _JUMP_OFFSETS:
-        xx = x + dx
-        if xx < 0 or xx >= w:
+        neighbour_x = x + dx
+        if neighbour_x < 0 or neighbour_x >= width:
             continue
-        yy = y + dy
-        if yy < 0 or yy >= h:
+        neighbour_y = y + dy
+        if neighbour_y < 0 or neighbour_y >= height:
             continue
-        recompute(yy * w + xx)
+        recompute_rhs(neighbour_y * width + neighbour_x)
 ```
 
-The `bytearray` `memcmp` short-circuit at the top of the method is unchanged and still the common-case fast path.
+Here `x, y` are the coordinates of the changed cell (already computed by the enclosing walk-predecessor block), and `recompute_rhs` is the local alias for `self._recompute_rhs`. The `bytearray` `memcmp` short-circuit at the top of the method is unchanged and still the common-case fast path.
 
 ### `set_dynamic_blockers()`
 
-Per toggled cell, after the existing `_recompute_rhs(idx)` + walk-predecessor loop, if `_allow_jumps` is set, also recompute jump predecessors:
+Per toggled cell, after the existing `_recompute_rhs(cell_index)` + walk-predecessor loop, if `_allow_jumps` is set, also recompute jump predecessors:
 
 ```python
-for idx in changed_nodes:
-    self._recompute_rhs(idx)
-    for pred in self._pred(idx):
-        self._recompute_rhs(pred)
+for cell_index in changed_nodes:
+    self._recompute_rhs(cell_index)
+    for predecessor in self._pred(cell_index):
+        self._recompute_rhs(predecessor)
     if self._allow_jumps:
-        x = idx % self._w
-        y = idx // self._w
+        x = cell_index % self._w
+        y = cell_index // self._w
         for dx, dy in _JUMP_OFFSETS:
-            xx = x + dx
-            if xx < 0 or xx >= w:
+            neighbour_x = x + dx
+            if neighbour_x < 0 or neighbour_x >= self._w:
                 continue
-            yy = y + dy
-            if yy < 0 or yy >= h:
+            neighbour_y = y + dy
+            if neighbour_y < 0 or neighbour_y >= self._h:
                 continue
-            self._recompute_rhs(yy * self._w + xx)
+            self._recompute_rhs(neighbour_y * self._w + neighbour_x)
 ```
 
 ## Performance note
@@ -210,10 +216,10 @@ Running walk + jump planners on a single bot roughly 3–4×'s per-tick pathfind
 
 1. **Regression:** existing callers (harvester seek, harvester return, attacker) instantiate without `allow_jumps`; their planners must behave bit-identically. Smoke-test a full match.
 2. **Wall-bypass:** construct a small map where the only walk path is infinity-cost (solid wall separating start and goal with a single traversable endpoint reachable only by jump). `extract_path()` with `allow_jumps=True` must return a path containing a jump segment (`max(|dx|, |dy|) > 1`) and walk-only planner must return `[]`.
-3. **Cost preference:** open map with no walls. Walk from `(0, 0)` to `(3, 0)` costs 3; a direct `(3, 0)` jump costs 5. Jump planner's `extract_path()` must return the all-walk route.
+3. **Cost preference:** open map with no walls. Walking from `(0, 0)` to `(3, 0)` costs 3; a direct `(3, 0)` jump costs 5. Jump planner's `extract_path()` must return the all-walk route.
 4. **Endpoint block-mask:** jump endpoint on a wall must be rejected. Jump endpoint on a dynamic blocker must be rejected.
 5. **Path pass-through:** jump over a wall and jump over a dynamic blocker must both succeed when endpoints are valid.
-6. **Heuristic admissibility:** verify `_compute_shortest_path` terminates and `g[start] ≤ octile(start, goal) × some_ratio` in an open map (indirectly exercises key consistency).
+6. **Heuristic admissibility:** verify `_compute_shortest_path` terminates and the final `g[start]` is no smaller than `octile(start, goal)` on an open map (indirectly exercises key consistency).
 7. **`step()` contract:** `step()` raises `RuntimeError` in jump mode; unchanged in walk mode.
 8. **Incremental repair:** toggling a wall mid-search updates the jump plan correctly (compare against a from-scratch run).
 

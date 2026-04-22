@@ -8,7 +8,7 @@ from utils.harvester_states.foundry import _placing_foundry as _foundry_state
 from utils.harvester_states.return_to_core import (
     _attack_enemy_under_bot,
     _build_return_step,
-    _handle_bridge_state,
+    _handle_post_bridge_conveyor,
     _reset_return_state,
 )
 from utils.harvester_states.seek import (
@@ -92,7 +92,6 @@ class Harvester:
         self.spawn_pos: Position | None = None
         self.harvester_pos: Position | None = None
         self.just_placed = False
-        self.bridge_from: Position | None = None
         self.bridge_jump_target: Position | None = None
         self.bridge_target_planner: DStarLite | None = None
         # carry-forward: direction to move on the next _build_return_step call;
@@ -290,8 +289,8 @@ class Harvester:
         if _attack_enemy_under_bot(self, c):
             return
 
-        if _handle_bridge_state(self, c):
-            return  
+        if _handle_post_bridge_conveyor(self, c):
+            return
 
         _build_return_step(self, c)
 
@@ -380,7 +379,7 @@ class Harvester:
             f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
             f"under={under} "
             f"next_dir={self.return_next_dir.name if self.return_next_dir else '-'} "
-            f"bridge_from={(self.bridge_from.x, self.bridge_from.y) if self.bridge_from else '-'} "
+            f"bridge_target={(self.bridge_jump_target.x, self.bridge_jump_target.y) if self.bridge_jump_target else '-'} "
             f"post_bridge={self.post_bridge_conveyor} "
             f"just_placed={self.just_placed}"
         )

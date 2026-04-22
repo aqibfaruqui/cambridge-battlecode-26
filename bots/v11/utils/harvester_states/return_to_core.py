@@ -5,14 +5,12 @@ from typing import TYPE_CHECKING
 from cambc import Direction, EntityType, Environment, Position, Controller
 
 from utils.pathfinding.d_star import DStarLite, _RETURN_BLOCK_MASK, _SEEK_BLOCK_MASK
-from utils.map.raw_map_representation import CORE_OWN, ORE_AXIONITE, TRAVERSABLE, UNKNOWN
 from utils.pathfinding.movement import (
     DIRECTIONS_4,
     get_direction_4,
     is_diagonal,
-    on_map,
-    reached_core,
     split_diagonal,
+    reached_core,
 )
 
 
@@ -30,14 +28,7 @@ _ENEMY_WALKABLE_TYPES = (
 )
 
 
-def _harvester_attached_to_core(self: Harvester, c: Controller) -> bool:
-    """Check if the conveyor chain from current position is connected to core."""
-    # TODO: Implement this
-    return False
-
-
 def _reset_return_state(self: Harvester):
-    self.bridge_from = None
     self.bridge_jump_target = None
     self.bridge_target_planner = None
     self.return_next_dir = None
@@ -106,34 +97,6 @@ def _planner_step_at(self: Harvester, c: Controller, pos: Position) -> Direction
     return None if step == Direction.CENTRE else step
 
 
-def _is_return_tile_usable(self: Harvester, c: Controller, pos: Position, check_occupancy: bool = True) -> bool:
-    """Check if a tile is usable for return pathfinding. With bool for checking if tile has been occupied by another builder bot"""
-    if reached_core(pos, self.core_pos):
-        return True
-    if not c.is_in_vision(pos):
-        if not on_map(c, pos):
-            return False
-        env = self.environment_map
-        if env is None:
-            return False
-        return env.tile(pos.x, pos.y) in (TRAVERSABLE, ORE_AXIONITE, CORE_OWN, UNKNOWN)
-    if c.get_tile_env(pos) == Environment.WALL:
-        return False
-    if check_occupancy:
-        occupier = c.get_tile_builder_bot_id(pos)
-        if occupier is not None and occupier != c.get_id():
-            return False
-    build_id = c.get_tile_building_id(pos)
-    if build_id is None:
-        return True
-    entity_type = c.get_entity_type(build_id)
-    if entity_type in (EntityType.ROAD, EntityType.CORE, EntityType.MARKER):
-        return True
-    if c.get_team(build_id) != c.get_team():
-        return False
-    return entity_type in (EntityType.CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER)
-
-
 def _clear_return_tile(_: Harvester, c: Controller, pos: Position) -> bool:
     build_id = c.get_tile_building_id(pos)
     if build_id is None:
@@ -172,99 +135,58 @@ def _next_dir_after_move(self: Harvester, c: Controller, move_dir: Direction, pl
     return get_direction_4(move_pos, move_pos.add(follow_dir))
 
 
-def _handle_bridge_state(self: Harvester, c: Controller) -> bool:
-    """Handle a pending bridge build or the post-bridge conveyor. Returns True if the turn is consumed."""
-    if self.bridge_from is not None:
-        bridge_pos = self.bridge_from
-        build_id = c.get_tile_building_id(bridge_pos)
-        entity_type = c.get_entity_type(build_id) if build_id is not None else None
-        key = (bridge_pos.x, bridge_pos.y, self.current_pos.x, self.current_pos.y)
+def _handle_post_bridge_conveyor(self: Harvester, c: Controller) -> bool:
+    """Place conveyor on current tile after crossing a bridge. Returns True while consuming the turn."""
+    if not self.post_bridge_conveyor:
+        return False
 
-        if build_id is not None and entity_type == EntityType.BRIDGE and c.get_team(build_id) == c.get_team():
-            self.bridge_from = None
-            self.post_bridge_conveyor = True
-            self.return_bridge_fail_counts.pop(key, None)
-            return True
+    if reached_core(self.current_pos, self.core_pos):
+        self.post_bridge_conveyor = False
+        return True
 
-        if (
-            build_id is not None
-            and entity_type in (EntityType.ROAD, EntityType.CONVEYOR)
-            and c.get_team(build_id) == c.get_team()
-            and c.can_destroy(bridge_pos)
-        ):
-            c.destroy(bridge_pos)
+    conveyor_dir = _planner_step_at(self, c, self.current_pos)
+    if conveyor_dir is None or conveyor_dir == Direction.CENTRE or conveyor_dir not in DIRECTIONS_4:
+        conveyor_dir = get_direction_4(self.current_pos, self.core_pos)
+    if conveyor_dir is None:
+        self.post_bridge_conveyor = False
+        return False
 
-        if c.can_build_bridge(bridge_pos, self.current_pos):
-            c.build_bridge(bridge_pos, self.current_pos)
-            self.bridge_from = None
-            self.post_bridge_conveyor = True
-            self.return_bridge_fail_counts.pop(key, None)
-            return True
+    bid = c.get_tile_building_id(self.current_pos)
+    if (
+        bid is not None
+        and c.get_entity_type(bid) == EntityType.CONVEYOR
+        and c.get_team(bid) == c.get_team()
+        and c.get_direction(bid) != conveyor_dir
+        and c.can_destroy(self.current_pos)
+    ):
+        c.destroy(self.current_pos)
+        return True
 
+    if _clear_return_tile(self, c, self.current_pos):
+        tile_empty = c.get_tile_env(self.current_pos) == Environment.EMPTY
         ti, _ = c.get_global_resources()
-        bridge_cost_ti, _ = c.get_bridge_cost()
-        if ti >= bridge_cost_ti:
-            fails = self.return_bridge_fail_counts.get(key, 0) + 1
-            self.return_bridge_fail_counts[key] = fails
-            if fails >= _MAX_BRIDGE_FAILS:
-                self.bridge_from = None
-                self.post_bridge_conveyor = True
-                self.return_bridge_fail_counts.pop(key, None)
-        return True  # always wait while bridge is pending
-
-    if self.post_bridge_conveyor:
-        if reached_core(self.current_pos, self.core_pos):
+        conveyor_cost_ti, _ = c.get_conveyor_cost()
+        if not tile_empty or ti >= conveyor_cost_ti:
+            if tile_empty and c.can_build_conveyor(self.current_pos, conveyor_dir):
+                c.build_conveyor(self.current_pos, conveyor_dir)
+                self.return_next_dir = conveyor_dir
             self.post_bridge_conveyor = False
-            return True
 
-        conveyor_dir = _planner_step_at(self, c, self.current_pos)
-        if conveyor_dir is None or conveyor_dir == Direction.CENTRE or conveyor_dir not in DIRECTIONS_4:
-            conveyor_dir = get_direction_4(self.current_pos, self.core_pos)
-        if conveyor_dir is None:
-            self.post_bridge_conveyor = False
-            return False
-
-        bid = c.get_tile_building_id(self.current_pos)
-        if (
-            bid is not None
-            and c.get_entity_type(bid) == EntityType.CONVEYOR
-            and c.get_team(bid) == c.get_team()
-            and c.get_direction(bid) != conveyor_dir
-            and c.can_destroy(self.current_pos)
-        ):
-            c.destroy(self.current_pos)
-            return True  # wait for tile to clear before rebuilding
-
-        if _clear_return_tile(self, c, self.current_pos):
-            tile_empty = c.get_tile_env(self.current_pos) == Environment.EMPTY
-            ti, _ = c.get_global_resources()
-            conveyor_cost_ti, _ = c.get_conveyor_cost()
-            if not tile_empty or ti >= conveyor_cost_ti:
-                if tile_empty and c.can_build_conveyor(self.current_pos, conveyor_dir):
-                    c.build_conveyor(self.current_pos, conveyor_dir)
-                    self.return_next_dir = conveyor_dir
-                self.post_bridge_conveyor = False
-
-        return True  # always wait while post-bridge conveyor is pending
-
-    return False
+    return True
 
 
 def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) -> bool:
-    """Build a long bridge to target_pos if not built yet, then walk across it."""
+    """Build a bridge to target_pos if not built yet, then walk across it."""
     bridge_pos = self.current_pos
 
-    # If we have a stored target, we're mid-crossing — keep walking.
     if self.bridge_jump_target is not None:
         return _walk_toward_bridge_target(self, c)
 
-    # Check if bridge was already built from here (previous turn).
     bid = c.get_tile_building_id(bridge_pos)
     if bid is not None and c.get_entity_type(bid) == EntityType.BRIDGE and c.get_team(bid) == c.get_team():
         self.bridge_jump_target = target_pos
         return _walk_toward_bridge_target(self, c)
 
-    # Clear road/conveyor at from-tile so bridge can be placed.
     entity_type = c.get_entity_type(bid) if bid is not None else None
     if (
         bid is not None
@@ -309,7 +231,6 @@ def _ensure_bridge_target_planner(self: Harvester, c: Controller, target: Positi
 
 
 def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
-    """Walk across a bridge toward bridge_jump_target using D* with a wall-permissive mask."""
     target = self.bridge_jump_target
     if target is None:
         return False
@@ -344,9 +265,6 @@ def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
 
 
 def _build_return_step(self: Harvester, c: Controller) -> bool:
-    # On the first turn after placing a harvester, place a connector conveyor on
-    # the starting tile (choosing the closer cardinal join tile when the placement
-    # was diagonal) so the chain begins before the normal walk-back loop takes over.
     if self.bridge_jump_target is not None:
         return _walk_toward_bridge_target(self, c)
 

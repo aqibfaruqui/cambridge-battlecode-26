@@ -88,6 +88,81 @@ def _blacklist_landing(self: Harvester, landing_xy: tuple[int, int]) -> None:
     self.return_jump_landing = None
 
 
+def _start_or_continue_jump(
+    self: Harvester,
+    c: Controller,
+    landing_xy: tuple[int, int],
+) -> bool:
+    """Bridge build + walk-around traversal for a single jump segment.
+
+    First call with no walker set: pre-validates walk-around reachability,
+    builds the long-range resource bridge, constructs a temp walk-only
+    planner targeting B. Subsequent calls step the walker one cell at a
+    time with road-paving (no conveyors, no corner-cut bridges). Returns
+    True if the turn was consumed.
+    """
+    if self.return_jump_walker is None:
+        A = self.current_pos
+        B = Position(landing_xy[0], landing_xy[1])
+
+        if self.environment_map is None:
+            return False
+
+        probe = DStarLite(
+            self.environment_map, B.x, B.y,
+            block_mask=_RETURN_BLOCK_MASK,
+            unknown_cost=3.0,
+        )
+        probe.set_dynamic_blockers(_return_dynamic_blockers(c))
+        probe.set_position(A.x, A.y)
+        probe.plan()
+        if len(probe.extract_path()) < 2:
+            _blacklist_landing(self, landing_xy)
+            return False
+
+        if not c.can_build_bridge(A, B):
+            ti, _ = c.get_global_resources()
+            bridge_cost_ti, _ = c.get_bridge_cost()
+            if ti < bridge_cost_ti:
+                return False
+            _blacklist_landing(self, landing_xy)
+            return False
+
+        c.build_bridge(A, B)
+        self.return_jump_walker = probe
+        self.return_jump_landing = landing_xy
+        return True
+
+    walker = self.return_jump_walker
+    walker.set_dynamic_blockers(_return_dynamic_blockers(c))
+    walker.notify_map_changes()
+    walker.set_position(self.current_pos.x, self.current_pos.y)
+
+    path = walker.extract_path()
+    if len(path) < 2:
+        _blacklist_landing(self, landing_xy)
+        return False
+
+    nxt = path[1]
+    move_dir = self.current_pos.direction_to(Position(nxt[0], nxt[1]))
+    if move_dir is None:
+        return False
+
+    next_pos = self.current_pos.add(move_dir)
+    if c.get_action_cooldown() == 0 and c.can_build_road(next_pos):
+        c.build_road(next_pos)
+
+    if not c.can_move(move_dir):
+        return False
+    c.move(move_dir)
+
+    if (self.current_pos.x, self.current_pos.y) == landing_xy:
+        self.return_jump_walker = None
+        self.return_jump_landing = None
+
+    return True
+
+
 def _ensure_return_planner(self: Harvester, c: Controller):
     if self.return_planner is None and self.environment_map is not None:
         self.return_planner = DStarLite(

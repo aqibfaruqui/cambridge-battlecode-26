@@ -220,6 +220,27 @@ def test_walk_only_regression():
     assert direction is not None
 
 
+def test_pure_jump_chain_reachability():
+    """Regression for a bug in _compute_shortest_path: the wavefront from the
+    goal must propagate through jump edges, not only walk edges. On a 10x1
+    strip with stepping stones at x=0,3,6,9 (everything else walled), the
+    only path is three chained dist_sq=9 jumps, cost 3*5=15."""
+    width = 10
+    walls = [(x, 0) for x in range(width) if x not in (0, 3, 6, 9)]
+    env = _make_env(width, 1, walls=walls)
+
+    jump = DStarLite(env, 9, 0, allow_jumps=True)
+    jump.set_position(0, 0)
+    jump.plan()
+    assert jump._g[jump._start] == 15.0, (
+        f"pure-jump chain should cost 15 (3 jumps), got g={jump._g[jump._start]}"
+    )
+    path = jump.extract_path()
+    assert path == [(0, 0), (3, 0), (6, 0), (9, 0)], (
+        f"expected stepping-stone path, got {path}"
+    )
+
+
 # -------- Runner --------
 
 TESTS = [
@@ -235,6 +256,7 @@ TESTS = [
     test_jump_passes_through_dynamic_blocker,
     test_jump_endpoint_on_wall_rejected,
     test_walk_only_regression,
+    test_pure_jump_chain_reachability,
 ]
 
 

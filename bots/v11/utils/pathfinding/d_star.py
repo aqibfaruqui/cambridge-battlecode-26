@@ -423,6 +423,15 @@ class DStarLite:
                 recompute(u - 1)
             if x < w - 1:
                 recompute(u + 1)
+            if self._allow_jumps:
+                for dx, dy in _JUMP_OFFSETS:
+                    xx = x + dx
+                    if xx < 0 or xx >= w:
+                        continue
+                    yy = y + dy
+                    if yy < 0 or yy >= h:
+                        continue
+                    recompute(yy * w + xx)
 
             if also_self:
                 recompute(u)

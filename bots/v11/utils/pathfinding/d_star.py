@@ -129,7 +129,15 @@ class DStarLite:
     # ---------- Public API ----------
 
     def set_goal(self, gx: int, gy: int) -> None:
-        self.__init__(self._env, gx, gy, block_mask=self._block_mask)
+        self.__init__(
+            self._env,
+            gx,
+            gy,
+            block_mask=self._block_mask,
+            unknown_cost=self._unknown_cost,
+            allow_jumps=self._allow_jumps,
+            jump_cost=self._jump_cost,
+        )
 
     def set_position(self, sx: int, sy: int) -> None:
         # Heuristic(_last, new_start) inlined using cached coords.

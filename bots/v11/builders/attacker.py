@@ -1,8 +1,8 @@
 from itertools import product
 
 from cambc import Controller, Direction, EntityType, Position
-from utils.attacker_states.replace import _replace, _target_still_valid
-from utils.attacker_states.scan import _scan
+from utils.attacker_states.replace import replace, target_still_valid
+from utils.attacker_states.scan import scan
 from utils.attacker_states.state import AttackState
 from utils.pathfinding.d_star import DStarLite
 from utils.map.raw_map_representation import CORE_ENEMY, EnvironmentMap, Symmetry, WALL
@@ -162,7 +162,7 @@ class Attacker:
             c.heal(self.current_pos)
 
         # Drop stale targets before dispatching to a state handler.
-        if self.target_conveyor is not None and not _target_still_valid(self, c):
+        if self.target_conveyor is not None and not target_still_valid(self, c):
             self.blacklist[(self.target_conveyor.x, self.target_conveyor.y)] = c.get_current_round()
             self.target_conveyor = None
             self._planner_goal = None
@@ -182,7 +182,7 @@ class Attacker:
         # Sequential (not elif) so SCAN→APPROACH and APPROACH→REPLACE can
         # both fire in the same tick.
         if self.state == AttackState.SCAN:
-            _scan(self, c)
+            scan(self, c)
         if self.state == AttackState.APPROACH:
             assert self.target_conveyor is not None
             self.target_pos = self.target_conveyor
@@ -191,6 +191,6 @@ class Attacker:
             else:
                 self._search(c, self.target_conveyor)
         if self.state == AttackState.REPLACE:
-            _replace(self, c)
+            replace(self, c)
 
         self.broadcaster.run(c)

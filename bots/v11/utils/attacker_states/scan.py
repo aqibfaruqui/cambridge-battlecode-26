@@ -180,7 +180,7 @@ def _build_orbit(self: Attacker, c: Controller) -> list[Position]:
     return pts or [ec]
 
 
-def _scan(self: Attacker, c: Controller) -> None:
+def scan(self: Attacker, c: Controller) -> None:
     """Pick a new target if one is in sight; otherwise probe the map."""
     cutoff = c.get_current_round() - _BLACKLIST_TTL
     self.blacklist = {k: r for k, r in self.blacklist.items() if r >= cutoff}

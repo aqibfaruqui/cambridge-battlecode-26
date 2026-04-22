@@ -106,7 +106,7 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
     return False
 
 
-def _target_still_valid(self: Attacker, c: Controller) -> bool:
+def target_still_valid(self: Attacker, c: Controller) -> bool:
     target = self.target_conveyor
     if target is None:
         return False
@@ -121,7 +121,7 @@ def _target_still_valid(self: Attacker, c: Controller) -> bool:
     return et in _HIJACK_TYPES
 
 
-def _replace(self: Attacker, c: Controller) -> None:
+def replace(self: Attacker, c: Controller) -> None:
     if _execute_replacement(self, c):
         self.target_conveyor = None
         self._planner_goal = None

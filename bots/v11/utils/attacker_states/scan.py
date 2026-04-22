@@ -7,7 +7,7 @@ from utils.attacker_states.state import AttackState
 from utils.map.raw_map_representation import WALL
 
 if TYPE_CHECKING:
-    from builders.attacker_revamped import AttackerRevamped
+    from builders.attacker import Attacker
 
 
 # Once this many friendly sentinels are already in vision, stop hijacking
@@ -50,7 +50,7 @@ _FRIENDLY_TURRET_TYPES = frozenset({EntityType.GUNNER, EntityType.SENTINEL})
 
 
 def _chain_feeds_friendly_turret(
-    self: AttackerRevamped,
+    self: Attacker,
     c: Controller,
     start_pos: Position,
     my_team,
@@ -120,7 +120,7 @@ def _chain_feeds_friendly_turret(
     return hits_turret
 
 
-def _expire_blacklist(self: AttackerRevamped, c: Controller) -> None:
+def _expire_blacklist(self: Attacker, c: Controller) -> None:
     cutoff = c.get_current_round() - _BLACKLIST_TTL
     stale = [k for k, r in self.blacklist.items() if r < cutoff]
     for k in stale:
@@ -145,7 +145,7 @@ def _has_nearby_enemy_launcher(c: Controller, pos: Position, my_team) -> bool:
     return False
 
 
-def _pick_target(self: AttackerRevamped, c: Controller):
+def _pick_target(self: Attacker, c: Controller):
     """Find the best enemy conveyor/bridge currently carrying a titanium stack."""
     my_team = c.get_team()
     me = self.current_pos
@@ -194,7 +194,7 @@ def _pick_target(self: AttackerRevamped, c: Controller):
     return best
 
 
-def _build_orbit(self: AttackerRevamped, c: Controller) -> list[Position]:
+def _build_orbit(self: Attacker, c: Controller) -> list[Position]:
     """Ring of waypoints at `_ORBIT_RADIUS` around the enemy core"""
     env = self._env_map
     assert env is not None and self.enemy_core_pos is not None
@@ -210,7 +210,7 @@ def _build_orbit(self: AttackerRevamped, c: Controller) -> list[Position]:
     return pts or [ec]
 
 
-def _scan(self: AttackerRevamped, c: Controller) -> None:
+def _scan(self: Attacker, c: Controller) -> None:
     """Pick a new target if one is in sight; otherwise probe the map."""
     _expire_blacklist(self, c)
     pick = _pick_target(self, c)

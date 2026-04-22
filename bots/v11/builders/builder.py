@@ -2,7 +2,6 @@ from enum import IntEnum
 from cambc import Controller, EntityType, Position
 from builders.harvester import Harvester
 from builders.attacker import Attacker
-from builders.attacker_revamped import AttackerRevamped
 from builders.healer import Healer
 
 
@@ -65,7 +64,7 @@ class Builder:
                 case BuilderType.HEALER:
                     self.role = Healer(self.core_pos)
                 case BuilderType.ATTACKER_REVAMPED:
-                    self.role = AttackerRevamped(self.core_pos)
+                    self.role = Attacker(self.core_pos)
                 case _:
                     self.role = Attacker(self.core_pos)
 

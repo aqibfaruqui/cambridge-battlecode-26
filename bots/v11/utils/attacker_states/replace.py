@@ -6,7 +6,7 @@ from cambc import Controller, Direction, EntityType
 from utils.attacker_states.state import AttackState
 
 if TYPE_CHECKING:
-    from builders.attacker_revamped import AttackerRevamped
+    from builders.attacker import Attacker
 
 
 _STEP_OFF = (
@@ -22,7 +22,7 @@ _SENTINEL_ATTACK_RADIUS_SQ = 32
 _GUNNER_ATTACK_RADIUS_SQ = 9
 
 
-def _execute_replacement(self: AttackerRevamped, c: Controller) -> bool:
+def _execute_replacement(self: Attacker, c: Controller) -> bool:
     """Attack, step off, drop a turret on the same tile we attacked."""
     target = self.target_conveyor
     assert target is not None
@@ -122,7 +122,7 @@ def _execute_replacement(self: AttackerRevamped, c: Controller) -> bool:
     return False
 
 
-def _target_still_valid(self: AttackerRevamped, c: Controller) -> bool:
+def _target_still_valid(self: Attacker, c: Controller) -> bool:
     target = self.target_conveyor
     if target is None:
         return False
@@ -137,7 +137,7 @@ def _target_still_valid(self: AttackerRevamped, c: Controller) -> bool:
     return et in (EntityType.CONVEYOR, EntityType.BRIDGE)
 
 
-def _replace(self: AttackerRevamped, c: Controller) -> None:
+def _replace(self: Attacker, c: Controller) -> None:
     if _execute_replacement(self, c):
         self.target_conveyor = None
         self._planner_goal = None

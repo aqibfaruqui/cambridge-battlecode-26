@@ -141,6 +141,50 @@ def test_notify_map_changes_updates_jump_predecessors():
     assert has_jump, f"expected jump segment after wall insertion, got {path_after}"
 
 
+def test_walk_preferred_when_cheaper():
+    env = _make_env(10, 10)
+    jump = DStarLite(env, 3, 0, allow_jumps=True)
+    jump.set_position(0, 0)
+    jump.plan()
+    path = jump.extract_path()
+    assert path == [(0, 0), (1, 0), (2, 0), (3, 0)], (
+        f"expected all-walk path on open map, got {path}"
+    )
+
+
+def test_jump_passes_through_wall():
+    # 5x1: start (0,0), wall (2,0), goal (4,0). Walk is blocked at (2,0).
+    # Jump (0,0)->(3,0): dist_sq=9, endpoint traversable, passes through the wall.
+    env = _make_env(5, 1, walls=[(2, 0)])
+    jump = DStarLite(env, 4, 0, allow_jumps=True)
+    jump.set_position(0, 0)
+    jump.plan()
+    assert jump._g[jump._start] != _INF, (
+        f"jump should pass through wall at (2,0), got g={jump._g[jump._start]}"
+    )
+
+
+def test_jump_passes_through_dynamic_blocker():
+    env = _make_env(5, 1)
+    jump = DStarLite(env, 4, 0, allow_jumps=True)
+    jump.set_position(0, 0)
+    jump.set_dynamic_blockers([(2, 0)])
+    jump.plan()
+    assert jump._g[jump._start] != _INF, (
+        f"jump should pass through dynamic blocker, got g={jump._g[jump._start]}"
+    )
+
+
+def test_jump_endpoint_on_wall_rejected():
+    env = _make_env(4, 1, walls=[(3, 0)])
+    jump = DStarLite(env, 3, 0, allow_jumps=True)
+    jump.set_position(0, 0)
+    jump.plan()
+    assert jump._g[jump._start] == _INF, (
+        f"jump endpoint on wall must be rejected, got g={jump._g[jump._start]}"
+    )
+
+
 # -------- Runner --------
 
 TESTS = [
@@ -150,6 +194,10 @@ TESTS = [
     test_recompute_rhs_jump_enables_reachability,
     test_extract_path_returns_jump_segment,
     test_notify_map_changes_updates_jump_predecessors,
+    test_walk_preferred_when_cheaper,
+    test_jump_passes_through_wall,
+    test_jump_passes_through_dynamic_blocker,
+    test_jump_endpoint_on_wall_rejected,
 ]
 
 

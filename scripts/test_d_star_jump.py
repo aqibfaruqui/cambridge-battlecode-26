@@ -204,6 +204,22 @@ def test_jump_endpoint_on_wall_rejected():
     )
 
 
+def test_walk_only_regression():
+    env = _make_env(10, 10)
+    walk = DStarLite(env, 9, 0)
+    walk.set_position(0, 0)
+    walk.plan()
+    path = walk.extract_path()
+    assert path == [(x, 0) for x in range(10)], (
+        f"expected straight walk (0,0)->(9,0), got {path}"
+    )
+    # step() must still work in walk mode.
+    walk2 = DStarLite(env, 5, 5)
+    walk2.set_position(0, 0)
+    direction = walk2.step()
+    assert direction is not None
+
+
 # -------- Runner --------
 
 TESTS = [
@@ -218,6 +234,7 @@ TESTS = [
     test_jump_passes_through_wall,
     test_jump_passes_through_dynamic_blocker,
     test_jump_endpoint_on_wall_rejected,
+    test_walk_only_regression,
 ]
 
 

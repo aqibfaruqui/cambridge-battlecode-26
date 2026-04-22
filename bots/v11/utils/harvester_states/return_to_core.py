@@ -114,20 +114,10 @@ def _clear_return_tile(_: Harvester, c: Controller, pos: Position) -> bool:
     return entity_type in (EntityType.CONVEYOR, EntityType.SPLITTER, EntityType.BRIDGE)
 
 
-def _next_dir_after_move(self: Harvester, c: Controller, move_dir: Direction, planner_path: list[tuple[int, int]]) -> Direction | None:
+def _next_dir_after_move(self: Harvester, c: Controller, move_dir: Direction) -> Direction | None:
     """Conveyor direction to place on the tile we're about to step onto."""
     move_pos = self.current_pos.add(move_dir)
-
-    follow_dir = None
-    if len(planner_path) >= 3:
-        p0, p1, p2 = planner_path[0], planner_path[1], planner_path[2]
-        if p0 == (self.current_pos.x, self.current_pos.y) and p1 == (move_pos.x, move_pos.y):
-            follow_dir = move_pos.direction_to(Position(p2[0], p2[1]))
-
-    if follow_dir is None:
-        follow_dir = _planner_step_at(self, c, move_pos)
-    if follow_dir is None:
-        follow_dir = move_pos.direction_to(self.core_pos)
+    follow_dir = _planner_step_at(self, c, move_pos) or move_pos.direction_to(self.core_pos)
     if follow_dir is None or follow_dir == Direction.CENTRE:
         return None
     if follow_dir in DIRECTIONS_4:
@@ -306,7 +296,6 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
 
     planner = _ensure_return_planner(self, c)
     planner_step: Direction | None = None
-    planner_path: list[tuple[int, int]] = []
     if planner is not None:
         planner.set_position(self.current_pos.x, self.current_pos.y)
 
@@ -318,7 +307,6 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
             if dsq > 1:
                 return _handle_bridge_jump(self, c, Position(tx, ty))
             planner_step = self.current_pos.direction_to(Position(tx, ty))
-        planner_path = planner.extract_path()
 
     if self.return_next_dir is not None:
         move_dir = self.return_next_dir
@@ -330,7 +318,7 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
         if move_dir is None or move_dir == Direction.CENTRE:
             return False
 
-    next_dir = _next_dir_after_move(self, c, move_dir, planner_path)
+    next_dir = _next_dir_after_move(self, c, move_dir)
 
     move_pos = self.current_pos.add(move_dir)
 

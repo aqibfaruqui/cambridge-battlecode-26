@@ -220,6 +220,17 @@ class DStarLite:
             self._recompute_rhs(idx)
             for pred in self._pred(idx):
                 self._recompute_rhs(pred)
+            if self._allow_jumps:
+                x = idx % self._w
+                y = idx // self._w
+                for dx, dy in _JUMP_OFFSETS:
+                    xx = x + dx
+                    if xx < 0 or xx >= self._w:
+                        continue
+                    yy = y + dy
+                    if yy < 0 or yy >= self._h:
+                        continue
+                    self._recompute_rhs(yy * self._w + xx)
 
         if changed_nodes:
             self._compute_shortest_path()

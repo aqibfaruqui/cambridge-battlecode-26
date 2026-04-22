@@ -141,6 +141,25 @@ def test_notify_map_changes_updates_jump_predecessors():
     assert has_jump, f"expected jump segment after wall insertion, got {path_after}"
 
 
+def test_set_dynamic_blockers_updates_jump_predecessors():
+    width, height = 5, 3
+    walls = [(2, y) for y in range(height)]
+    env = _make_env(width, height, walls=walls)
+
+    jump = DStarLite(env, 4, 1, allow_jumps=True)
+    jump.set_position(0, 1)
+    jump.plan()
+    assert jump._g[jump._start] != _INF, "baseline jump route should exist"
+
+    # Block the goal (4,1) itself as a dynamic blocker — every edge into
+    # the goal dies and g[start] becomes infinity.
+    jump.set_dynamic_blockers([(4, 1)])
+
+    assert jump._g[jump._start] == _INF, (
+        f"blocking goal endpoint should make it unreachable, got g={jump._g[jump._start]}"
+    )
+
+
 def test_walk_preferred_when_cheaper():
     env = _make_env(10, 10)
     jump = DStarLite(env, 3, 0, allow_jumps=True)
@@ -194,6 +213,7 @@ TESTS = [
     test_recompute_rhs_jump_enables_reachability,
     test_extract_path_returns_jump_segment,
     test_notify_map_changes_updates_jump_predecessors,
+    test_set_dynamic_blockers_updates_jump_predecessors,
     test_walk_preferred_when_cheaper,
     test_jump_passes_through_wall,
     test_jump_passes_through_dynamic_blocker,

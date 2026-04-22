@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from cambc import Direction, EntityType, Environment, Position, Controller
 
-from utils.pathfinding.d_star import DStarLite, _RETURN_BLOCK_MASK
+from utils.pathfinding.d_star import DStarLite, _RETURN_BLOCK_MASK, _SEEK_BLOCK_MASK
 from utils.map.raw_map_representation import CORE_OWN, ORE_AXIONITE, TRAVERSABLE, UNKNOWN
 from utils.pathfinding.movement import (
     DIRECTIONS_4,
@@ -37,6 +37,8 @@ def _harvester_attached_to_core(self: Harvester, c: Controller) -> bool:
 
 def _reset_return_state(self: Harvester):
     self.bridge_from = None
+    self.bridge_jump_target = None
+    self.bridge_target_planner = None
     self.return_next_dir = None
     self.return_planner = None
     self.post_bridge_conveyor = False
@@ -85,6 +87,7 @@ def _ensure_return_planner(self: Harvester, c: Controller):
             self.core_pos.y,
             block_mask=_RETURN_BLOCK_MASK,
             unknown_cost=3.0,
+            use_bridges=True,
         )
     p = self.return_planner
     if p is not None:
@@ -310,10 +313,117 @@ def _handle_bridge_state(self: Harvester, c: Controller) -> bool:
     return False
 
 
+def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) -> bool:
+    """Build a long bridge to target_pos if not built yet, then walk across it."""
+    bridge_pos = self.current_pos
+
+    # If we have a stored target, we're mid-crossing — keep walking.
+    if self.bridge_jump_target is not None:
+        return _walk_toward_bridge_target(self, c)
+
+    # Check if bridge was already built from here (previous turn).
+    bid = c.get_tile_building_id(bridge_pos)
+    if bid is not None and c.get_entity_type(bid) == EntityType.BRIDGE and c.get_team(bid) == c.get_team():
+        print(f"[bridge_jump] bridge already exists at {bridge_pos}, walking to {target_pos}")
+        self.bridge_jump_target = target_pos
+        return _walk_toward_bridge_target(self, c)
+
+    # Clear road/conveyor at from-tile so bridge can be placed.
+    entity_type = c.get_entity_type(bid) if bid is not None else None
+    if (
+        bid is not None
+        and entity_type in (EntityType.ROAD, EntityType.CONVEYOR)
+        and c.get_team(bid) == c.get_team()
+        and c.can_destroy(bridge_pos)
+    ):
+        print(f"[bridge_jump] clearing {entity_type} at {bridge_pos} before bridge")
+        c.destroy(bridge_pos)
+        return True
+
+    if c.can_build_bridge(bridge_pos, target_pos):
+        print(f"[bridge_jump] building bridge from {bridge_pos} to {target_pos}")
+        c.build_bridge(bridge_pos, target_pos)
+        self.bridge_jump_target = target_pos
+        return True
+
+    ti, _ = c.get_global_resources()
+    bridge_cost_ti, _ = c.get_bridge_cost()
+    print(f"[bridge_jump] can't build bridge from {bridge_pos} to {target_pos}, ti={ti}/{bridge_cost_ti}")
+    if ti >= bridge_cost_ti:
+        key = (bridge_pos.x, bridge_pos.y, target_pos.x, target_pos.y)
+        fails = self.return_bridge_fail_counts.get(key, 0) + 1
+        self.return_bridge_fail_counts[key] = fails
+        if fails >= _MAX_BRIDGE_FAILS:
+            print(f"[bridge_jump] giving up on bridge {bridge_pos}->{target_pos} after {fails} fails, re-planning")
+            self.return_planner = None
+            self.return_bridge_fail_counts.pop(key, None)
+    return True
+
+
+def _ensure_bridge_target_planner(self: Harvester, c: Controller):
+    target = self.bridge_jump_target
+    if target is None:
+        return None
+    if self.bridge_target_planner is None and self.environment_map is not None:
+        self.bridge_target_planner = DStarLite(
+            self.environment_map,
+            target.x,
+            target.y,
+            block_mask=_SEEK_BLOCK_MASK,
+            unknown_cost=1.0,
+        )
+    p = self.bridge_target_planner
+    if p is not None:
+        p.notify_map_changes()
+    return p
+
+
+def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
+    """Walk one D*-guided step toward bridge_jump_target."""
+    target = self.bridge_jump_target
+    if target is None:
+        return False
+
+    if self.current_pos == target:
+        print(f"[bridge_walk] reached bridge target {target}, placing post-bridge conveyor")
+        self.bridge_jump_target = None
+        self.bridge_target_planner = None
+        self.post_bridge_conveyor = True
+        return True
+
+    p = _ensure_bridge_target_planner(self, c)
+    move_dir: Direction | None = None
+    if p is not None:
+        p.set_position(self.current_pos.x, self.current_pos.y)
+        step = p.step()
+        move_dir = None if step == Direction.CENTRE else step
+
+    if move_dir is None:
+        move_dir = self.current_pos.direction_to(target)
+    if move_dir is None or move_dir == Direction.CENTRE:
+        print(f"[bridge_walk] no direction to target {target} from {self.current_pos}, done")
+        self.bridge_jump_target = None
+        self.bridge_target_planner = None
+        self.post_bridge_conveyor = True
+        return True
+
+    move_pos = self.current_pos.add(move_dir)
+    if c.can_build_road(move_pos):
+        c.build_road(move_pos)
+    can = c.can_move(move_dir)
+    print(f"[bridge_walk] at {self.current_pos}, target {target}, dir {move_dir}, can_move={can}")
+    if can:
+        c.move(move_dir)
+    return True
+
+
 def _build_return_step(self: Harvester, c: Controller) -> bool:
     # On the first turn after placing a harvester, place a connector conveyor on
     # the starting tile (choosing the closer cardinal join tile when the placement
     # was diagonal) so the chain begins before the normal walk-back loop takes over.
+    if self.bridge_jump_target is not None:
+        return _walk_toward_bridge_target(self, c)
+
     if self.just_placed:
         move_pos = self.current_pos
         if self.harvester_pos and is_diagonal(self.current_pos, self.harvester_pos):
@@ -358,7 +468,15 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
     planner_path: list[tuple[int, int]] = []
     if planner is not None:
         planner.set_position(self.current_pos.x, self.current_pos.y)
-        planner_step = planner.step()
+
+        step_xy = planner.step_xy()
+        if step_xy is not None:
+            cx, cy = self.current_pos.x, self.current_pos.y
+            tx, ty = step_xy
+            dsq = (tx - cx) * (tx - cx) + (ty - cy) * (ty - cy)
+            if dsq > 2:
+                return _handle_bridge_jump(self, c, Position(tx, ty))
+            planner_step = self.current_pos.direction_to(Position(tx, ty))
         planner_path = planner.extract_path()
     carry_next: Direction | None = None
 

@@ -93,6 +93,8 @@ class Harvester:
         self.harvester_pos: Position | None = None
         self.just_placed = False
         self.bridge_from: Position | None = None
+        self.bridge_jump_target: Position | None = None
+        self.bridge_target_planner: DStarLite | None = None
         # carry-forward: direction to move on the next _build_return_step call;
         # set by the first-connector step, diagonal splits, and post-bridge conveyor.
         self.return_next_dir: Direction | None = None
@@ -266,7 +268,7 @@ class Harvester:
     def _return(self, c: Controller):
         """Lay conveyors back to the core"""
         # If we're already on/adjacent to core, RETURN is complete.
-        if reached_core(self.current_pos, self.core_pos):
+        if reached_core(self.current_pos, self.core_pos) and self.bridge_jump_target is None:
             if self._can_trigger_foundry(c):
                 self.state = HarvestState.PLACING_FOUNDRY
             elif self.harvesters_placed >= 1:

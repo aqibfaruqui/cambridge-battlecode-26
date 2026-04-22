@@ -1,6 +1,25 @@
 from cambc import Controller, EntityType, Position
 
-
+def _find_damaged_conveyor(c: Controller) -> Position | None:
+    """Scan all buildings in vision for the most-damaged allied conveyor or bridge."""
+    my_team = c.get_team()
+    best_pos: Position | None = None
+    best_ratio = float("inf")
+    for bid in c.get_nearby_buildings():
+        if c.get_team(bid) != my_team:
+            continue
+        if c.get_entity_type(bid) not in (EntityType.CONVEYOR, EntityType.BRIDGE):
+            continue
+        max_hp = c.get_max_hp(bid)
+        hp = c.get_hp(bid)
+        if hp >= max_hp:
+            continue
+        ratio = hp / max_hp
+        if ratio < best_ratio:
+            best_ratio = ratio
+            best_pos = c.get_position(bid)
+    return best_pos
+    
 def try_heal_nearby_conveyor(c: Controller, pos: Position) -> bool:
     """Heal the most-damaged allied conveyor within action radius (3x3). Returns True if healed."""
     if c.get_action_cooldown() > 0:

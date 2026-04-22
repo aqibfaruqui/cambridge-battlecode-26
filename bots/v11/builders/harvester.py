@@ -7,15 +7,15 @@ from utils.map.board import is_ore_axionite, is_ore_titanium
 from utils.harvester_states.foundry import _placing_foundry as _foundry_state
 from utils.harvester_states.return_to_core import (
     _attack_enemy_under_bot,
-    _build_first_connector,
     _build_return_step,
-    _ensure_post_bridge_conveyor,
-    _harvester_attached_to_core,
-    _handle_pending_return_bridge,
+    _handle_bridge_state,
     _reset_return_state,
 )
 from utils.harvester_states.seek import (
     _seek as _seek_state,
+)
+from utils.harvester_states.patrol import (
+    _patrol as _patrol_state,
 )
 from utils.harvester_states.placing_harvester import (
     STEP_ON as _PLACING_STEP_ON,
@@ -24,9 +24,6 @@ from utils.harvester_states.placing_harvester import (
 from utils.harvester_states.defend import (
     _defend as _defend_state,
     _try_enter_defend,
-)
-from utils.harvester_states.standby import (
-    _standby as _standby_state,
 )
 from utils.pathfinding.movement import DIRECTIONS_4, reached_core
 from utils.map.raw_map_representation import EnvironmentMap, Symmetry
@@ -59,7 +56,7 @@ class HarvestState(Enum):
     RETURN = "return"
     PLACING_FOUNDRY = "placing_foundry"
     DEFEND = "defend"
-    STANDBY = "standby"
+    PATROL = "patrol"
 
 
 _HARVESTER_PLACEMENT_CAP = 3
@@ -89,23 +86,23 @@ class Harvester:
         self.seek_target_is_ore = False
         self.blacklisted_ores: set[tuple[int, int]] = set()
         self.blacklisted_seek_targets: set[tuple[int, int]] = set()
-        self.seek_unreachable_counts: dict[tuple[int, int], int] = {}
         self.seek_stall_target: Position | None = None
         self.seek_target_turns: int = 0
         self.edge_cycle_index = 0
-        self.network_reach_round = -1
-        self.network_reach_dirty = True
-        self.reachable_to_core: set[tuple[int, int]] | None = None
         self.spawn_pos: Position | None = None
         self.harvester_pos: Position | None = None
         self.just_placed = False
         self.bridge_from: Position | None = None
+        # carry-forward: direction to move on the next _build_return_step call;
+        # set by the first-connector step, diagonal splits, and post-bridge conveyor.
         self.return_next_dir: Direction | None = None
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
-        self.return_stall_pos: Position | None = None
-        self.return_stall_count: int = 0
         self.heal_target: Position | None = None
+        self.patrol_turns: int = 0
+        self.patrol_target: Position | None = None
+        self.patrol_going_out: bool = True
+        self.patrol_tip: Position | None = None
 
         self.placing_ore_pos: Position | None = None
         self.placing_exit_pos: Position | None = None
@@ -122,7 +119,6 @@ class Harvester:
         self.enemy_tile_hp: dict[tuple[int, int], int] = {}
 
         self.harvesters_placed = 0
-        self.standby_prev_pos: Position | None = None
 
         self.broadcaster = Broadcaster()
         self._symmetry_broadcasted = False
@@ -242,7 +238,7 @@ class Harvester:
             HarvestState.RETURN: (255, 165, 0),
             HarvestState.PLACING_FOUNDRY: (255, 255, 0),
             HarvestState.DEFEND: (255, 0, 0),
-            HarvestState.STANDBY: (0, 200, 200),
+            HarvestState.PATROL: (0, 255, 200),
         }
         r, g, b = state_colors.get(self.state, (255, 255, 255))
         c.draw_indicator_dot(self.current_pos, r, g, b)
@@ -261,31 +257,28 @@ class Harvester:
     def _defend(self, c: Controller):
         _defend_state(self, c)
 
-    def _standby(self, c: Controller):
-        _standby_state(self, c)
-
     def _seek(self, c: Controller):
         _seek_state(self, c)
+
+    def _patrol(self, c: Controller):
+        _patrol_state(self, c)
 
     def _return(self, c: Controller):
         """Lay conveyors back to the core"""
         # If we're already on/adjacent to core, RETURN is complete.
         if reached_core(self.current_pos, self.core_pos):
-            self.state = HarvestState.PLACING_FOUNDRY if self._can_trigger_foundry(c) else HarvestState.SEEK
+            if self._can_trigger_foundry(c):
+                self.state = HarvestState.PLACING_FOUNDRY
+            elif self.harvesters_placed >= 1:
+                self.patrol_tip = self.harvester_pos  # save before it's cleared
+                self.patrol_turns = 0
+                self.patrol_target = None
+                self.patrol_going_out = True
+                self.state = HarvestState.PATROL
+            else:
+                self.state = HarvestState.SEEK
             self.target_pos = None
             self.seek_target_is_ore = False
-            self.harvester_pos = None
-            _reset_return_state(self)
-            return
-
-        if self.return_stall_pos == self.current_pos:
-            self.return_stall_count += 1
-        else:
-            self.return_stall_pos = self.current_pos
-            self.return_stall_count = 1
-        if self.return_stall_count >= 50:
-            self.state = HarvestState.STANDBY
-            self.target_pos = None
             self.harvester_pos = None
             _reset_return_state(self)
             return
@@ -295,26 +288,8 @@ class Harvester:
         if _attack_enemy_under_bot(self, c):
             return
 
-        if self.just_placed:
-            if _build_first_connector(self, c):
-                self.just_placed = False
-            return
-
-        if _harvester_attached_to_core(self, c):
-            self.state = HarvestState.PLACING_FOUNDRY if self._can_trigger_foundry(c) else HarvestState.SEEK
-            self.target_pos = None
-            self.seek_target_is_ore = False
-            self.harvester_pos = None
-            _reset_return_state(self)
-            return
-
-        if self.bridge_from is not None:
-            _handle_pending_return_bridge(self, c)
-            return
-
-        if self.post_bridge_conveyor:
-            _ensure_post_bridge_conveyor(self, c)
-            return
+        if _handle_bridge_state(self, c):
+            return  
 
         _build_return_step(self, c)
 
@@ -363,10 +338,6 @@ class Harvester:
         if self.state not in (HarvestState.PLACING_HARVESTER, HarvestState.DEFEND):
             _try_enter_defend(self, c)
 
-        # Once we've placed our quota, SEEK has no more work — divert to STANDBY.
-        if self.state == HarvestState.SEEK and self.harvesters_placed >= _HARVESTER_PLACEMENT_CAP:
-            self.state = HarvestState.STANDBY
-
         match self.state:
             case HarvestState.SEEK:
                 self._seek(c)
@@ -378,8 +349,8 @@ class Harvester:
                 self._placing_foundry(c)
             case HarvestState.DEFEND:
                 self._defend(c)
-            case HarvestState.STANDBY:
-                self._standby(c)
+            case HarvestState.PATROL:
+                self._patrol(c)
 
         self.broadcaster.run(c)
 

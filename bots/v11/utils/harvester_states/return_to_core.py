@@ -38,7 +38,7 @@ def _harvester_attached_to_core(self: Harvester, c: Controller) -> bool:
 def _reset_return_state(self: Harvester):
     self.bridge_from = None
     self.return_next_dir = None
-    self.return_planner = None
+    self.return_jump_planner = None
     self.post_bridge_conveyor = False
     self.return_bridge_fail_counts = {}
     self.return_jump_walker = None
@@ -164,29 +164,41 @@ def _start_or_continue_jump(
     return True
 
 
-def _ensure_return_planner(self: Harvester, c: Controller):
-    if self.return_planner is None and self.environment_map is not None:
-        self.return_planner = DStarLite(
+def _ensure_return_jump_planner(self: Harvester, c: Controller):
+    if self.return_jump_planner is None and self.environment_map is not None:
+        self.return_jump_planner = DStarLite(
             self.environment_map,
             self.core_pos.x,
             self.core_pos.y,
             block_mask=_RETURN_BLOCK_MASK,
             unknown_cost=3.0,
+            allow_jumps=True,
         )
-    p = self.return_planner
+    p = self.return_jump_planner
     if p is not None:
-        p.set_dynamic_blockers(_return_dynamic_blockers(c))
+        blockers = _return_dynamic_blockers(c) + list(self.return_jump_blacklist)
+        p.set_dynamic_blockers(blockers)
         p.notify_map_changes()
     return p
 
 
-def _planner_step_at(self: Harvester, c: Controller, pos: Position) -> Direction | None:
-    p = _ensure_return_planner(self, c)
+def _planner_direction_at(self: Harvester, c: Controller, pos: Position) -> Direction | None:
+    """Return the walk-direction the jump planner would take from `pos`.
+    Returns None if there is no path, the next step is a jump (non-adjacent
+    waypoint), or the planner is unavailable. Callers treat None as
+    'fall back to direction_to(core_pos)'."""
+    p = _ensure_return_jump_planner(self, c)
     if p is None:
         return None
     p.set_position(pos.x, pos.y)
-    step = p.step()
-    return None if step == Direction.CENTRE else step
+    path = p.extract_path()
+    if len(path) < 2:
+        return None
+    x0, y0 = path[0]
+    x1, y1 = path[1]
+    if max(abs(x1 - x0), abs(y1 - y0)) > 1:
+        return None
+    return Position(x0, y0).direction_to(Position(x1, y1))
 
 
 def _is_return_tile_usable(self: Harvester, c: Controller, pos: Position, check_occupancy: bool = True) -> bool:
@@ -275,7 +287,7 @@ def _next_dir_after_move(self: Harvester, c: Controller, move_dir: Direction, pl
             follow_dir = move_pos.direction_to(Position(p2[0], p2[1]))
 
     if follow_dir is None:
-        follow_dir = _planner_step_at(self, c, move_pos)
+        follow_dir = _planner_direction_at(self, c, move_pos)
     if follow_dir is None:
         follow_dir = move_pos.direction_to(self.core_pos)
     if follow_dir is None or follow_dir == Direction.CENTRE:
@@ -361,7 +373,7 @@ def _handle_bridge_state(self: Harvester, c: Controller) -> bool:
             self.post_bridge_conveyor = False
             return True
 
-        conveyor_dir = _planner_step_at(self, c, self.current_pos)
+        conveyor_dir = _planner_direction_at(self, c, self.current_pos)
         if conveyor_dir is None or conveyor_dir == Direction.CENTRE:
             conveyor_dir = get_direction_4(self.current_pos, self.core_pos)
         elif conveyor_dir not in DIRECTIONS_4:
@@ -398,6 +410,10 @@ def _handle_bridge_state(self: Harvester, c: Controller) -> bool:
 
 
 def _build_return_step(self: Harvester, c: Controller) -> bool:
+    if self.return_jump_walker is not None:
+        assert self.return_jump_landing is not None
+        return _start_or_continue_jump(self, c, self.return_jump_landing)
+
     # On the first turn after placing a harvester, place a connector conveyor on
     # the starting tile (choosing the closer cardinal join tile when the placement
     # was diagonal) so the chain begins before the normal walk-back loop takes over.
@@ -413,7 +429,7 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
         if build_id is not None and c.get_entity_type(build_id) in {EntityType.ROAD, EntityType.CONVEYOR} and c.can_destroy(move_pos):
             c.destroy(move_pos)
 
-        step = _planner_step_at(self, c, move_pos) or move_pos.direction_to(self.core_pos)
+        step = _planner_direction_at(self, c, move_pos) or move_pos.direction_to(self.core_pos)
         if step is None or step == Direction.CENTRE:
             return False
         if step not in DIRECTIONS_4:
@@ -440,13 +456,24 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
             c.move(step_dir)
         return True
 
-    planner = _ensure_return_planner(self, c)
+    planner = _ensure_return_jump_planner(self, c)
     planner_step: Direction | None = None
     planner_path: list[tuple[int, int]] = []
+    first_segment_is_jump = False
     if planner is not None:
         planner.set_position(self.current_pos.x, self.current_pos.y)
-        planner_step = planner.step()
         planner_path = planner.extract_path()
+        if len(planner_path) >= 2:
+            x0, y0 = planner_path[0]
+            x1, y1 = planner_path[1]
+            if max(abs(x1 - x0), abs(y1 - y0)) > 1:
+                first_segment_is_jump = True
+            else:
+                planner_step = Position(x0, y0).direction_to(Position(x1, y1))
+
+    if first_segment_is_jump and self.return_next_dir is None:
+        return _start_or_continue_jump(self, c, planner_path[1])
+
     carry_next: Direction | None = None
 
     if self.return_next_dir is not None:

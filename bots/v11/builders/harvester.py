@@ -81,7 +81,6 @@ class Harvester:
         self.environment_map: EnvironmentMap | None = None
         self.seek_planner: DStarLite | None = None
         self.seek_planner_goal: tuple[int, int] | None = None
-        self.return_planner: DStarLite | None = None
         self.return_jump_planner: DStarLite | None = None
         self.return_jump_blacklist: set[tuple[int, int]] = set()
         self.return_jump_walker: DStarLite | None = None

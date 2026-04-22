@@ -10,7 +10,7 @@ from utils.defense.combat import (
     nearest_enemy_pos as _nearest_enemy_pos,
     step_toward as _step_toward,
 )
-from utils.harvester_states.return_to_core import _planner_step_at, _reset_return_state
+from utils.harvester_states.return_to_core import _planner_direction_at, _reset_return_state
 from utils.pathfinding.movement import DIRECTIONS_4
 
 if TYPE_CHECKING:
@@ -67,7 +67,7 @@ def _splitter_facing(self: Harvester, c: Controller, tile: Position) -> Directio
     facing = self.defend_orig_conveyor_dir
     if facing is not None:
         return facing
-    facing = _planner_step_at(self, c, tile)
+    facing = _planner_direction_at(self, c, tile)
     if facing is not None and facing in DIRECTIONS_4:
         return facing
     fallback = tile.direction_to(self.core_pos)

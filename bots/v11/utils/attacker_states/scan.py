@@ -1,4 +1,5 @@
 from __future__ import annotations
+from itertools import product
 from typing import TYPE_CHECKING
 
 from cambc import Controller, Direction, EntityType, Position, ResourceType
@@ -10,19 +11,17 @@ if TYPE_CHECKING:
     from builders.attacker import Attacker
 
 
-# Once this many friendly sentinels are already in vision, stop hijacking
-# here and fall through to the enemy-core probe so we spread out.
+# Stop hijacking here once this many friendly sentinels are in vision.
 _MAX_FRIENDLY_SENTINELS_IN_VISION = 3
 
-# How many turns a hard-failed target stays blacklisted before we retry it.
+# Turns a hard-failed target stays blacklisted before we retry.
 _BLACKLIST_TTL = 30
 
 # Give up on an orbit waypoint after this many turns pursuing it.
 _ORBIT_STUCK_TURNS = 30
 
-# Chebyshev-radius ring around the enemy core used as SCAN waypoints once
-# the core is spotted — keeps the attacker circling harvester belts rather
-# than beelining at the core itself.
+# Chebyshev-radius ring around the enemy core — keeps us circling belts
+# rather than beelining at the core.
 _ORBIT_RADIUS = 7
 _ORBIT_OFFSETS = (
     (0, _ORBIT_RADIUS),
@@ -37,8 +36,8 @@ _ORBIT_OFFSETS = (
 
 _HIJACK_TYPES = (EntityType.CONVEYOR, EntityType.BRIDGE)
 
-# Relays that forward resources — traced through when checking whether a
-# candidate conveyor/bridge ultimately feeds one of our own turrets.
+# Relays that forward resources — traced to see if a candidate conveyor
+# ultimately feeds one of our own turrets.
 _RELAY_TYPES = frozenset({
     EntityType.CONVEYOR,
     EntityType.ARMOURED_CONVEYOR,
@@ -55,13 +54,9 @@ def _chain_feeds_friendly_turret(
     start_pos: Position,
     my_team,
 ) -> bool:
-    """Trace resource flow forward from start_pos through relay tiles.
-
-    Returns True iff some path reaches a friendly gunner/sentinel; in that
-    case every relay tile walked through is added to self.blacklist so we
-    also skip those candidates in this and future scans.
-
-    Unknown tiles (out of vision, OOB) terminate a branch as safe.
+    """Trace forward from start_pos through relay tiles. If any path reaches
+    a friendly turret, blacklist every relay tile walked through and return
+    True. Unknown tiles (OOV, OOB) terminate a branch as safe.
     """
     touched: list[tuple[int, int]] = []
     visited: set[tuple[int, int]] = set()
@@ -95,22 +90,18 @@ def _chain_feeds_friendly_turret(
 
         touched.append(key)
 
-        if etype == EntityType.BRIDGE:
-            stack.append(c.get_bridge_target(bld_id))
-            continue
-
         facing = c.get_direction(bld_id)
-        if facing == Direction.CENTRE:
-            continue
-
-        if etype == EntityType.SPLITTER:
-            # Splitter outputs to facing + two perpendicular cardinals.
-            stack.append(pos.add(facing))
-            stack.append(pos.add(facing.rotate_left().rotate_left()))
-            stack.append(pos.add(facing.rotate_right().rotate_right()))
-        else:
-            # CONVEYOR / ARMOURED_CONVEYOR: single output in facing direction.
-            stack.append(pos.add(facing))
+        match etype:
+            case EntityType.BRIDGE:
+                stack.append(c.get_bridge_target(bld_id))
+            case EntityType.SPLITTER if facing != Direction.CENTRE:
+                stack += [
+                    pos.add(facing),
+                    pos.add(facing.rotate_left().rotate_left()),
+                    pos.add(facing.rotate_right().rotate_right()),
+                ]
+            case _ if facing != Direction.CENTRE:
+                stack.append(pos.add(facing))
 
     if hits_turret:
         round_now = c.get_current_round()
@@ -122,31 +113,27 @@ def _chain_feeds_friendly_turret(
 
 def _expire_blacklist(self: Attacker, c: Controller) -> None:
     cutoff = c.get_current_round() - _BLACKLIST_TTL
-    stale = [k for k, r in self.blacklist.items() if r < cutoff]
-    for k in stale:
-        del self.blacklist[k]
+    self.blacklist = {k: r for k, r in self.blacklist.items() if r >= cutoff}
 
 
 def _has_nearby_enemy_launcher(c: Controller, pos: Position, my_team) -> bool:
     """Any enemy launcher in the 3x3 around pos (the pickup range)."""
-    for dx in (-1, 0, 1):
-        for dy in (-1, 0, 1):
-            if dx == 0 and dy == 0:
-                continue
-            np = Position(pos.x + dx, pos.y + dy)
-            if not c.is_in_vision(np):
-                continue
-            bld_id = c.get_tile_building_id(np)
-            if bld_id is None:
-                continue
-            if (c.get_entity_type(bld_id) == EntityType.LAUNCHER
-                    and c.get_team(bld_id) != my_team):
-                return True
+    for dx, dy in product((-1, 0, 1), repeat=2):
+        if dx == 0 and dy == 0:
+            continue
+        np = Position(pos.x + dx, pos.y + dy)
+        if not c.is_in_vision(np):
+            continue
+        bld_id = c.get_tile_building_id(np)
+        if (bld_id is not None
+                and c.get_entity_type(bld_id) == EntityType.LAUNCHER
+                and c.get_team(bld_id) != my_team):
+            return True
     return False
 
 
 def _pick_target(self: Attacker, c: Controller):
-    """Find the best enemy conveyor/bridge currently carrying a titanium stack."""
+    """Find the best enemy conveyor/bridge currently carrying titanium."""
     my_team = c.get_team()
     me = self.current_pos
     enemy_core = self.enemy_core_pos
@@ -195,7 +182,7 @@ def _pick_target(self: Attacker, c: Controller):
 
 
 def _build_orbit(self: Attacker, c: Controller) -> list[Position]:
-    """Ring of waypoints at `_ORBIT_RADIUS` around the enemy core"""
+    """Ring of waypoints at `_ORBIT_RADIUS` around the enemy core."""
     env = self._env_map
     assert env is not None and self.enemy_core_pos is not None
     W, H = c.get_map_width(), c.get_map_height()
@@ -204,7 +191,7 @@ def _build_orbit(self: Attacker, c: Controller) -> list[Position]:
     for dx, dy in _ORBIT_OFFSETS:
         nx = max(0, min(W - 1, ec.x + dx))
         ny = max(0, min(H - 1, ec.y + dy))
-        if env.tile(nx, ny) & (1 << WALL):
+        if env.tile(nx, ny) == WALL:
             continue
         pts.append(Position(nx, ny))
     return pts or [ec]

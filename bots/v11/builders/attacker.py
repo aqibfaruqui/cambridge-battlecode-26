@@ -1,3 +1,5 @@
+from itertools import product
+
 from cambc import Controller, Direction, EntityType, Position
 from utils.attacker_states.approach import _approach
 from utils.attacker_states.replace import _replace, _target_still_valid
@@ -8,9 +10,7 @@ from utils.map.raw_map_representation import CORE_ENEMY, EnvironmentMap, Symmetr
 from utils.comms.broadcaster import Broadcaster
 from utils.comms.for_builder_bot import BuilderBotMessages
 
-# Builders cannot walk through the enemy core, and this attacker never targets
-# the enemy core itself (it hijacks conveyors near enemy harvesters), so block
-# CORE_ENEMY statically in the mask — no dynamic blocker needed.
+# Attacker never pathfinds into the enemy core — block CORE_ENEMY statically.
 _ATTACK_BLOCK_MASK = (1 << WALL) | (1 << CORE_ENEMY)
 
 
@@ -93,9 +93,7 @@ class Attacker:
                 continue
             # Enemy launchers throw adjacent builders — avoid the 3x3 pickup ring.
             if et == EntityType.LAUNCHER and c.get_team(bld_id) != my_team:
-                for dx in (-1, 0, 1):
-                    for dy in (-1, 0, 1):
-                        blockers.append((p.x + dx, p.y + dy))
+                blockers.extend((p.x + dx, p.y + dy) for dx, dy in product((-1, 0, 1), repeat=2))
 
         self._planner.set_position(pos.x, pos.y)
         self._planner.set_dynamic_blockers(blockers)
@@ -127,17 +125,14 @@ class Attacker:
                     pass
         assumed_centre = self._env_map.assumed_enemy_core_centre(self.core_pos)
 
-        # Direct sight > symmetry inference. Fall through to assumed_centre only
-        # if the core isn't in vision this tick. We deliberately let the result
-        # be None during the ambiguous window (rotational eliminated, H/V still
-        # live) so we don't hang onto a stale rotational guess — SCAN falls
-        # back to `enemy_core_candidates` when `enemy_core_pos is None`.
-        direct_enemy_core: Position | None = None
-        for eid in c.get_nearby_buildings():
-            if (c.get_entity_type(eid) == EntityType.CORE
-                    and c.get_team(eid) != c.get_team()):
-                direct_enemy_core = c.get_position(eid)
-                break
+        # Direct sight > symmetry inference. Leave None during the ambiguous
+        # window (rotational eliminated, H/V still live) so SCAN falls back
+        # to `enemy_core_candidates` rather than a stale guess.
+        direct_enemy_core = next(
+            (c.get_position(eid) for eid in c.get_nearby_buildings()
+             if c.get_entity_type(eid) == EntityType.CORE and c.get_team(eid) != c.get_team()),
+            None,
+        )
         new_enemy_core_pos = direct_enemy_core if direct_enemy_core is not None else assumed_centre
         if self.enemy_core_pos != new_enemy_core_pos:
             self.enemy_core_pos = new_enemy_core_pos
@@ -147,26 +142,17 @@ class Attacker:
 
         if self._env_map.symmetry is not None:
             if not self._symmetry_broadcasted:
-                self.broadcaster.add_broadcast(
-                    BuilderBotMessages.encode_symmetry(self._env_map.symmetry.value)
-                )
+                self.broadcaster.add_broadcast(BuilderBotMessages.encode_symmetry(self._env_map.symmetry.value))
                 self._symmetry_broadcasted = True
             if not self._core_broadcasted:
-                self.broadcaster.add_broadcast(
-                    BuilderBotMessages.encode_core_position(self.core_pos)
-                )
+                self.broadcaster.add_broadcast(BuilderBotMessages.encode_core_position(self.core_pos))
                 self._core_broadcasted = True
-            # Resolved symmetry implies assumed_centre is non-None.
             if not self._enemy_core_broadcasted and assumed_centre is not None:
-                self.broadcaster.add_broadcast(
-                    BuilderBotMessages.encode_enemy_core_position(assumed_centre)
-                )
+                self.broadcaster.add_broadcast(BuilderBotMessages.encode_enemy_core_position(assumed_centre))
                 self._enemy_core_broadcasted = True
 
-        # Seed enemy-core candidates once (SCAN uses these when idle).
         if not self.enemy_core_candidates:
-            W, H = c.get_map_width(), c.get_map_height()
-            cx, cy = self.core_pos.x, self.core_pos.y
+            W, H, cx, cy = c.get_map_width(), c.get_map_height(), self.core_pos.x, self.core_pos.y
             self.enemy_core_candidates = [
                 Position(W - 1 - cx, H - 1 - cy),  # rotational
                 Position(W - 1 - cx, cy),          # horizontal

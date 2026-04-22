@@ -79,6 +79,15 @@ def _return_dynamic_blockers(c: Controller) -> list[tuple[int, int]]:
     return blockers
 
 
+def _blacklist_landing(self: Harvester, landing_xy: tuple[int, int]) -> None:
+    """Permanently mark a jump landing as unreachable for this harvester.
+    Clears any in-flight traversal state. The next _ensure_return_jump_planner
+    call propagates the blacklist into the jump planner's dynamic blockers."""
+    self.return_jump_blacklist.add(landing_xy)
+    self.return_jump_walker = None
+    self.return_jump_landing = None
+
+
 def _ensure_return_planner(self: Harvester, c: Controller):
     if self.return_planner is None and self.environment_map is not None:
         self.return_planner = DStarLite(

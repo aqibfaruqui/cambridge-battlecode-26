@@ -123,9 +123,10 @@ def _start_or_continue_jump(
         if not c.can_build_bridge(A, B):
             ti, _ = c.get_global_resources()
             bridge_cost_ti, _ = c.get_bridge_cost()
-            if ti < bridge_cost_ti:
-                return False
-            _blacklist_landing(self, landing_xy)
+            if ti >= bridge_cost_ti:
+                # Funds are sufficient but can_build_bridge refuses —
+                # treated as a permanent geometry/terrain failure.
+                _blacklist_landing(self, landing_xy)
             return False
 
         c.build_bridge(A, B)

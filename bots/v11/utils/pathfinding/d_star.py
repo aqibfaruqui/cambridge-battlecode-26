@@ -542,6 +542,35 @@ class DStarLite:
                         if v < min_rhs:
                             min_rhs = v
 
+        if self._allow_jumps:
+            jc = self._jump_cost
+            if 3 <= x < w - 3 and 3 <= y < h - 3:
+                for dx, dy in _JUMP_OFFSETS:
+                    s = u + dy * w + dx
+                    if s != start and (s in dyn or (mask >> arr[s]) & 1):
+                        continue
+                    gs = g[s]
+                    if gs < min_rhs:
+                        v = jc + gs
+                        if v < min_rhs:
+                            min_rhs = v
+            else:
+                for dx, dy in _JUMP_OFFSETS:
+                    xx = x + dx
+                    if xx < 0 or xx >= w:
+                        continue
+                    yy = y + dy
+                    if yy < 0 or yy >= h:
+                        continue
+                    s = yy * w + xx
+                    if s != start and (s in dyn or (mask >> arr[s]) & 1):
+                        continue
+                    gs = g[s]
+                    if gs < min_rhs:
+                        v = jc + gs
+                        if v < min_rhs:
+                            min_rhs = v
+
         self._rhs[u] = min_rhs
         # Inlined _maybe_enqueue + _enqueue.
         if g[u] != min_rhs:

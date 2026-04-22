@@ -70,12 +70,33 @@ def test_step_works_in_walk_mode():
     assert direction is not None, "walk mode should return a Direction"
 
 
+def test_recompute_rhs_jump_enables_reachability():
+    width, height = 5, 3
+    walls = [(2, y) for y in range(height)]
+    env = _make_env(width, height, walls=walls)
+
+    walk = DStarLite(env, 4, 1)
+    walk.set_position(0, 1)
+    walk.plan()
+    assert walk._g[walk._start] == _INF, (
+        f"walk-only should be unreachable, got g={walk._g[walk._start]}"
+    )
+
+    jump = DStarLite(env, 4, 1, allow_jumps=True)
+    jump.set_position(0, 1)
+    jump.plan()
+    assert jump._g[jump._start] != _INF, (
+        f"jump mode should reach via (0,1)->(3,1)->(4,1), got g={jump._g[jump._start]}"
+    )
+
+
 # -------- Runner --------
 
 TESTS = [
     test_construction_both_modes,
     test_step_raises_in_jump_mode,
     test_step_works_in_walk_mode,
+    test_recompute_rhs_jump_enables_reachability,
 ]
 
 

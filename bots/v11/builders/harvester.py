@@ -14,6 +14,9 @@ from utils.harvester_states.return_to_core import (
 from utils.harvester_states.seek import (
     _seek as _seek_state,
 )
+from utils.harvester_states.patrol import (
+    _patrol as _patrol_state,
+)
 from utils.harvester_states.placing_harvester import (
     STEP_ON as _PLACING_STEP_ON,
     _placing_harvester as _placing_harvester_state,
@@ -53,6 +56,7 @@ class HarvestState(Enum):
     RETURN = "return"
     PLACING_FOUNDRY = "placing_foundry"
     DEFEND = "defend"
+    PATROL = "patrol"
 
 
 _HARVESTER_PLACEMENT_CAP = 3
@@ -82,7 +86,6 @@ class Harvester:
         self.seek_target_is_ore = False
         self.blacklisted_ores: set[tuple[int, int]] = set()
         self.blacklisted_seek_targets: set[tuple[int, int]] = set()
-        self.seek_unreachable_counts: dict[tuple[int, int], int] = {}
         self.seek_stall_target: Position | None = None
         self.seek_target_turns: int = 0
         self.edge_cycle_index = 0
@@ -96,6 +99,10 @@ class Harvester:
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
         self.heal_target: Position | None = None
+        self.patrol_turns: int = 0
+        self.patrol_target: Position | None = None
+        self.patrol_going_out: bool = True
+        self.patrol_tip: Position | None = None
 
         self.placing_ore_pos: Position | None = None
         self.placing_exit_pos: Position | None = None
@@ -231,6 +238,7 @@ class Harvester:
             HarvestState.RETURN: (255, 165, 0),
             HarvestState.PLACING_FOUNDRY: (255, 255, 0),
             HarvestState.DEFEND: (255, 0, 0),
+            HarvestState.PATROL: (0, 255, 200),
         }
         r, g, b = state_colors.get(self.state, (255, 255, 255))
         c.draw_indicator_dot(self.current_pos, r, g, b)
@@ -252,11 +260,23 @@ class Harvester:
     def _seek(self, c: Controller):
         _seek_state(self, c)
 
+    def _patrol(self, c: Controller):
+        _patrol_state(self, c)
+
     def _return(self, c: Controller):
         """Lay conveyors back to the core"""
         # If we're already on/adjacent to core, RETURN is complete.
         if reached_core(self.current_pos, self.core_pos):
-            self.state = HarvestState.PLACING_FOUNDRY if self._can_trigger_foundry(c) else HarvestState.SEEK
+            if self._can_trigger_foundry(c):
+                self.state = HarvestState.PLACING_FOUNDRY
+            elif self.harvesters_placed >= 1:
+                self.patrol_tip = self.harvester_pos  # save before it's cleared
+                self.patrol_turns = 0
+                self.patrol_target = None
+                self.patrol_going_out = True
+                self.state = HarvestState.PATROL
+            else:
+                self.state = HarvestState.SEEK
             self.target_pos = None
             self.seek_target_is_ore = False
             self.harvester_pos = None
@@ -269,7 +289,7 @@ class Harvester:
             return
 
         if _handle_bridge_state(self, c):
-            return
+            return  
 
         _build_return_step(self, c)
 
@@ -329,6 +349,8 @@ class Harvester:
                 self._placing_foundry(c)
             case HarvestState.DEFEND:
                 self._defend(c)
+            case HarvestState.PATROL:
+                self._patrol(c)
 
         self.broadcaster.run(c)
 

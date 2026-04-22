@@ -15,6 +15,7 @@ from utils.pathfinding.movement import (
     split_diagonal,
 )
 
+
 if TYPE_CHECKING:
     from builders.harvester import Harvester
 
@@ -150,36 +151,6 @@ def _clear_return_tile(_: Harvester, c: Controller, pos: Position) -> bool:
     return entity_type in (EntityType.CONVEYOR, EntityType.SPLITTER, EntityType.BRIDGE)
 
 
-def _resolve_diagonal(self: Harvester, c: Controller, origin: Position, move_dir: Direction) -> tuple[list[Direction] | None, Direction | None]:
-    """Returns (split_dirs, bridge_dir). split_dirs is a two-step cardinal path;
-    bridge_dir means go diagonally and build a bridge behind. Both None = unresolvable."""
-    ns, ew = split_diagonal(origin, origin.add(move_dir))
-    if ns is None or ew is None:
-        return None, None
-
-    preferred = get_direction_4(origin, self.core_pos)
-    ordered = [ew, ns] if preferred == ew else [ns, ew]
-
-    for first, second in [(ordered[0], ordered[1]), (ordered[1], ordered[0])]:
-        first_pos = origin.add(first)
-        second_pos = first_pos.add(second)
-        if not _is_return_tile_usable(self, c, first_pos, check_occupancy=False):
-            continue
-        if reached_core(first_pos, self.core_pos):
-            return [first], None
-        if _is_return_tile_usable(self, c, second_pos, check_occupancy=False):
-            return [first, second], None
-
-    if origin == self.current_pos:
-        diag_pos = origin.add(move_dir)
-        if c.can_move(move_dir) or (
-            c.get_tile_env(diag_pos) == Environment.EMPTY and c.can_build_road(diag_pos)
-        ):
-            return None, move_dir
-
-    return None, None
-
-
 def _next_dir_after_move(self: Harvester, c: Controller, move_dir: Direction, planner_path: list[tuple[int, int]]) -> Direction | None:
     """Conveyor direction to place on the tile we're about to step onto."""
     move_pos = self.current_pos.add(move_dir)
@@ -198,38 +169,7 @@ def _next_dir_after_move(self: Harvester, c: Controller, move_dir: Direction, pl
         return None
     if follow_dir in DIRECTIONS_4:
         return follow_dir
-
-    split, _ = _resolve_diagonal(self, c, move_pos, follow_dir)
-    if split:
-        return split[0]
-    ns, ew = split_diagonal(move_pos, move_pos.add(follow_dir))
-    return ns or ew
-
-
-def _to_cardinal(self: Harvester, c: Controller, origin: Position, raw_dir: Direction) -> tuple[Direction | None, Direction | None, Direction | None]:
-    """Resolve a diagonal raw_dir to a cardinal step.
-    Returns (move_dir, carry_next, bridge_dir): bridge_dir set means caller should take a
-    diagonal bridge step; all None means unresolvable."""
-    if raw_dir in DIRECTIONS_4:
-        return raw_dir, None, None
-    split, bridge_dir = _resolve_diagonal(self, c, origin, raw_dir)
-    if bridge_dir is not None:
-        return None, None, bridge_dir
-    if split:
-        return split[0], split[1] if len(split) > 1 else None, None
-    return None, None, None
-
-
-def _handle_diagonal_step(self: Harvester, c: Controller, move_dir: Direction) -> bool:
-    move_pos = self.current_pos.add(move_dir)
-    self.return_next_dir = None
-    if c.get_tile_env(move_pos) == Environment.EMPTY and c.can_build_road(move_pos):
-        c.build_road(move_pos)
-    if c.can_move(move_dir):
-        self.bridge_from = self.current_pos
-        c.move(move_dir)
-        return True
-    return False
+    return get_direction_4(move_pos, move_pos.add(follow_dir))
 
 
 def _handle_bridge_state(self: Harvester, c: Controller) -> bool:
@@ -278,11 +218,8 @@ def _handle_bridge_state(self: Harvester, c: Controller) -> bool:
             return True
 
         conveyor_dir = _planner_step_at(self, c, self.current_pos)
-        if conveyor_dir is None or conveyor_dir == Direction.CENTRE:
+        if conveyor_dir is None or conveyor_dir == Direction.CENTRE or conveyor_dir not in DIRECTIONS_4:
             conveyor_dir = get_direction_4(self.current_pos, self.core_pos)
-        elif conveyor_dir not in DIRECTIONS_4:
-            split, _ = _resolve_diagonal(self, c, self.current_pos, conveyor_dir)
-            conveyor_dir = split[0] if split else get_direction_4(self.current_pos, self.core_pos)
         if conveyor_dir is None:
             self.post_bridge_conveyor = False
             return False
@@ -324,7 +261,6 @@ def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) ->
     # Check if bridge was already built from here (previous turn).
     bid = c.get_tile_building_id(bridge_pos)
     if bid is not None and c.get_entity_type(bid) == EntityType.BRIDGE and c.get_team(bid) == c.get_team():
-        print(f"[bridge_jump] bridge already exists at {bridge_pos}, walking to {target_pos}")
         self.bridge_jump_target = target_pos
         return _walk_toward_bridge_target(self, c)
 
@@ -336,72 +272,64 @@ def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) ->
         and c.get_team(bid) == c.get_team()
         and c.can_destroy(bridge_pos)
     ):
-        print(f"[bridge_jump] clearing {entity_type} at {bridge_pos} before bridge")
         c.destroy(bridge_pos)
         return True
 
     if c.can_build_bridge(bridge_pos, target_pos):
-        print(f"[bridge_jump] building bridge from {bridge_pos} to {target_pos}")
         c.build_bridge(bridge_pos, target_pos)
         self.bridge_jump_target = target_pos
         return True
 
     ti, _ = c.get_global_resources()
     bridge_cost_ti, _ = c.get_bridge_cost()
-    print(f"[bridge_jump] can't build bridge from {bridge_pos} to {target_pos}, ti={ti}/{bridge_cost_ti}")
     if ti >= bridge_cost_ti:
         key = (bridge_pos.x, bridge_pos.y, target_pos.x, target_pos.y)
         fails = self.return_bridge_fail_counts.get(key, 0) + 1
         self.return_bridge_fail_counts[key] = fails
         if fails >= _MAX_BRIDGE_FAILS:
-            print(f"[bridge_jump] giving up on bridge {bridge_pos}->{target_pos} after {fails} fails, re-planning")
             self.return_planner = None
             self.return_bridge_fail_counts.pop(key, None)
     return True
 
 
-def _ensure_bridge_target_planner(self: Harvester, c: Controller):
-    target = self.bridge_jump_target
-    if target is None:
-        return None
+def _ensure_bridge_target_planner(self: Harvester, c: Controller, target: Position) -> DStarLite | None:
     if self.bridge_target_planner is None and self.environment_map is not None:
         self.bridge_target_planner = DStarLite(
             self.environment_map,
             target.x,
             target.y,
             block_mask=_SEEK_BLOCK_MASK,
-            unknown_cost=1.0,
         )
     p = self.bridge_target_planner
     if p is not None:
+        p.set_position(self.current_pos.x, self.current_pos.y)
+        p.set_dynamic_blockers(_return_dynamic_blockers(c))
         p.notify_map_changes()
     return p
 
 
 def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
-    """Walk one D*-guided step toward bridge_jump_target."""
+    """Walk across a bridge toward bridge_jump_target using D* with a wall-permissive mask."""
     target = self.bridge_jump_target
     if target is None:
         return False
 
     if self.current_pos == target:
-        print(f"[bridge_walk] reached bridge target {target}, placing post-bridge conveyor")
         self.bridge_jump_target = None
         self.bridge_target_planner = None
         self.post_bridge_conveyor = True
         return True
 
-    p = _ensure_bridge_target_planner(self, c)
-    move_dir: Direction | None = None
+    p = _ensure_bridge_target_planner(self, c, target)
+    move_dir = None
     if p is not None:
-        p.set_position(self.current_pos.x, self.current_pos.y)
-        step = p.step()
-        move_dir = None if step == Direction.CENTRE else step
+        d = p.step()
+        if d is not None and d != Direction.CENTRE:
+            move_dir = d
 
     if move_dir is None:
         move_dir = self.current_pos.direction_to(target)
     if move_dir is None or move_dir == Direction.CENTRE:
-        print(f"[bridge_walk] no direction to target {target} from {self.current_pos}, done")
         self.bridge_jump_target = None
         self.bridge_target_planner = None
         self.post_bridge_conveyor = True
@@ -410,9 +338,7 @@ def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
     move_pos = self.current_pos.add(move_dir)
     if c.can_build_road(move_pos):
         c.build_road(move_pos)
-    can = c.can_move(move_dir)
-    print(f"[bridge_walk] at {self.current_pos}, target {target}, dir {move_dir}, can_move={can}")
-    if can:
+    if c.can_move(move_dir):
         c.move(move_dir)
     return True
 
@@ -440,10 +366,7 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
         if step is None or step == Direction.CENTRE:
             return False
         if step not in DIRECTIONS_4:
-            step, _, bridge_dir = _to_cardinal(self, c, move_pos, step)
-            if bridge_dir is not None:
-                self.just_placed = False
-                return _handle_diagonal_step(self, c, bridge_dir)
+            step = get_direction_4(move_pos, self.core_pos)
             if step is None:
                 return False
 
@@ -474,11 +397,10 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
             cx, cy = self.current_pos.x, self.current_pos.y
             tx, ty = step_xy
             dsq = (tx - cx) * (tx - cx) + (ty - cy) * (ty - cy)
-            if dsq > 2:
+            if dsq > 1:
                 return _handle_bridge_jump(self, c, Position(tx, ty))
             planner_step = self.current_pos.direction_to(Position(tx, ty))
         planner_path = planner.extract_path()
-    carry_next: Direction | None = None
 
     if self.return_next_dir is not None:
         move_dir = self.return_next_dir
@@ -490,16 +412,7 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
         if move_dir is None or move_dir == Direction.CENTRE:
             return False
 
-        if move_dir not in DIRECTIONS_4:
-            move_dir, carry_next, bridge_dir = _to_cardinal(self, c, self.current_pos, move_dir)
-            if bridge_dir is not None:
-                return _handle_diagonal_step(self, c, bridge_dir)
-            if move_dir is None:
-                return False
-
     next_dir = _next_dir_after_move(self, c, move_dir, planner_path)
-    if carry_next is not None:
-        next_dir = carry_next
 
     move_pos = self.current_pos.add(move_dir)
 

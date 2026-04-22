@@ -22,13 +22,13 @@ _SQRT2 = math.sqrt(2)
 
 _NEIGHBOURS = (
     (0, -1, 1.0, Direction.NORTH),
-    (1, -1, _SQRT2, Direction.NORTHEAST),
+    (1, -1, _BRIDGE_JUMP_COST, Direction.NORTHEAST),
     (1, 0, 1.0, Direction.EAST),
-    (1, 1, _SQRT2, Direction.SOUTHEAST),
+    (1, 1, _BRIDGE_JUMP_COST, Direction.SOUTHEAST),
     (0, 1, 1.0, Direction.SOUTH),
-    (-1, 1, _SQRT2, Direction.SOUTHWEST),
+    (-1, 1, _BRIDGE_JUMP_COST, Direction.SOUTHWEST),
     (-1, 0, 1.0, Direction.WEST),
-    (-1, -1, _SQRT2, Direction.NORTHWEST),
+    (-1, -1, _BRIDGE_JUMP_COST, Direction.NORTHWEST),
 )
 
 _UNKNOWN = 0
@@ -509,28 +509,28 @@ class DStarLite:
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                    v = _BRIDGE_JUMP_COST + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u - w + 1  # NE
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                    v = _BRIDGE_JUMP_COST + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u + w - 1  # SW
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                    v = _BRIDGE_JUMP_COST + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u + w + 1  # SE
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                    v = _BRIDGE_JUMP_COST + gs
                     if v < min_rhs:
                         min_rhs = v
         else:
@@ -548,7 +548,7 @@ class DStarLite:
                     if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                         gs = g[s]
                         if gs < min_rhs:
-                            v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                            v = _BRIDGE_JUMP_COST + gs
                             if v < min_rhs:
                                 min_rhs = v
                 if x < w - 1:
@@ -556,7 +556,7 @@ class DStarLite:
                     if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                         gs = g[s]
                         if gs < min_rhs:
-                            v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                            v = _BRIDGE_JUMP_COST + gs
                             if v < min_rhs:
                                 min_rhs = v
             if y < h - 1:
@@ -572,7 +572,7 @@ class DStarLite:
                     if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                         gs = g[s]
                         if gs < min_rhs:
-                            v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                            v = _BRIDGE_JUMP_COST + gs
                             if v < min_rhs:
                                 min_rhs = v
                 if x < w - 1:
@@ -580,7 +580,7 @@ class DStarLite:
                     if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                         gs = g[s]
                         if gs < min_rhs:
-                            v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                            v = _BRIDGE_JUMP_COST + gs
                             if v < min_rhs:
                                 min_rhs = v
             if x > 0:

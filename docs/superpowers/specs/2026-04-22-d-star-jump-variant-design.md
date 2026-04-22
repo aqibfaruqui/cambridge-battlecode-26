@@ -122,6 +122,24 @@ The `successor_g < min_rhs` early prune remains valid: `candidate_cost = jump_co
 
 The downstream enqueue logic (comparing `g[cell_index]` vs `min_rhs`, computing key, pushing to `_open`) is untouched.
 
+### `_compute_shortest_path()`
+
+When the heap-processing loop updates `g[cell_index]`, it re-relaxes every predecessor of the cell via an inlined neighbour block. The existing block only calls `recompute_rhs` on the 8 walk predecessors; in jump mode it must also call it on every jump predecessor, otherwise cells reachable *only* by a jump edge never enter the open queue and the wavefront from the goal cannot cross a pure jump edge. Insert the additive block inside `_compute_shortest_path`, after the existing walk-predecessor relaxations and before the `if also_self:` branch:
+
+```python
+if self._allow_jumps:
+    for dx, dy in _JUMP_OFFSETS:
+        neighbour_x = x + dx
+        if neighbour_x < 0 or neighbour_x >= width:
+            continue
+        neighbour_y = y + dy
+        if neighbour_y < 0 or neighbour_y >= height:
+            continue
+        recompute_rhs(neighbour_y * width + neighbour_x)
+```
+
+This mirrors the `notify_map_changes` and `set_dynamic_blockers` jump-predecessor blocks exactly; the symmetry of `_JUMP_OFFSETS` under negation means iterating successors from `cell_index` enumerates its predecessors.
+
 ### `step()`
 
 ```python

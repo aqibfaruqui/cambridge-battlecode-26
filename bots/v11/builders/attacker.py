@@ -1,7 +1,6 @@
 from itertools import product
 
 from cambc import Controller, Direction, EntityType, Position
-from utils.attacker_states.approach import _approach
 from utils.attacker_states.replace import _replace, _target_still_valid
 from utils.attacker_states.scan import _scan
 from utils.attacker_states.state import AttackState
@@ -22,7 +21,6 @@ class Attacker:
         self.core_pos = core_pos
         self.current_pos: Position = core_pos
 
-        # Enemy-core probing for SCAN's idle behaviour.
         self.enemy_core_candidates: list[Position] = []
         self.enemy_core_candidate_idx = 0
         self.enemy_core_pos: Position | None = None
@@ -30,13 +28,10 @@ class Attacker:
         # Post-core-found orbit waypoints (built lazily once enemy_core_pos is set).
         self.orbit_points: list[Position] | None = None
         self.orbit_idx = 0
-        # Skip an orbit waypoint if we fail to reach it within this many turns.
         self._orbit_pursuit_idx: int | None = None
         self._orbit_pursuit_round: int = 0
 
-        # Locked-in target
         self.target_conveyor: Position | None = None
-        self.sentinels_placed = 0
 
         # Hard-failed targets: skip for _BLACKLIST_TTL turns then retry.
         self.blacklist: dict[tuple[int, int], int] = {}
@@ -55,9 +50,7 @@ class Attacker:
         self._hp_prev: int | None = None
 
         self.broadcaster = Broadcaster()
-        self._symmetry_broadcasted = False
-        self._core_broadcasted = False
-        self._enemy_core_broadcasted = False
+        self._broadcasted = False
 
     # ---------- navigation (shared by SCAN's idle probe and APPROACH) ----------
 
@@ -125,31 +118,28 @@ class Attacker:
                     pass
         assumed_centre = self._env_map.assumed_enemy_core_centre(self.core_pos)
 
-        # Direct sight > symmetry inference. Leave None during the ambiguous
-        # window (rotational eliminated, H/V still live) so SCAN falls back
-        # to `enemy_core_candidates` rather than a stale guess.
+        # Direct sight > symmetry inference. None during the ambiguous window
+        # (rotational eliminated, H/V still live) so SCAN falls back to
+        # enemy_core_candidates rather than a stale guess.
+        my_team = c.get_team()
         direct_enemy_core = next(
             (c.get_position(eid) for eid in c.get_nearby_buildings()
-             if c.get_entity_type(eid) == EntityType.CORE and c.get_team(eid) != c.get_team()),
+             if c.get_entity_type(eid) == EntityType.CORE and c.get_team(eid) != my_team),
             None,
         )
-        new_enemy_core_pos = direct_enemy_core if direct_enemy_core is not None else assumed_centre
-        if self.enemy_core_pos != new_enemy_core_pos:
-            self.enemy_core_pos = new_enemy_core_pos
+        if (new_ec := direct_enemy_core or assumed_centre) != self.enemy_core_pos:
+            self.enemy_core_pos = new_ec
             self.orbit_points = None
             self.orbit_idx = 0
             self._orbit_pursuit_idx = None
 
-        if self._env_map.symmetry is not None:
-            if not self._symmetry_broadcasted:
-                self.broadcaster.add_broadcast(BuilderBotMessages.encode_symmetry(self._env_map.symmetry.value))
-                self._symmetry_broadcasted = True
-            if not self._core_broadcasted:
-                self.broadcaster.add_broadcast(BuilderBotMessages.encode_core_position(self.core_pos))
-                self._core_broadcasted = True
-            if not self._enemy_core_broadcasted and assumed_centre is not None:
-                self.broadcaster.add_broadcast(BuilderBotMessages.encode_enemy_core_position(assumed_centre))
-                self._enemy_core_broadcasted = True
+        # Symmetry resolving implies assumed_centre is non-None.
+        if self._env_map.symmetry is not None and not self._broadcasted:
+            assert assumed_centre is not None
+            self.broadcaster.add_broadcast(BuilderBotMessages.encode_symmetry(self._env_map.symmetry.value))
+            self.broadcaster.add_broadcast(BuilderBotMessages.encode_core_position(self.core_pos))
+            self.broadcaster.add_broadcast(BuilderBotMessages.encode_enemy_core_position(assumed_centre))
+            self._broadcasted = True
 
         if not self.enemy_core_candidates:
             W, H, cx, cy = c.get_map_width(), c.get_map_height(), self.core_pos.x, self.core_pos.y
@@ -164,7 +154,7 @@ class Attacker:
         my_id = c.get_id()
         hp_now = c.get_hp(my_id)
 
-        if self._hp_prev is not None and hp_now < self._hp_prev:
+        if (prev := self._hp_prev) is not None and hp_now < prev:
             self.blacklist[(self.current_pos.x, self.current_pos.y)] = c.get_current_round()
         self._hp_prev = hp_now
 
@@ -194,7 +184,12 @@ class Attacker:
         if self.state == AttackState.SCAN:
             _scan(self, c)
         if self.state == AttackState.APPROACH:
-            _approach(self, c)
+            assert self.target_conveyor is not None
+            self.target_pos = self.target_conveyor
+            if self.current_pos == self.target_conveyor:
+                self.state = AttackState.REPLACE
+            else:
+                self._search(c, self.target_conveyor)
         if self.state == AttackState.REPLACE:
             _replace(self, c)
 

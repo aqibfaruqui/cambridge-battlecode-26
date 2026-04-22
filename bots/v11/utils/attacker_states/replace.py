@@ -14,9 +14,12 @@ _STEP_OFF = (
     Direction.NORTHEAST, Direction.SOUTHEAST, Direction.SOUTHWEST, Direction.NORTHWEST,
 )
 
-# Only the band gunner < d² <= sentinel needs the pricier sentinel.
+# Only the band _GUNNER < d² <= _SENTINEL needs the pricier sentinel.
 _SENTINEL_ATTACK_RADIUS_SQ = 32
 _GUNNER_ATTACK_RADIUS_SQ = 9
+
+_FRIENDLY_REPLACE_TYPES = frozenset({EntityType.SENTINEL, EntityType.GUNNER, EntityType.ROAD})
+_HIJACK_TYPES = frozenset({EntityType.CONVEYOR, EntityType.BRIDGE})
 
 
 def _execute_replacement(self: Attacker, c: Controller) -> bool:
@@ -32,9 +35,8 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
 
     match (team, etype):
         case (t, EntityType.SENTINEL | EntityType.GUNNER) if t == my_team:
-            self.sentinels_placed += 1
             return True
-        case (t, _) if t is not None and t != my_team:
+        case (t, _) if t not in (None, my_team):
             # Enemy on target: walk on (conveyor is walkable) and own-tile fire.
             if me == target:
                 key = (target.x, target.y)
@@ -53,7 +55,7 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
             return False
         case (t, EntityType.ROAD) if t == my_team:
             our_road = True
-        case (None, _) | (_, None):
+        case (None, _):
             our_road = False
         case _:
             # Friendly stray (not road, not turret) — tear it down.
@@ -70,40 +72,34 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
         c.move(step)
         me = c.get_position()
 
-    facing = me.direction_to(target)
-    if self.enemy_core_pos is not None:
-        d = target.direction_to(self.enemy_core_pos)
-        if d != Direction.CENTRE:
-            facing = d
-
-    ti = c.get_global_resources()[0]
-
     ec = self.enemy_core_pos
-    if ec is not None:
-        d2 = target.distance_squared(ec)
-        use_gunner = d2 > _SENTINEL_ATTACK_RADIUS_SQ or d2 <= _GUNNER_ATTACK_RADIUS_SQ
-    else:
-        use_gunner = False
+    facing = me.direction_to(target)
+    if ec is not None and (d := target.direction_to(ec)) != Direction.CENTRE:
+        facing = d
+
+    use_gunner = ec is not None and (
+        (d2 := target.distance_squared(ec)) > _SENTINEL_ATTACK_RADIUS_SQ
+        or d2 <= _GUNNER_ATTACK_RADIUS_SQ
+    )
     turret_cost, can_build_turret, build_turret = (
         (c.get_gunner_cost()[0], c.can_build_gunner, c.build_gunner)
         if use_gunner else
         (c.get_sentinel_cost()[0], c.can_build_sentinel, c.build_sentinel)
     )
 
+    ti = c.get_global_resources()[0]
     if our_road:
         # Upgrade the road to a turret once Ti lands.
         if ti >= turret_cost and c.can_destroy(target):
             c.destroy(target)
             if can_build_turret(target, facing):
                 build_turret(target, facing)
-                self.sentinels_placed += 1
                 return True
         return False
 
     # Empty target: turret if affordable, else a 1-Ti road to reserve.
     if ti >= turret_cost and can_build_turret(target, facing):
         build_turret(target, facing)
-        self.sentinels_placed += 1
         return True
     if c.can_build_road(target):
         c.build_road(target)
@@ -121,8 +117,8 @@ def _target_still_valid(self: Attacker, c: Controller) -> bool:
         return True
     et = c.get_entity_type(bld_id)
     if c.get_team(bld_id) == c.get_team():
-        return et in (EntityType.SENTINEL, EntityType.GUNNER, EntityType.ROAD)
-    return et in (EntityType.CONVEYOR, EntityType.BRIDGE)
+        return et in _FRIENDLY_REPLACE_TYPES
+    return et in _HIJACK_TYPES
 
 
 def _replace(self: Attacker, c: Controller) -> None:

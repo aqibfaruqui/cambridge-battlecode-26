@@ -48,6 +48,19 @@ _SEEK_BLOCK_MASK = (
     | (1 << _ENEMY_CORE)
 )
 
+# Jump-edge offsets: (dx, dy) pairs with 2 < dx*dx + dy*dy <= 9.
+# Jumps conceptually bypass any tiles between source and destination; the
+# endpoint is still validated against block_mask and _dynamic_blocked.
+_JUMP_OFFSETS = (
+    # dist_sq = 5
+    (-2, -1), (-2,  1), ( 2, -1), ( 2,  1),
+    (-1, -2), ( 1, -2), (-1,  2), ( 1,  2),
+    # dist_sq = 8
+    (-2, -2), ( 2, -2), (-2,  2), ( 2,  2),
+    # dist_sq = 9
+    (-3,  0), ( 3,  0), ( 0, -3), ( 0,  3),
+)
+
 
 class DStarLite:
     __slots__ = (
@@ -69,6 +82,8 @@ class DStarLite:
         "_block_mask",
         "_dynamic_blocked",
         "_unknown_cost",
+        "_allow_jumps",
+        "_jump_cost",
     )
 
     def __init__(
@@ -79,6 +94,8 @@ class DStarLite:
         *,
         block_mask: int = _DEFAULT_BLOCK_MASK,
         unknown_cost: float = 1.0,
+        allow_jumps: bool = False,
+        jump_cost: float = 5.0,
     ):
         self._env = env
         self._w = env._w
@@ -106,6 +123,8 @@ class DStarLite:
         self._snapshot = bytearray(env._array)
         self._dynamic_blocked: set[int] = set()
         self._unknown_cost = unknown_cost
+        self._allow_jumps = allow_jumps
+        self._jump_cost = jump_cost
 
     # ---------- Public API ----------
 

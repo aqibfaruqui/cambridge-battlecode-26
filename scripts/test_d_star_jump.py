@@ -90,6 +90,57 @@ def test_recompute_rhs_jump_enables_reachability():
     )
 
 
+def test_extract_path_returns_jump_segment():
+    width, height = 5, 3
+    walls = [(2, y) for y in range(height)]
+    env = _make_env(width, height, walls=walls)
+
+    jump = DStarLite(env, 4, 1, allow_jumps=True)
+    jump.set_position(0, 1)
+    jump.plan()
+    path = jump.extract_path()
+    assert path, f"expected a non-empty path, got {path}"
+    has_jump = any(
+        max(abs(path[i + 1][0] - path[i][0]), abs(path[i + 1][1] - path[i][1])) > 1
+        for i in range(len(path) - 1)
+    )
+    assert has_jump, f"expected a jump segment in path, got {path}"
+
+
+def test_notify_map_changes_updates_jump_predecessors():
+    width, height = 8, 3
+    env = _make_env(width, height)
+
+    jump = DStarLite(env, 7, 1, allow_jumps=True)
+    jump.set_position(0, 1)
+    jump.plan()
+    path_before = jump.extract_path()
+    assert path_before, f"expected initial path, got {path_before}"
+    # Open map — path should be all walk steps.
+    assert all(
+        max(abs(path_before[i + 1][0] - path_before[i][0]),
+            abs(path_before[i + 1][1] - path_before[i][1])) == 1
+        for i in range(len(path_before) - 1)
+    ), f"expected walk-only initial path, got {path_before}"
+
+    # Drop in a wall column across x=3, 4 (leaving x=2 passable as fallback for walk route).
+    for x in (3, 4):
+        for y in range(height):
+            env._array[y * width + x] = WALL
+
+    changed = jump.notify_map_changes()
+    assert changed, "notify_map_changes should report changes"
+
+    path_after = jump.extract_path()
+    assert path_after, f"expected path after wall insertion, got {path_after}"
+    has_jump = any(
+        max(abs(path_after[i + 1][0] - path_after[i][0]),
+            abs(path_after[i + 1][1] - path_after[i][1])) > 1
+        for i in range(len(path_after) - 1)
+    )
+    assert has_jump, f"expected jump segment after wall insertion, got {path_after}"
+
+
 # -------- Runner --------
 
 TESTS = [
@@ -97,6 +148,8 @@ TESTS = [
     test_step_raises_in_jump_mode,
     test_step_works_in_walk_mode,
     test_recompute_rhs_jump_enables_reachability,
+    test_extract_path_returns_jump_segment,
+    test_notify_map_changes_updates_jump_predecessors,
 ]
 
 

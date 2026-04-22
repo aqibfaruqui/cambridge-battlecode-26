@@ -188,6 +188,16 @@ class DStarLite:
                 if x < w - 1:
                     recompute(i + 1)
 
+                if self._allow_jumps:
+                    for dx, dy in _JUMP_OFFSETS:
+                        xx = x + dx
+                        if xx < 0 or xx >= w:
+                            continue
+                        yy = y + dy
+                        if yy < 0 or yy >= h:
+                            continue
+                        recompute(yy * w + xx)
+
                 recompute(i)
             i += 1
 
@@ -324,6 +334,25 @@ class DStarLite:
                 if v < best_cost:
                     best_cost = v
                     best = nxt
+
+            if self._allow_jumps:
+                jc = self._jump_cost
+                for dx, dy in _JUMP_OFFSETS:
+                    xx = x + dx
+                    if xx < 0 or xx >= w:
+                        continue
+                    yy = y + dy
+                    if yy < 0 or yy >= h:
+                        continue
+                    nxt = yy * w + xx
+                    if nxt in dyn:
+                        continue
+                    if (mask >> arr[nxt]) & 1:
+                        continue
+                    v = jc + g[nxt]
+                    if v < best_cost:
+                        best_cost = v
+                        best = nxt
 
             if best is None or best in visited:
                 return []  # no valid path

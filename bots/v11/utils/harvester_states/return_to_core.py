@@ -203,6 +203,20 @@ def _next_dir_after_move(self: Harvester, c: Controller, move_dir: Direction, pl
     return ns or ew
 
 
+def _to_cardinal(self: Harvester, c: Controller, origin: Position, raw_dir: Direction) -> tuple[Direction | None, Direction | None, Direction | None]:
+    """Resolve a diagonal raw_dir to a cardinal step.
+    Returns (move_dir, carry_next, bridge_dir): bridge_dir set means caller should take a
+    diagonal bridge step; all None means unresolvable."""
+    if raw_dir in DIRECTIONS_4:
+        return raw_dir, None, None
+    split, bridge_dir = _resolve_diagonal(self, c, origin, raw_dir)
+    if bridge_dir is not None:
+        return None, None, bridge_dir
+    if split:
+        return split[0], split[1] if len(split) > 1 else None, None
+    return None, None, None
+
+
 def _handle_diagonal_step(self: Harvester, c: Controller, move_dir: Direction) -> bool:
     move_pos = self.current_pos.add(move_dir)
     self.return_next_dir = None
@@ -296,52 +310,49 @@ def _handle_bridge_state(self: Harvester, c: Controller) -> bool:
     return False
 
 
-def _build_first_connector(self: Harvester, c: Controller) -> bool:
-    
-    move_pos = self.current_pos
-
-    if self.harvester_pos and is_diagonal(self.current_pos, self.harvester_pos):
-        ns, ew = split_diagonal(self.current_pos, self.harvester_pos)
-        m1 = self.current_pos.add(ns)  # type: ignore
-        m2 = self.current_pos.add(ew)  # type: ignore
-        move_pos = m1 if m1.distance_squared(self.core_pos) < m2.distance_squared(self.core_pos) else m2
-
-    build_id = c.get_tile_building_id(move_pos)
-    if build_id is not None and c.get_entity_type(build_id) in {EntityType.ROAD, EntityType.CONVEYOR} and c.can_destroy(move_pos):
-        c.destroy(move_pos)
-
-    step = _planner_step_at(self, c, move_pos)
-    if step is None:
-        step = move_pos.direction_to(self.core_pos)
-    if step is None or step == Direction.CENTRE:
-        return False
-    if step not in DIRECTIONS_4:
-        split, bridge_dir = _resolve_diagonal(self, c, move_pos, step)
-        if bridge_dir is not None:
-            return _handle_diagonal_step(self, c, bridge_dir)
-        if not split:
-            return False
-        step = split[0]
-
-    if c.get_tile_building_id(move_pos) is None:
-        conveyor_cost_ti, _ = c.get_conveyor_cost()
-        if self.ti < conveyor_cost_ti:
-            return False
-    if c.can_build_conveyor(move_pos, step):
-        c.build_conveyor(move_pos, step)
-
-    if self.current_pos != move_pos:
-        step_dir = get_direction_4(self.current_pos, move_pos)
-        if c.can_move(step_dir):
-            c.move(step_dir)
-            self.return_next_dir = step
-            return True
-        return False
-    self.return_next_dir = step
-    return True
-
-
 def _build_return_step(self: Harvester, c: Controller) -> bool:
+    # On the first turn after placing a harvester, place a connector conveyor on
+    # the starting tile (choosing the closer cardinal join tile when the placement
+    # was diagonal) so the chain begins before the normal walk-back loop takes over.
+    if self.just_placed:
+        move_pos = self.current_pos
+        if self.harvester_pos and is_diagonal(self.current_pos, self.harvester_pos):
+            ns, ew = split_diagonal(self.current_pos, self.harvester_pos)
+            m1 = self.current_pos.add(ns)  # type: ignore
+            m2 = self.current_pos.add(ew)  # type: ignore
+            move_pos = m1 if m1.distance_squared(self.core_pos) < m2.distance_squared(self.core_pos) else m2
+
+        build_id = c.get_tile_building_id(move_pos)
+        if build_id is not None and c.get_entity_type(build_id) in {EntityType.ROAD, EntityType.CONVEYOR} and c.can_destroy(move_pos):
+            c.destroy(move_pos)
+
+        step = _planner_step_at(self, c, move_pos) or move_pos.direction_to(self.core_pos)
+        if step is None or step == Direction.CENTRE:
+            return False
+        if step not in DIRECTIONS_4:
+            step, _, bridge_dir = _to_cardinal(self, c, move_pos, step)
+            if bridge_dir is not None:
+                self.just_placed = False
+                return _handle_diagonal_step(self, c, bridge_dir)
+            if step is None:
+                return False
+
+        if c.get_tile_building_id(move_pos) is None:
+            conveyor_cost_ti, _ = c.get_conveyor_cost()
+            if self.ti < conveyor_cost_ti:
+                return False
+        if c.can_build_conveyor(move_pos, step):
+            c.build_conveyor(move_pos, step)
+
+        step_dir = get_direction_4(self.current_pos, move_pos) if self.current_pos != move_pos else None
+        if step_dir and not c.can_move(step_dir):
+            return False
+        self.just_placed = False
+        self.return_next_dir = step
+        if step_dir:
+            c.move(step_dir)
+        return True
+
     planner = _ensure_return_planner(self, c)
     planner_step: Direction | None = None
     planner_path: list[tuple[int, int]] = []
@@ -362,13 +373,10 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
             return False
 
         if move_dir not in DIRECTIONS_4:
-            split, bridge_dir = _resolve_diagonal(self, c, self.current_pos, move_dir)
+            move_dir, carry_next, bridge_dir = _to_cardinal(self, c, self.current_pos, move_dir)
             if bridge_dir is not None:
                 return _handle_diagonal_step(self, c, bridge_dir)
-            if split:
-                move_dir = split[0]
-                carry_next = split[1] if len(split) > 1 else None
-            else:
+            if move_dir is None:
                 return False
 
     next_dir = _next_dir_after_move(self, c, move_dir, planner_path)

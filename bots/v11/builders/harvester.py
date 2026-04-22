@@ -7,10 +7,8 @@ from utils.map.board import is_ore_axionite, is_ore_titanium
 from utils.harvester_states.foundry import _placing_foundry as _foundry_state
 from utils.harvester_states.return_to_core import (
     _attack_enemy_under_bot,
-    _build_first_connector,
     _build_return_step,
     _handle_bridge_state,
-    _harvester_attached_to_core,
     _reset_return_state,
 )
 from utils.harvester_states.seek import (
@@ -92,6 +90,8 @@ class Harvester:
         self.harvester_pos: Position | None = None
         self.just_placed = False
         self.bridge_from: Position | None = None
+        # carry-forward: direction to move on the next _build_return_step call;
+        # set by the first-connector step, diagonal splits, and post-bridge conveyor.
         self.return_next_dir: Direction | None = None
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
@@ -266,11 +266,6 @@ class Harvester:
         # Standing on an enemy walkable tile: fire until it's destroyed, then
         # resume the normal flow (post_bridge_conveyor will rebuild the chain).
         if _attack_enemy_under_bot(self, c):
-            return
-
-        if self.just_placed:
-            if _build_first_connector(self, c):
-                self.just_placed = False
             return
 
         if _handle_bridge_state(self, c):

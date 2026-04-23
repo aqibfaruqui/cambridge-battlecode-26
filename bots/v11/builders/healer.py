@@ -34,6 +34,7 @@ class Healer:
         self.core_id: int | None = None
         self.ring_idx = 0
         self._last_hp: int | None = None
+        self._patrol_only = False
 
         self.state = HealState.PATROL
         self.current_pos = Position(0, 0)
@@ -173,7 +174,8 @@ class Healer:
     def _run_patrol(self, c: Controller, took_damage: bool) -> None:
         # Try to acquire a target. If we do, the state change takes effect
         # next turn; this turn we still heal + walk the ring.
-        _try_enter_follow(self, c)
+        if not self._patrol_only:
+            _try_enter_follow(self, c)
 
         healed = False
         if self._try_heal_self(c):
@@ -187,6 +189,15 @@ class Healer:
     def run(self, c: Controller):
         if self.core_id is None:
             self._resolve_core_id(c)
+            if self.core_id is not None:
+                hp = c.get_hp(self.core_id)
+                max_hp = c.get_max_hp(self.core_id)
+                if 5 * hp < 4 * max_hp:
+                    self._patrol_only = True
+
+        if self._patrol_only and self.core_id is not None:
+            if not self._core_damaged(c):
+                 self._patrol_only = False
 
         self.current_pos = c.get_position()
         self.ti, self.ax = c.get_global_resources()

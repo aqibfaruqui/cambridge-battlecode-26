@@ -9,7 +9,6 @@ from utils.map.board import (
     is_tile_foundry,
     is_tile_splitter,
     on_core_border,
-    replace_with_conveyor,
 )
 from utils.pathfinding.movement import DIRECTIONS_4, get_direction_4
 
@@ -20,25 +19,14 @@ if TYPE_CHECKING:
 def _placing_foundry(self: Harvester, c: Controller) -> None:
     pos = self.current_pos
 
-    # Foundry placed: Wait for axionite then destroy foundry
+    # Foundry placed: wait for axionite (or timeout), then leave the foundry/splitter in place.
     if self.foundry_curr_placed:
         rounds_waiting = c.get_current_round() - self.foundry_placed_round
         if self.ax <= 0 and rounds_waiting < 40:
             return
-        cost = c.get_conveyor_cost()[0]
-        for tile in c.get_nearby_tiles(action_radius["bot"]):
-            if is_tile_splitter(c, tile) and self.ti >= cost:
-                replace_with_conveyor(c, tile, self.core_pos)
-                self.splitter_for_foundry = False
-                if self.foundry_prev_placed:
-                    self.state = type(self.state).SEEK
-                return
-            elif is_tile_foundry(c, tile) and self.ti >= cost:
-                replace_with_conveyor(c, tile, self.core_pos)
-                self.foundry_prev_placed = True
-                if not self.splitter_for_foundry:
-                    self.state = type(self.state).SEEK
-                return
+        self.foundry_prev_placed = True
+        self.splitter_for_foundry = False
+        self.state = type(self.state).SEEK
         return
 
     # Positioning: get onto a conveyor

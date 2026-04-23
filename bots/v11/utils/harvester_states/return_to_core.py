@@ -184,7 +184,14 @@ def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) ->
         and c.get_team(bid) == c.get_team()
         and c.can_destroy(bridge_pos)
     ):
+        ti, _ = c.get_global_resources()
+        bridge_cost_ti, _ = c.get_bridge_cost()
+        if ti < bridge_cost_ti:
+            return True
         c.destroy(bridge_pos)
+        if c.can_build_bridge(bridge_pos, target_pos):
+            c.build_bridge(bridge_pos, target_pos)
+            self.bridge_jump_target = target_pos
         return True
 
     if c.can_build_bridge(bridge_pos, target_pos):
@@ -358,8 +365,8 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
                 can_execute = True
             elif c.can_build_road(move_pos):
                 can_execute = True
-        if not can_execute and next_dir is not None:
-            can_execute = c.can_build_conveyor(move_pos, next_dir)
+            elif next_dir is not None:
+                can_execute = c.can_build_conveyor(move_pos, next_dir)
         if not can_execute:
             return False
 

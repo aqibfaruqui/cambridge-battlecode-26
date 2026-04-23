@@ -25,6 +25,10 @@ from utils.harvester_states.defend import (
     _defend as _defend_state,
     _try_enter_defend,
 )
+from utils.harvester_states.heal import (
+    _heal as _heal_state,
+    _try_enter_heal,
+)
 from utils.pathfinding.movement import DIRECTIONS_4, reached_core
 from utils.map.raw_map_representation import EnvironmentMap, Symmetry
 from utils.pathfinding.d_star import DStarLite
@@ -57,6 +61,7 @@ class HarvestState(Enum):
     PLACING_FOUNDRY = "placing_foundry"
     DEFEND = "defend"
     PATROL = "patrol"
+    HEAL = "heal"
 
 
 _HARVESTER_PLACEMENT_CAP = 3
@@ -118,6 +123,9 @@ class Harvester:
         self.defend_gunner_pos: Position | None = None
         self.defend_orig_conveyor_dir: Direction | None = None
         self.enemy_tile_hp: dict[tuple[int, int], int] = {}
+
+        self.heal_prev_state: HarvestState | None = None
+        self.heal_interrupt_target: Position | None = None
 
         self.harvesters_placed = 0
 
@@ -240,6 +248,7 @@ class Harvester:
             HarvestState.PLACING_FOUNDRY: (255, 255, 0),
             HarvestState.DEFEND: (255, 0, 0),
             HarvestState.PATROL: (0, 255, 200),
+            HarvestState.HEAL: (0, 255, 80),
         }
         r, g, b = state_colors.get(self.state, (255, 255, 255))
         c.draw_indicator_dot(self.current_pos, r, g, b)
@@ -257,6 +266,9 @@ class Harvester:
 
     def _defend(self, c: Controller):
         _defend_state(self, c)
+
+    def _heal(self, c: Controller):
+        _heal_state(self, c)
 
     def _seek(self, c: Controller):
         _seek_state(self, c)
@@ -336,8 +348,11 @@ class Harvester:
                     )
                     self._enemy_core_broadcasted = True
 
-        if self.state not in (HarvestState.PLACING_HARVESTER, HarvestState.DEFEND):
+        if self.state is not HarvestState.DEFEND:
             _try_enter_defend(self, c)
+
+        if self.state not in (HarvestState.DEFEND, HarvestState.HEAL, HarvestState.PLACING_HARVESTER, HarvestState.PLACING_FOUNDRY):
+            _try_enter_heal(self, c)
 
         match self.state:
             case HarvestState.SEEK:
@@ -352,6 +367,8 @@ class Harvester:
                 self._defend(c)
             case HarvestState.PATROL:
                 self._patrol(c)
+            case HarvestState.HEAL:
+                self._heal(c)
 
         self.broadcaster.run(c)
 

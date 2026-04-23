@@ -11,6 +11,7 @@ from utils.defense.combat import (
     step_toward as _step_toward,
 )
 from utils.harvester_states.return_to_core import _planner_step_at, _reset_return_state
+from utils.healing import try_heal_nearby_building
 from utils.pathfinding.movement import DIRECTIONS_4
 
 if TYPE_CHECKING:
@@ -114,6 +115,8 @@ def _handle_post_build(self: Harvester, c: Controller) -> None:
 
 
 def _defend(self: Harvester, c: Controller) -> None:
+    try_heal_nearby_building(c, self.current_pos)
+
     # Post-build phase: gunner is placed, now wait for safety and swap to a splitter.
     if self.defend_gunner_pos is not None:
         _handle_post_build(self, c)

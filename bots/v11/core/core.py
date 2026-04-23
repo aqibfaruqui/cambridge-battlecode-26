@@ -25,16 +25,27 @@ class Core:
                 return True
         return False
 
-    def _builder_bot_on_core_ring(self, c: Controller) -> bool:
+    def _builder_bots_on_core_ring_count(self, c: Controller) -> int:
         core_pos = c.get_position()
+        count = 0
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
                 if dx == 0 and dy == 0:
                     continue
                 p = Position(core_pos.x + dx, core_pos.y + dy)
                 if c.get_tile_builder_bot_id(p) is not None:
-                    return True
-        return False
+                    count += 1
+        return count
+
+    def _builders_on_core_allowed(self, c: Controller) -> int:
+        my_id = c.get_id()
+        hp = c.get_hp(my_id)
+        max_hp = c.get_max_hp(my_id)
+        if 5 * hp < 3 * max_hp:
+            return 4
+        if 5 * hp < 4 * max_hp:
+            return 2
+        return 0
 
     def _healer_alive(self, c: Controller) -> bool:
         if self.healer_id is None:
@@ -50,7 +61,7 @@ class Core:
     def _should_spawn_healer(self, c: Controller) -> bool:
         if not self._has_enemy_builder_bot_in_vision(c):
             return False
-        if self._builder_bot_on_core_ring(c):
+        if self._builder_bots_on_core_ring_count(c) > self._builders_on_core_allowed(c):
             return False
         return True
 

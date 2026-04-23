@@ -2,9 +2,20 @@ import heapq
 import math
 from typing import List, Tuple
 
-from cambc import Direction
+from cambc import Direction, GameConstants
 
 from utils.map.raw_map_representation import EnvironmentMap
+
+_BRIDGE_D = math.ceil(math.sqrt(GameConstants.BRIDGE_TARGET_RADIUS_SQ))
+# All offsets that require a bridge (more than one step but within bridge range).
+# Excludes the 8 adjacent neighbours (dist_sq <= 2) handled by normal moves.
+_BRIDGE_JUMPS: list[tuple[int, int]] = [
+    (dx, dy)
+    for dy in range(-_BRIDGE_D, _BRIDGE_D + 1)
+    for dx in range(-_BRIDGE_D, _BRIDGE_D + 1)
+    if 2 < dx * dx + dy * dy <= GameConstants.BRIDGE_TARGET_RADIUS_SQ
+]
+_BRIDGE_JUMP_COST = 5.0
 
 _INF = float("inf")
 _SQRT2 = math.sqrt(2)
@@ -18,6 +29,16 @@ _NEIGHBOURS = (
     (-1, 1, _SQRT2, Direction.SOUTHWEST),
     (-1, 0, 1.0, Direction.WEST),
     (-1, -1, _SQRT2, Direction.NORTHWEST),
+)
+_NEIGHBOURS_BRIDGE = (
+    (0, -1, 1.0, Direction.NORTH),
+    (1, -1, _BRIDGE_JUMP_COST, Direction.NORTHEAST),
+    (1, 0, 1.0, Direction.EAST),
+    (1, 1, _BRIDGE_JUMP_COST, Direction.SOUTHEAST),
+    (0, 1, 1.0, Direction.SOUTH),
+    (-1, 1, _BRIDGE_JUMP_COST, Direction.SOUTHWEST),
+    (-1, 0, 1.0, Direction.WEST),
+    (-1, -1, _BRIDGE_JUMP_COST, Direction.NORTHWEST),
 )
 
 _UNKNOWN = 0
@@ -69,6 +90,8 @@ class DStarLite:
         "_block_mask",
         "_dynamic_blocked",
         "_unknown_cost",
+        "_use_bridges",
+        "_diag_cost",
     )
 
     def __init__(
@@ -79,6 +102,7 @@ class DStarLite:
         *,
         block_mask: int = _DEFAULT_BLOCK_MASK,
         unknown_cost: float = 1.0,
+        use_bridges: bool = False,
     ):
         self._env = env
         self._w = env._w
@@ -106,6 +130,8 @@ class DStarLite:
         self._snapshot = bytearray(env._array)
         self._dynamic_blocked: set[int] = set()
         self._unknown_cost = unknown_cost
+        self._use_bridges = use_bridges
+        self._diag_cost = _BRIDGE_JUMP_COST if use_bridges else _SQRT2
 
     # ---------- Public API ----------
 
@@ -162,6 +188,14 @@ class DStarLite:
                     recompute(i + 1)
 
                 recompute(i)
+
+                if self._use_bridges:
+                    for jdx, jdy in _BRIDGE_JUMPS:
+                        px = x - jdx
+                        py = y - jdy
+                        if 0 <= px < w and 0 <= py < h:
+                            recompute(py * w + px)
+
             i += 1
 
         self._compute_shortest_path()
@@ -210,8 +244,9 @@ class DStarLite:
 
         best = None
         best_cost = _INF
+        neighbours = _NEIGHBOURS_BRIDGE if self._use_bridges else _NEIGHBOURS
 
-        for dx, dy, cost, d in _NEIGHBOURS:
+        for dx, dy, cost, d in neighbours:
             xx = x + dx
             if xx < 0 or xx >= w:
                 continue
@@ -230,10 +265,71 @@ class DStarLite:
 
         return best
 
+    def step_xy(self) -> tuple[int, int] | None:
+        """Like step(), but returns (x, y) of the next cell.
+        When use_bridges=True this can return a cell at bridge-jump distance."""
+        if self._start == self._goal:
+            return (self._goal % self._w, self._goal // self._w)
+
+        self._compute_shortest_path()
+
+        g = self._g
+        start = self._start
+        if g[start] == _INF:
+            return None
+
+        w = self._w
+        h = self._h
+        x = start % w
+        y = start // w
+        arr = self._env._array
+        mask = self._block_mask
+        dyn = self._dynamic_blocked
+
+        best_idx: int | None = None
+        best_cost = _INF
+        neighbours = _NEIGHBOURS_BRIDGE if self._use_bridges else _NEIGHBOURS
+
+        for dx, dy, cost, _ in neighbours:
+            xx = x + dx
+            if xx < 0 or xx >= w:
+                continue
+            yy = y + dy
+            if yy < 0 or yy >= h:
+                continue
+            s = yy * w + xx
+            if s in dyn:
+                continue
+            if (mask >> arr[s]) & 1:
+                continue
+            v = cost + g[s]
+            if v < best_cost:
+                best_cost = v
+                best_idx = s
+
+        if self._use_bridges:
+            for jdx, jdy in _BRIDGE_JUMPS:
+                jx = x + jdx
+                jy = y + jdy
+                if 0 <= jx < w and 0 <= jy < h:
+                    s = jy * w + jx
+                    if s in dyn:
+                        continue
+                    if (mask >> arr[s]) & 1:
+                        continue
+                    v = _BRIDGE_JUMP_COST + g[s]
+                    if v < best_cost:
+                        best_cost = v
+                        best_idx = s
+
+        if best_idx is None:
+            return None
+        return (best_idx % w, best_idx // w)
+
     def plan(self) -> None:
         self._compute_shortest_path()
 
-    def extract_path_lines(self) -> list[tuple[float, float, float, float]]:
+    def extract_path_lines(self) -> list[tuple[int, int, int, int]]:
         """Return line segments [(x1,y1,x2,y2), ...] for rendering."""
         pts = self.extract_path()
         if len(pts) < 2:
@@ -356,6 +452,13 @@ class DStarLite:
             if also_self:
                 recompute(u)
 
+            if self._use_bridges:
+                for jdx, jdy in _BRIDGE_JUMPS:
+                    px = x - jdx
+                    py = y - jdy
+                    if 0 <= px < w and 0 <= py < h:
+                        recompute(py * w + px)
+
             if not open_heap:
                 break
 
@@ -381,6 +484,8 @@ class DStarLite:
         start = self._start
         dyn = self._dynamic_blocked
         unk_cost = self._unknown_cost
+        diag_cost = self._diag_cost
+        diag_unk_cost = diag_cost if self._use_bridges else diag_cost * unk_cost
 
         min_rhs = _INF
 
@@ -420,28 +525,28 @@ class DStarLite:
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                    v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u - w + 1  # NE
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                    v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u + w - 1  # SW
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                    v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
                     if v < min_rhs:
                         min_rhs = v
             s = u + w + 1  # SE
             if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                 gs = g[s]
                 if gs < min_rhs:
-                    v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                    v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
                     if v < min_rhs:
                         min_rhs = v
         else:
@@ -459,7 +564,7 @@ class DStarLite:
                     if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                         gs = g[s]
                         if gs < min_rhs:
-                            v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                            v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
                             if v < min_rhs:
                                 min_rhs = v
                 if x < w - 1:
@@ -467,7 +572,7 @@ class DStarLite:
                     if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                         gs = g[s]
                         if gs < min_rhs:
-                            v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                            v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
                             if v < min_rhs:
                                 min_rhs = v
             if y < h - 1:
@@ -483,7 +588,7 @@ class DStarLite:
                     if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                         gs = g[s]
                         if gs < min_rhs:
-                            v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                            v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
                             if v < min_rhs:
                                 min_rhs = v
                 if x < w - 1:
@@ -491,7 +596,7 @@ class DStarLite:
                     if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
                         gs = g[s]
                         if gs < min_rhs:
-                            v = (_SQRT2 * unk_cost if arr[s] == 0 else _SQRT2) + gs
+                            v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
                             if v < min_rhs:
                                 min_rhs = v
             if x > 0:
@@ -508,6 +613,17 @@ class DStarLite:
                     gs = g[s]
                     if gs < min_rhs:
                         v = (unk_cost if arr[s] == 0 else 1.0) + gs
+                        if v < min_rhs:
+                            min_rhs = v
+
+        if self._use_bridges:
+            for jdx, jdy in _BRIDGE_JUMPS:
+                jx = x + jdx
+                jy = y + jdy
+                if 0 <= jx < w and 0 <= jy < h:
+                    s = jy * w + jx
+                    if s == start or (s not in dyn and not (mask >> arr[s]) & 1):
+                        v = _BRIDGE_JUMP_COST + g[s]
                         if v < min_rhs:
                             min_rhs = v
 

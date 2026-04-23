@@ -19,7 +19,7 @@ _SENTINEL_ATTACK_RADIUS_SQ = 32
 _GUNNER_ATTACK_RADIUS_SQ = 9
 
 _FRIENDLY_REPLACE_TYPES = frozenset({EntityType.SENTINEL, EntityType.GUNNER, EntityType.ROAD})
-_HIJACK_TYPES = frozenset({EntityType.CONVEYOR, EntityType.BRIDGE})
+_HIJACK_TYPES = frozenset({EntityType.CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER})
 
 
 def _execute_replacement(self: Attacker, c: Controller) -> bool:

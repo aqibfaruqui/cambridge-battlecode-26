@@ -34,7 +34,7 @@ _ORBIT_OFFSETS = (
     (-5, 5),
 )
 
-_HIJACK_TYPES = (EntityType.CONVEYOR, EntityType.BRIDGE)
+_HIJACK_TYPES = (EntityType.CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER)
 
 # Relays that forward resources — traced to see if a candidate conveyor
 # ultimately feeds one of our own turrets.
@@ -45,7 +45,25 @@ _RELAY_TYPES = frozenset({
     EntityType.SPLITTER,
 })
 
+# A lone splitter relays nothing — only hijack if at least one cardinal
+# neighbor is part of a resource network (relay or foundry).
+_SPLITTER_NETWORK_TYPES = _RELAY_TYPES | {EntityType.FOUNDRY}
+_CARDINAL = (Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST)
+
 _FRIENDLY_TURRET_TYPES = frozenset({EntityType.GUNNER, EntityType.SENTINEL})
+
+
+def _splitter_is_networked(c: Controller, pos: Position) -> bool:
+    for d in _CARDINAL:
+        np = pos.add(d)
+        if not c.is_in_vision(np):
+            continue
+        bld_id = c.get_tile_building_id(np)
+        if bld_id is None:
+            continue
+        if c.get_entity_type(bld_id) in _SPLITTER_NETWORK_TYPES:
+            return True
+    return False
 
 
 def _chain_feeds_friendly_turret(
@@ -135,6 +153,9 @@ def _pick_target(self: Attacker, c: Controller):
         conv_pos = c.get_position(bld_id)
         key = (conv_pos.x, conv_pos.y)
         if key in self.blacklist:
+            continue
+
+        if etype == EntityType.SPLITTER and not _splitter_is_networked(c, conv_pos):
             continue
 
         # Skip if any enemy launcher is in the 3x3 pickup ring.

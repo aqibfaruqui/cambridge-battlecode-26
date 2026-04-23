@@ -329,7 +329,7 @@ class DStarLite:
     def plan(self) -> None:
         self._compute_shortest_path()
 
-    def extract_path_lines(self) -> list[tuple[float, float, float, float]]:
+    def extract_path_lines(self) -> list[tuple[int, int, int, int]]:
         """Return line segments [(x1,y1,x2,y2), ...] for rendering."""
         pts = self.extract_path()
         if len(pts) < 2:

@@ -186,6 +186,7 @@ class Attacker:
         if self.state == AttackState.APPROACH:
             assert self.target_conveyor is not None
             self.target_pos = self.target_conveyor
+            c.draw_indicator_line(self.current_pos, self.target_pos, 255, 0, 255)
             if self.current_pos == self.target_conveyor:
                 self.state = AttackState.REPLACE
             else:

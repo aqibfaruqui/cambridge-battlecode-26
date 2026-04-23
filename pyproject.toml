@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12.3"
 dependencies = [
     "anthropic>=0.92.0",
-    "cambc==1.7.0",
+    "cambc>=1.7.1",
     "numpy>=2.4.4",
     "pre-commit>=4.5.1",
     "py-spy>=0.4.1",

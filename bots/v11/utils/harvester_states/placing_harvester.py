@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from cambc import Controller, Direction, EntityType, Position
+from cambc import Controller, Direction, EntityType, Environment, Position
 
 from utils.harvester_states.return_to_core import _reset_return_state
 from utils.pathfinding.movement import DIRECTIONS_4
@@ -51,7 +51,8 @@ def _finish_build(self: Harvester, c: Controller) -> None:
     build_id = c.get_tile_building_id(ore_pos)
     if (
         build_id is not None
-        and c.get_entity_type(build_id) in {EntityType.ROAD, EntityType.CONVEYOR, EntityType.MARKER}
+        and c.get_entity_type(build_id)
+        in {EntityType.ROAD, EntityType.CONVEYOR, EntityType.MARKER}
         and c.can_destroy(ore_pos)
         and c.get_global_resources()[0] >= c.get_harvester_cost()[0]
     ):
@@ -134,14 +135,21 @@ def _do_step_off(self: Harvester, c: Controller, ore_pos: Position) -> None:
         if d in DIRECTIONS_4:
             preferred = d
 
-    if preferred is not None and c.can_move(preferred):
+    def _tile_is_open(move_dir: Direction) -> bool:
+        next_pos = ore_pos.add(move_dir)
+        return (
+            c.get_tile_env(next_pos) == Environment.EMPTY
+            and c.get_tile_builder_bot_id(next_pos) is None
+        )
+
+    if preferred is not None and c.can_move(preferred) and _tile_is_open(preferred):
         c.move(preferred)
         return
 
     for d in DIRECTIONS_4:
         if d == preferred:
             continue
-        if c.can_move(d):
+        if c.can_move(d) and _tile_is_open(d):
             c.move(d)
             return
 

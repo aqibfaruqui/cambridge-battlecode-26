@@ -48,8 +48,6 @@ class Core:
         return c.spawn_builder(spawn_pos)
 
     def _should_spawn_healer(self, c: Controller) -> bool:
-        if self._healer_alive(c):
-            return False
         if not self._has_enemy_builder_bot_in_vision(c):
             return False
         if self._builder_bot_on_core_ring(c):

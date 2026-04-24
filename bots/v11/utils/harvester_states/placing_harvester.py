@@ -113,6 +113,14 @@ def _do_ring(self: Harvester, c: Controller, ore_pos: Position) -> None:
             continue
         side_pos = ore_pos.add(side)
         flow = side.opposite()
+        bid = c.get_tile_building_id(side_pos)
+        if (
+            bid is not None
+            and c.get_entity_type(bid) in {EntityType.MARKER, EntityType.ROAD}
+            and c.can_destroy(side_pos)
+            and c.get_global_resources()[0] >= c.get_conveyor_cost()[0]
+        ):
+            c.destroy(side_pos)
         if c.can_build_conveyor(side_pos, flow):
             c.build_conveyor(side_pos, flow)
             built = True

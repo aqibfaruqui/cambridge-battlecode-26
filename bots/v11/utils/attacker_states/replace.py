@@ -44,12 +44,12 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
                     self._attack_target_key = key
                     self._attack_turns = 0
                     self._attack_max_hp = c.get_max_hp(bld_id)
-                self._attack_turns += 1
-                if self._attack_turns > 10 and c.get_hp(bld_id) * 2 >= self._attack_max_hp:
+                if self._attack_turns >= 1 and c.get_hp(bld_id) > self._attack_max_hp - 2:
                     self.blacklist[key] = c.get_current_round()
                     return True
                 if c.can_fire(me):
                     c.fire(me)
+                    self._attack_turns += 1
             elif c.can_move(me.direction_to(target)):
                 c.move(me.direction_to(target))
             return False

@@ -64,9 +64,13 @@ def _finish_build(self: Harvester, c: Controller) -> None:
     c.build_harvester(ore_pos)
     self.harvesters_placed += 1
     if self.placing_is_titanium:
+        self.titanium_harvesters_placed += 1
         self.titanium_found = True
+        self.returning_from_axionite = False
     else:
+        self.axionite_harvesters_placed += 1
         self.axionite_found = True
+        self.returning_from_axionite = True
     self.blacklisted_ores.discard((ore_pos.x, ore_pos.y))
     self.target_pos = None
     self.seek_target_is_ore = False

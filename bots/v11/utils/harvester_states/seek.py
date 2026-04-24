@@ -253,28 +253,31 @@ def _pick_seek_target(
     blocked = set(self.blacklisted_ores) | self.blacklisted_seek_targets | claimed
     lane_axis, lane_sign = _explore_lane(self)
 
-    ore = _pick_ore_target(
-        self,
-        pos,
-        blocked,
-        lambda b: env.nearest_known_titanium(pos, b, observed_only=True),
-        c,
-    )
-    if ore is not None:
-        return ore, True
+    axionite_unlocked = self._axionite_unlocked(c)
 
-    if env.symmetry is not None:
+    if not axionite_unlocked:
         ore = _pick_ore_target(
             self,
             pos,
             blocked,
-            lambda b: env.nearest_predicted_titanium(pos, b),
+            lambda b: env.nearest_known_titanium(pos, b, observed_only=True),
             c,
         )
         if ore is not None:
             return ore, True
 
-    if self.titanium_found and not self.axionite_found and not self.foundry_prev_placed:
+        if env.symmetry is not None:
+            ore = _pick_ore_target(
+                self,
+                pos,
+                blocked,
+                lambda b: env.nearest_predicted_titanium(pos, b),
+                c,
+            )
+            if ore is not None:
+                return ore, True
+
+    if axionite_unlocked:
         ore = _pick_ore_target(
             self,
             pos,

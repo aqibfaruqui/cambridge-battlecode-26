@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 _MAX_FRIENDLY_SENTINELS_IN_VISION = 3
 
 # Turns a hard-failed target stays blacklisted before we retry.
-_BLACKLIST_TTL = 30
+_BLACKLIST_TTL = 10
 
 # Give up on an orbit waypoint after this many turns pursuing it.
 _ORBIT_STUCK_TURNS = 30

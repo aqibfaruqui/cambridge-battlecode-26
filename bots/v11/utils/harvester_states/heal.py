@@ -56,7 +56,7 @@ def _heal(self: Harvester, c: Controller) -> None:
     from builders.harvester import HarvestState
 
     # Validate current target — drop it if fully healed, gone, or no longer ours.
-    if self.heal_interrupt_target is not None:
+    if self.heal_interrupt_target is not None and c.is_in_vision(self.heal_interrupt_target):
         bid = c.get_tile_building_id(self.heal_interrupt_target)
         if (
             bid is None

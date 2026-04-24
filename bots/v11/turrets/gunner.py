@@ -18,12 +18,14 @@ _PRIORITY = (
     EntityType.SPLITTER,
 )
 _FIRE_TYPES = frozenset(_PRIORITY)
-_RELAY_TYPES = frozenset({
-    EntityType.CONVEYOR,
-    EntityType.ARMOURED_CONVEYOR,
-    EntityType.BRIDGE,
-    EntityType.SPLITTER,
-})
+_RELAY_TYPES = frozenset(
+    {
+        EntityType.CONVEYOR,
+        EntityType.ARMOURED_CONVEYOR,
+        EntityType.BRIDGE,
+        EntityType.SPLITTER,
+    }
+)
 
 
 class Gunner:
@@ -62,11 +64,17 @@ class Gunner:
         best: list[tuple[Position, int] | None] = [None] * len(_PRIORITY)
         for dir in DIRECTIONS_8:
             for dist in range(1, 4):
-                target = my_pos 
+                target = my_pos
                 for _ in range(dist):
                     target = target.add(dir)
 
-                if not c.is_in_vision(target):
+                if (
+                    not c.is_in_vision(target)
+                    or target.x < 0
+                    or target.y < 0
+                    or target.x >= c.get_map_width()
+                    or target.y >= c.get_map_height()
+                ):
                     break
 
                 if c.get_tile_env(target) == Environment.WALL:
@@ -101,7 +109,6 @@ class Gunner:
                         priority = _PRIORITY.index(etype)
                         best[priority] = (target, dist)
                     break
-                    
 
         for cur in best:
             if cur is None:

@@ -144,9 +144,9 @@ def _defend_healer(self: Healer, c: Controller) -> None:
         step_toward(c, me, tile)
         return
 
-    if tile_bid is not None and c.can_destroy(tile):
-        c.destroy(tile)
-        tile_bid = c.get_tile_building_id(tile)
+    if tile_bid is not None and c.can_heal(tile):
+        c.heal(tile)
+        return
 
     if tile_bid is None:
         nearest = nearest_enemy_pos(c)

@@ -164,10 +164,20 @@ def _defend(self: Harvester, c: Controller) -> None:
     if dist_sq > 2:
         _step_toward(c, me, tile)
         return
+    
+    if tile_bid is not None:
+        if c.get_entity_type(tile_bid) == EntityType.CONVEYOR:
+            d = c.get_direction(tile_bid)
+            maybe_harvester = c.get_tile_building_id(c.get_position(tile_bid).add(d))
+            if maybe_harvester is not None and c.get_entity_type(maybe_harvester) == EntityType.HARVESTER:
+                if c.can_build_gunner(tile, tile.direction_to(enemy_pos if enemy_pos is not None else me)):
+                    c.build_gunner(tile, tile.direction_to(enemy_pos if enemy_pos is not None else me))
+                    self.defend_gunner_pos = tile
+                return
 
-    if tile_bid is not None and c.can_destroy(tile):
-        c.destroy(tile)
-        tile_bid = c.get_tile_building_id(tile)
+    if tile_bid is not None and c.can_heal(tile):
+        c.heal(tile)
+        return
 
     if tile_bid is None:
         nearest = _nearest_enemy_pos(c)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from cambc import Controller, Direction, EntityType
+from cambc import Controller, Direction, EntityType, Position, ResourceType
 
 from utils.attacker_states.state import AttackState
 
@@ -20,6 +20,86 @@ _GUNNER_ATTACK_RADIUS_SQ = 9
 
 _FRIENDLY_REPLACE_TYPES = frozenset({EntityType.SENTINEL, EntityType.GUNNER, EntityType.ROAD})
 _HIJACK_TYPES = frozenset({EntityType.CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER})
+
+# Cardinal-reachable predecessors. Bridges are handled separately since they
+# teleport and therefore aren't adjacent to their exit tile.
+_PREDECESSOR_RELAYS = frozenset({
+    EntityType.CONVEYOR,
+    EntityType.ARMOURED_CONVEYOR,
+    EntityType.SPLITTER,
+})
+_CARDINAL = (Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST)
+
+
+def _flows_into(
+    c: Controller,
+    pred_pos: Position,
+    pred_id: int,
+    etype: EntityType,
+    target: Position,
+) -> bool:
+    facing = c.get_direction(pred_id)
+    if facing == Direction.CENTRE:
+        return False
+    if etype == EntityType.SPLITTER:
+        out_dirs = (
+            facing,
+            facing.rotate_left().rotate_left(),
+            facing.rotate_right().rotate_right(),
+        )
+    else:
+        out_dirs = (facing,)
+    for od in out_dirs:
+        out = pred_pos.add(od)
+        if out.x == target.x and out.y == target.y:
+            return True
+    return False
+
+
+def _titanium_reaches(c: Controller, target: Position) -> bool:
+    """Backward-trace the relay graph from `target`; True iff some upstream
+    relay in vision currently stores TITANIUM. Adjacency only finds
+    conveyors/splitters; bridges are pre-indexed by their exit tile."""
+    W, H = c.get_map_width(), c.get_map_height()
+
+    bridges_by_exit: dict[tuple[int, int], list[int]] = {}
+    for bid in c.get_nearby_buildings():
+        if c.get_entity_type(bid) != EntityType.BRIDGE:
+            continue
+        ex = c.get_bridge_target(bid)
+        bridges_by_exit.setdefault((ex.x, ex.y), []).append(bid)
+
+    visited: set[tuple[int, int]] = set()
+    stack: list[Position] = [target]
+    while stack:
+        pos = stack.pop()
+        key = (pos.x, pos.y)
+        if key in visited:
+            continue
+        visited.add(key)
+
+        for d in _CARDINAL:
+            pred = pos.add(d)
+            if not (0 <= pred.x < W and 0 <= pred.y < H) or not c.is_in_vision(pred):
+                continue
+            pred_id = c.get_tile_building_id(pred)
+            if pred_id is None:
+                continue
+            etype = c.get_entity_type(pred_id)
+            if etype not in _PREDECESSOR_RELAYS:
+                continue
+            if not _flows_into(c, pred, pred_id, etype, pos):
+                continue
+            if c.get_stored_resource(pred_id) == ResourceType.TITANIUM:
+                return True
+            stack.append(pred)
+
+        for bid in bridges_by_exit.get(key, ()):
+            if c.get_stored_resource(bid) == ResourceType.TITANIUM:
+                return True
+            stack.append(c.get_position(bid))
+
+    return False
 
 
 def _execute_replacement(self: Attacker, c: Controller) -> bool:
@@ -62,6 +142,11 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
             if c.can_destroy(target):
                 c.destroy(target)
             return False
+
+    # Turrets are expensive — only commit if titanium is still flowing here.
+    if not _titanium_reaches(c, target):
+        self.blacklist[(target.x, target.y)] = c.get_current_round()
+        return True
 
     # Step off (move cd is separate from action cd, so the build below chains).
     if me == target:

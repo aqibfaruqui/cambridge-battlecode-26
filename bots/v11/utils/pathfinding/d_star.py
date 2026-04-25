@@ -69,6 +69,10 @@ _SEEK_BLOCK_MASK = (
     | (1 << _ORE_AXIONITE)
     | (1 << _ENEMY_CORE)
 )
+_BRIDGE_WALK_BLOCK_MASK = (
+    (1 << _WALL)
+    | (1 << _ENEMY_CORE)
+)
 
 
 class DStarLite:

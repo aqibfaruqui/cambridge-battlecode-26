@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from cambc import Direction, EntityType, Environment, Position, Controller, ResourceType
 
-from utils.pathfinding.d_star import DStarLite, _RETURN_BLOCK_MASK, _SEEK_BLOCK_MASK
+from utils.pathfinding.d_star import DStarLite, _BRIDGE_WALK_BLOCK_MASK, _RETURN_BLOCK_MASK
 from utils.pathfinding.movement import (
     DIRECTIONS_4,
     get_direction_4,
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 _MAX_BRIDGE_FAILS = 3
 _FOUNDRY_JOIN_DEBUG = True
+_BRIDGE_JUMP_DEBUG = True
 
 _ENEMY_WALKABLE_TYPES = (
     EntityType.CONVEYOR,
@@ -34,7 +35,19 @@ def _debug_foundry_join(c: Controller, reason: str, pos: Position | None = None)
     if not _FOUNDRY_JOIN_DEBUG:
         return
     suffix = "" if pos is None else f" pos=({pos.x},{pos.y})"
-    print(f"[foundry_join] r={c.get_current_round()} {reason}{suffix}", file=sys.stderr)
+    print(
+        f"[foundry_join] id={c.get_id()} r={c.get_current_round()} {reason}{suffix}",
+        file=sys.stderr,
+    )
+
+
+def _debug_bridge(c: Controller, reason: str, extra: str = "") -> None:
+    if not _BRIDGE_JUMP_DEBUG:
+        return
+    print(
+        f"[bridge_jump] id={c.get_id()} r={c.get_current_round()} {reason}{(' ' + extra) if extra else ''}",
+        file=sys.stderr,
+    )
 
 
 def _reset_return_state(self: Harvester):
@@ -182,10 +195,14 @@ def _try_join_axionite_to_titanium_chain(
     if not self.returning_from_axionite:
         return False
     if self.foundry_prev_placed:
+        _debug_foundry_join(c, "skip_foundry_already_marked", join_pos)
         return False
 
     if self.harvester_pos is not None and join_pos.distance_squared(self.harvester_pos) <= 2:
         _debug_foundry_join(c, "skip_too_close_to_source", join_pos)
+        return False
+    if _near_allied_harvester(c, join_pos):
+        _debug_foundry_join(c, "skip_near_harvester_ring", join_pos)
         return False
 
     join_id = _allied_conveyor_at(c, join_pos)
@@ -277,6 +294,7 @@ def _handle_post_bridge_conveyor(self: Harvester, c: Controller) -> bool:
             if tile_empty and c.can_build_conveyor(self.current_pos, conveyor_dir):
                 c.build_conveyor(self.current_pos, conveyor_dir)
                 self.return_next_dir = conveyor_dir
+
             self.post_bridge_conveyor = False
 
     return True
@@ -287,11 +305,14 @@ def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) ->
     bridge_pos = self.current_pos
 
     if self.bridge_jump_target is not None:
+        _debug_bridge(c, "walk_resume", f"cur=({self.current_pos.x},{self.current_pos.y}) target=({self.bridge_jump_target.x},{self.bridge_jump_target.y})")
         return _walk_toward_bridge_target(self, c)
 
     bid = c.get_tile_building_id(bridge_pos)
     if bid is not None and c.get_entity_type(bid) == EntityType.BRIDGE and c.get_team(bid) == c.get_team():
+        _debug_bridge(c, "bridge_exists_start_walk", f"cur=({bridge_pos.x},{bridge_pos.y}) target=({target_pos.x},{target_pos.y})")
         self.bridge_jump_target = target_pos
+        self.bridge_target_planner = None
         return _walk_toward_bridge_target(self, c)
 
     entity_type = c.get_entity_type(bid) if bid is not None else None
@@ -304,25 +325,34 @@ def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) ->
         ti, _ = c.get_global_resources()
         bridge_cost_ti, _ = c.get_bridge_cost()
         if ti < bridge_cost_ti:
+            _debug_bridge(c, "wait_ti_for_bridge_destroy", f"ti={ti} need={bridge_cost_ti}")
             return True
         c.destroy(bridge_pos)
         if c.can_build_bridge(bridge_pos, target_pos):
             c.build_bridge(bridge_pos, target_pos)
+            _debug_bridge(c, "built_bridge_after_destroy", f"from=({bridge_pos.x},{bridge_pos.y}) to=({target_pos.x},{target_pos.y})")
             self.bridge_jump_target = target_pos
+            self.bridge_target_planner = None
+        else:
+            _debug_bridge(c, "cannot_build_bridge_after_destroy", f"from=({bridge_pos.x},{bridge_pos.y}) to=({target_pos.x},{target_pos.y})")
         return True
 
     if c.can_build_bridge(bridge_pos, target_pos):
         c.build_bridge(bridge_pos, target_pos)
+        _debug_bridge(c, "built_bridge", f"from=({bridge_pos.x},{bridge_pos.y}) to=({target_pos.x},{target_pos.y})")
         self.bridge_jump_target = target_pos
+        self.bridge_target_planner = None
         return True
 
     ti, _ = c.get_global_resources()
     bridge_cost_ti, _ = c.get_bridge_cost()
+    _debug_bridge(c, "cannot_build_bridge", f"from=({bridge_pos.x},{bridge_pos.y}) to=({target_pos.x},{target_pos.y}) ti={ti} need={bridge_cost_ti} existing={entity_type}")
     if ti >= bridge_cost_ti:
         key = (bridge_pos.x, bridge_pos.y, target_pos.x, target_pos.y)
         fails = self.return_bridge_fail_counts.get(key, 0) + 1
         self.return_bridge_fail_counts[key] = fails
         if fails >= _MAX_BRIDGE_FAILS:
+            _debug_bridge(c, "bridge_fail_reset_planner", f"key={key} fails={fails}")
             self.return_planner = None
             self.return_bridge_fail_counts.pop(key, None)
     return True
@@ -334,7 +364,7 @@ def _ensure_bridge_target_planner(self: Harvester, c: Controller, target: Positi
             self.environment_map,
             target.x,
             target.y,
-            block_mask=_SEEK_BLOCK_MASK,
+            block_mask=_BRIDGE_WALK_BLOCK_MASK,
         )
     p = self.bridge_target_planner
     if p is not None:
@@ -344,12 +374,81 @@ def _ensure_bridge_target_planner(self: Harvester, c: Controller, target: Positi
     return p
 
 
+def _complete_return_from_bridge(self: Harvester, c: Controller) -> None:
+    if self._can_trigger_foundry(c):
+        self.state = type(self.state).PLACING_FOUNDRY
+    elif self.harvesters_placed >= 1:
+        self.patrol_tip = self.harvester_pos
+        self.patrol_turns = 0
+        self.patrol_target = None
+        self.patrol_going_out = True
+        self.state = type(self.state).PATROL
+    else:
+        self.state = type(self.state).SEEK
+    self.target_pos = None
+    self.seek_target_is_ore = False
+    self.harvester_pos = None
+    self.returning_from_axionite = False
+    _reset_return_state(self)
+
+
+_BRIDGE_WALKABLE_TYPES = (
+    EntityType.CONVEYOR,
+    EntityType.BRIDGE,
+    EntityType.SPLITTER,
+    EntityType.ROAD,
+)
+
+
+def _can_execute_bridge_walk_step(c: Controller, move_dir: Direction) -> bool:
+    """Return True if the bridge-walk can proceed in move_dir this round."""
+    move_pos = c.get_position().add(move_dir)
+    if c.can_move(move_dir):
+        return True
+    if not _on_map(c, move_pos):
+        if _BRIDGE_JUMP_DEBUG:
+            print(f"[bridge_walk_step] r={c.get_current_round()} dir={move_dir} BLOCKED:off_map pos=({move_pos.x},{move_pos.y})", file=sys.stderr)
+        return False
+    tile_env = c.get_tile_env(move_pos)
+    build_id = c.get_tile_building_id(move_pos)
+    if build_id is not None:
+        etype = c.get_entity_type(build_id)
+        # Markers are walkable and we can build over them.
+        if etype == EntityType.MARKER:
+            return True
+        # Walkable building types (per game docs): can step onto them even if
+        # can_move is False; caller handles destruction when needed.
+        if etype in _BRIDGE_WALKABLE_TYPES:
+            if _BRIDGE_JUMP_DEBUG:
+                print(f"[bridge_walk_step] r={c.get_current_round()} dir={move_dir} WALKABLE_BUILDING:{etype} can_move=False pos=({move_pos.x},{move_pos.y})", file=sys.stderr)
+            return True
+        if _BRIDGE_JUMP_DEBUG:
+            print(f"[bridge_walk_step] r={c.get_current_round()} dir={move_dir} BLOCKED:building={etype} pos=({move_pos.x},{move_pos.y})", file=sys.stderr)
+        return False
+    # No building: empty tiles and tiles where we can build a road are reachable.
+    # Empty land tiles are directly walkable; water tiles need a road first.
+    if tile_env == Environment.EMPTY:
+        return True
+    if c.can_build_road(move_pos):
+        return True
+    if _BRIDGE_JUMP_DEBUG:
+        print(f"[bridge_walk_step] r={c.get_current_round()} dir={move_dir} BLOCKED:env={tile_env} pos=({move_pos.x},{move_pos.y})", file=sys.stderr)
+    return False
+
 def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
     target = self.bridge_jump_target
     if target is None:
         return False
 
+    _debug_bridge(c, "walk_tick", f"cur=({self.current_pos.x},{self.current_pos.y}) target=({target.x},{target.y}) core=({self.core_pos.x},{self.core_pos.y})")
+
+    if reached_core(target, self.core_pos):
+        _debug_bridge(c, "walk_target_is_core_complete")
+        _complete_return_from_bridge(self, c)
+        return True
+
     if self.current_pos == target:
+        _debug_bridge(c, "walk_reached_target_set_post_conveyor", f"pos=({target.x},{target.y})")
         self.bridge_jump_target = None
         self.bridge_target_planner = None
         self.post_bridge_conveyor = True
@@ -357,24 +456,85 @@ def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
 
     p = _ensure_bridge_target_planner(self, c, target)
     move_dir = None
+    planner_dir = None
     if p is not None:
         d = p.step()
-        if d is not None and d != Direction.CENTRE:
+        planner_dir = d
+        if (
+            d is not None
+            and d != Direction.CENTRE
+            and _can_execute_bridge_walk_step(c, d)
+        ):
             move_dir = d
 
     if move_dir is None:
-        move_dir = self.current_pos.direction_to(target)
+        direct_dir = self.current_pos.direction_to(target)
+        if (
+            direct_dir is not None
+            and direct_dir != Direction.CENTRE
+            and _can_execute_bridge_walk_step(c, direct_dir)
+        ):
+            move_dir = direct_dir
+        else:
+            _debug_bridge(c, "walk_no_move", f"planner_dir={planner_dir} direct_dir={direct_dir} can_move_direct={c.can_move(direct_dir) if direct_dir else 'N/A'}")
+
     if move_dir is None or move_dir == Direction.CENTRE:
+        _debug_bridge(c, "walk_stuck_no_valid_dir_reset", f"cur=({self.current_pos.x},{self.current_pos.y}) target=({target.x},{target.y})")
+        # Force replanning: clear bridge state so the return planner picks a new route.
         self.bridge_jump_target = None
         self.bridge_target_planner = None
-        self.post_bridge_conveyor = True
+        self.return_planner = None
         return True
 
     move_pos = self.current_pos.add(move_dir)
-    if c.can_build_road(move_pos):
+    build_id = c.get_tile_building_id(move_pos)
+    if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER and c.can_destroy(move_pos):
+        _debug_bridge(c, "walk_destroy_marker", f"pos=({move_pos.x},{move_pos.y})")
+        c.destroy(move_pos)
+        return True
+
+    tile_env_before = c.get_tile_env(move_pos)
+    road_built = False
+    # Only build a road when can_move is False (e.g. water tile needing a road to cross).
+    # Empty land tiles are directly walkable; building a road on them is unnecessary.
+    if not c.can_move(move_dir) and c.can_build_road(move_pos):
+        _debug_bridge(c, "walk_build_road", f"pos=({move_pos.x},{move_pos.y})")
         c.build_road(move_pos)
-    if c.can_move(move_dir):
+        road_built = True
+
+    bid_before = c.get_tile_building_id(move_pos)
+    can_mv = c.can_move(move_dir)
+    _debug_bridge(c, "walk_pre_move_check", f"dir={move_dir} to=({move_pos.x},{move_pos.y}) can_move={can_mv} env={tile_env_before} road_built={road_built} building={c.get_entity_type(bid_before) if bid_before is not None else None}")
+
+    if can_mv:
+        _debug_bridge(c, "walk_move", f"dir={move_dir} to=({move_pos.x},{move_pos.y})")
         c.move(move_dir)
+    elif bid_before is not None and c.get_entity_type(bid_before) in _BRIDGE_WALKABLE_TYPES and c.can_destroy(move_pos):
+        # Building is supposedly walkable but can_move is still False.
+        # Destroy so we can cross next round, but replan if another bot keeps rebuilding it.
+        key = (self.current_pos.x, self.current_pos.y, move_pos.x, move_pos.y)
+        fails = self.return_bridge_fail_counts.get(key, 0) + 1
+        self.return_bridge_fail_counts[key] = fails
+        if fails >= _MAX_BRIDGE_FAILS:
+            _debug_bridge(c, "walk_stuck_replan_destroy_loop", f"type={c.get_entity_type(bid_before)} key={key} fails={fails}")
+            self.bridge_jump_target = None
+            self.bridge_target_planner = None
+            self.return_planner = None
+            self.return_bridge_fail_counts.pop(key, None)
+        else:
+            _debug_bridge(c, "walk_destroy_blocking_walkable", f"type={c.get_entity_type(bid_before)} at=({move_pos.x},{move_pos.y}) fail={fails}")
+            c.destroy(move_pos)
+    else:
+        _debug_bridge(c, "walk_cannot_move_after_prep", f"dir={move_dir} to=({move_pos.x},{move_pos.y}) env={tile_env_before}")
+        key = (self.current_pos.x, self.current_pos.y, move_pos.x, move_pos.y)
+        fails = self.return_bridge_fail_counts.get(key, 0) + 1
+        self.return_bridge_fail_counts[key] = fails
+        if fails >= _MAX_BRIDGE_FAILS:
+            _debug_bridge(c, "walk_stuck_replan", f"key={key} fails={fails}")
+            self.bridge_jump_target = None
+            self.bridge_target_planner = None
+            self.return_planner = None
+            self.return_bridge_fail_counts.pop(key, None)
     return True
 
 

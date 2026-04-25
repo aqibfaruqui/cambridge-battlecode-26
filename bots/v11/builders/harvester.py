@@ -146,7 +146,8 @@ class Harvester:
                 if not self.foundry_prev_placed:
                     pos = c.get_position(bid)
                     print(
-                        f"[foundry_join] r={c.get_current_round()} seen_allied_foundry pos=({pos.x},{pos.y})",
+                        f"[foundry_join] id={c.get_id()} r={c.get_current_round()} "
+                        f"seen_allied_foundry pos=({pos.x},{pos.y})",
                         file=sys.stderr,
                     )
                 self.foundry_prev_placed = True

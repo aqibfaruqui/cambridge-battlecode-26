@@ -106,6 +106,7 @@ class Harvester:
         # carry-forward: direction to move on the next _build_return_step call;
         # set by the first-connector step, diagonal splits, and post-bridge conveyor.
         self.return_next_dir: Direction | None = None
+        self.return_chain_cursor: Position | None = None
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
         self.chain_memory: dict[tuple[int, int], dict] = {}

@@ -6,6 +6,7 @@ from cambc import Controller, Direction, EntityType, Position, ResourceType
 
 from utils.attacker_states.state import AttackState
 from utils.map.raw_map_representation import WALL
+from utils.pathfinding.movement import on_map
 
 if TYPE_CHECKING:
     from builders.attacker import Attacker
@@ -160,7 +161,8 @@ def _pick_target(self: Attacker, c: Controller):
 
         # Skip if any enemy launcher is in the 3x3 pickup ring.
         if any(
-            c.is_in_vision(np := Position(conv_pos.x + dx, conv_pos.y + dy))
+            on_map(c, np := Position(conv_pos.x + dx, conv_pos.y + dy))
+            and c.is_in_vision(np)
             and (lid := c.get_tile_building_id(np)) is not None
             and c.get_entity_type(lid) == EntityType.LAUNCHER
             and c.get_team(lid) != my_team

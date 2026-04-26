@@ -1,92 +1,151 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from cambc import Controller
+from cambc import Controller, Direction, EntityType, Environment, Position, ResourceType
 
-from utils.map.board import (
-    action_radius,
-    is_tile_conveyor,
-    is_tile_foundry,
-    is_tile_splitter,
-    on_core_border,
-)
-from utils.pathfinding.movement import DIRECTIONS_4, get_direction_4
+from utils.pathfinding.movement import DIRECTIONS_4, on_map
 
 if TYPE_CHECKING:
     from builders.harvester import Harvester
 
 
-def _placing_foundry(self: Harvester, c: Controller) -> None:
-    pos = self.current_pos
+def _allied_conveyor_at(c: Controller, pos: Position) -> int | None:
+    if not on_map(c, pos) or not c.is_in_vision(pos):
+        return None
+    bid = c.get_tile_building_id(pos)
+    if bid is None:
+        return None
+    if c.get_team(bid) != c.get_team():
+        return None
+    if c.get_entity_type(bid) != EntityType.CONVEYOR:
+        return None
+    return bid
 
-    # Foundry placed: wait for axionite (or timeout), then leave the foundry/splitter in place.
-    if self.foundry_curr_placed:
-        rounds_waiting = c.get_current_round() - self.foundry_placed_round
-        if self.ax <= 0 and rounds_waiting < 40:
-            return
-        self.foundry_prev_placed = True
-        self.splitter_for_foundry = False
-        self.state = type(self.state).SEEK
-        return
 
-    # Positioning: get onto a conveyor
-    if not is_tile_conveyor(c, pos):
-        for d in DIRECTIONS_4:
-            neighbor = pos.add(d)
-            if is_tile_conveyor(c, neighbor) and c.can_move(d):
-                c.move(d)
-                return
-        for tile in c.get_nearby_tiles(action_radius["bot"]):
-            if is_tile_conveyor(c, tile):
-                step_dir = get_direction_4(pos, tile)
-                if c.can_move(step_dir):
-                    c.move(step_dir)
-                return
-        return
+def _near_allied_harvester(c: Controller, pos: Position) -> bool:
+    for d in DIRECTIONS_4:
+        neighbor = pos.add(d)
+        if not on_map(c, neighbor) or not c.is_in_vision(neighbor):
+            continue
+        bid = c.get_tile_building_id(neighbor)
+        if (
+            bid is not None
+            and c.get_team(bid) == c.get_team()
+            and c.get_entity_type(bid) == EntityType.HARVESTER
+        ):
+            return True
+    return False
 
-    move_dir = c.get_direction(c.get_tile_building_id(pos))
-    move_pos = pos.add(move_dir)
 
-    # Too close to core: back up
-    if max(abs(move_pos.x - self.core_pos.x), abs(move_pos.y - self.core_pos.y)) < 2:
-        back_dir = move_dir.opposite()
-        if c.can_move(back_dir):
-            c.move(back_dir)
-        return
+def _ti_input_count(c: Controller, join_pos: Position, exclude_dir: Direction) -> int:
+    count = 0
+    for d in DIRECTIONS_4:
+        if d == exclude_dir:
+            continue
+        src = join_pos.add(d.opposite())
+        if not on_map(c, src) or not c.is_in_vision(src):
+            continue
+        bid = _allied_conveyor_at(c, src)
+        if bid is not None and c.get_direction(bid) == d:
+            count += 1
+    return count
 
-    # Placement: place splitter or foundry
-    cost_s, cost_f = c.get_splitter_cost()[0], c.get_foundry_cost()[0]
 
-    left_pos = move_pos.add(move_dir.rotate_left().rotate_left())
-    right_pos = move_pos.add(move_dir.rotate_right().rotate_right())
-    foundry_pos = left_pos if on_core_border(left_pos, self.core_pos) else right_pos
+def _is_valid_join_pos(self: Harvester, c: Controller, join_pos: Position) -> bool:
+    if _near_allied_harvester(c, join_pos):
+        return False
 
-    if (
-        on_core_border(move_pos, self.core_pos)
-        and not self.splitter_for_foundry
-        and not is_tile_splitter(c, move_pos)
-        and (c.get_tile_building_id(move_pos) is None or c.can_destroy(move_pos))
-        and self.ti >= cost_s
-    ):
-        if c.get_tile_building_id(move_pos) is not None:
-            c.destroy(move_pos)
-        if c.can_build_splitter(move_pos, move_dir):
-            c.build_splitter(move_pos, move_dir)
-            self.splitter_for_foundry = True
-        return
-    elif (
-        on_core_border(foundry_pos, self.core_pos)
-        and self.splitter_for_foundry
-        and not is_tile_foundry(c, foundry_pos)
-        and (c.get_tile_building_id(foundry_pos) is None or c.can_destroy(foundry_pos))
-        and self.ti >= cost_f
-    ):
-        if c.get_tile_building_id(foundry_pos) is not None:
-            c.destroy(foundry_pos)
-        if c.can_build_foundry(foundry_pos):
-            c.build_foundry(foundry_pos)
-            self.foundry_curr_placed = True
-            self.foundry_placed_round = c.get_current_round()
-        return
-    elif not on_core_border(move_pos, self.core_pos) and c.can_move(move_dir):
-        c.move(move_dir)
+    join_id = _allied_conveyor_at(c, join_pos)
+    if join_id is None:
+        return False
+
+    if c.get_stored_resource(join_id) == ResourceType.RAW_AXIONITE:
+        return False
+
+    feed_dir = self.current_pos.direction_to(join_pos)
+    if feed_dir not in DIRECTIONS_4:
+        return False
+
+    if c.get_direction(join_id) not in DIRECTIONS_4:
+        return False
+
+    ti_inputs = _ti_input_count(c, join_pos, exclude_dir=feed_dir)
+    if ti_inputs > 1:
+        return False
+
+    return True
+
+
+def _finish_foundry_join(self: Harvester, c: Controller, join_pos: Position) -> None:
+    self.foundry_curr_placed = True
+    self.foundry_prev_placed = True
+    self.foundry_placed_round = c.get_current_round()
+    self.returning_from_axionite = False
+    self.target_pos = None
+    self.seek_target_is_ore = False
+    self.harvester_pos = None
+    self.chain_memory.pop((join_pos.x, join_pos.y), None)
+    self.bridge_jump_target = None
+    self.bridge_target_planner = None
+    self.return_next_dir = None
+    self.return_planner = None
+    self.post_bridge_conveyor = False
+    self.return_bridge_fail_counts = {}
+    self.state = type(self.state).SEEK
+
+
+def try_join_axionite_to_titanium_chain(
+    self: Harvester, c: Controller, join_pos: Position
+) -> bool:
+    if not self.returning_from_axionite:
+        return False
+    if self.foundry_prev_placed:
+        return False
+
+    if not _is_valid_join_pos(self, c, join_pos):
+        return False
+
+    join_id = _allied_conveyor_at(c, join_pos)
+    if join_id is None:
+        return False
+
+    original_dir = c.get_direction(join_id)
+    feed_dir = self.current_pos.direction_to(join_pos)
+
+    current_id = c.get_tile_building_id(self.current_pos)
+    if current_id is not None and c.get_entity_type(current_id) in (EntityType.MARKER, EntityType.ROAD):
+        if c.can_destroy(self.current_pos):
+            c.destroy(self.current_pos)
+        return True
+    if current_id is None and c.get_tile_env(self.current_pos) == Environment.EMPTY:
+        conveyor_cost_ti, _ = c.get_conveyor_cost()
+        if self.ti >= conveyor_cost_ti and c.can_build_conveyor(self.current_pos, feed_dir):
+            c.build_conveyor(self.current_pos, feed_dir)
+        return True
+
+    feeds_ok = (
+        current_id is not None
+        and c.get_entity_type(current_id) == EntityType.CONVEYOR
+        and c.get_team(current_id) == c.get_team()
+        and c.get_direction(current_id) == feed_dir
+    )
+    if not feeds_ok:
+        return False
+
+    foundry_cost_ti, _ = c.get_foundry_cost()
+    if self.ti < foundry_cost_ti:
+        return True
+
+    if not c.can_destroy(join_pos):
+        return False
+
+    c.destroy(join_pos)
+    if c.can_build_foundry(join_pos):
+        c.build_foundry(join_pos)
+        _finish_foundry_join(self, c, join_pos)
+        return True
+
+    if c.can_build_conveyor(join_pos, original_dir):
+        c.build_conveyor(join_pos, original_dir)
+    self.returning_from_axionite = False
+    return False

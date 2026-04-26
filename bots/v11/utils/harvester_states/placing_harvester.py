@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 from cambc import Controller, Direction, EntityType, Environment, Position
 
 from utils.harvester_states.return_to_core import _reset_return_state
-from utils.pathfinding.movement import DIRECTIONS_4
+from utils.pathfinding.movement import DIRECTIONS_4, on_map
 
 if TYPE_CHECKING:
     from builders.harvester import Harvester
@@ -116,6 +116,8 @@ def _do_ring(self: Harvester, c: Controller, ore_pos: Position) -> None:
             remaining.append(side)
             continue
         side_pos = ore_pos.add(side)
+        if not on_map(c, side_pos):
+            continue
         flow = side.opposite()
         bid = c.get_tile_building_id(side_pos)
         if (

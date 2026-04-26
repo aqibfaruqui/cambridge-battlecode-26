@@ -66,7 +66,7 @@ class HarvestState(Enum):
 
 
 _TITANIUM_HARVESTER_TARGET = 3
-_AXIONITE_UNLOCK_ROUND = 500
+_AXIONITE_UNLOCK_ROUND = 200
 
 
 class Harvester:

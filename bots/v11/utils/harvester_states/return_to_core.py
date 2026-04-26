@@ -29,6 +29,14 @@ _ENEMY_WALKABLE_TYPES = (
     EntityType.SPLITTER,
     EntityType.ROAD,
 )
+_CHAIN_MEMORY_TTL = 80
+_CHAIN_TRACE_LIMIT = 18
+_TRANSPORT_TYPES = {
+    EntityType.CONVEYOR,
+    EntityType.ARMOURED_CONVEYOR,
+    EntityType.BRIDGE,
+    EntityType.SPLITTER,
+}
 
 
 def _debug_foundry_join(c: Controller, reason: str, pos: Position | None = None) -> None:
@@ -98,6 +106,8 @@ def _post_bridge_fail(self: Harvester, c: Controller, key, reason: str, extra: s
 
 
 def _enemy_walkable_at(c: Controller, pos: Position) -> bool:
+    if not _on_map(c, pos) or not c.is_in_vision(pos):
+        return False
     bid = c.get_tile_building_id(pos)
     if bid is None:
         return False
@@ -175,6 +185,8 @@ def _clear_return_tile(_: Harvester, c: Controller, pos: Position) -> bool:
 
 
 def _allied_conveyor_at(c: Controller, pos: Position) -> int | None:
+    if not _on_map(c, pos) or not c.is_in_vision(pos):
+        return None
     bid = c.get_tile_building_id(pos)
     if bid is None:
         return None
@@ -185,6 +197,80 @@ def _allied_conveyor_at(c: Controller, pos: Position) -> int | None:
     return bid
 
 
+def _allied_transport_at(c: Controller, pos: Position) -> int | None:
+    if not _on_map(c, pos) or not c.is_in_vision(pos):
+        return None
+    bid = c.get_tile_building_id(pos)
+    if bid is None or c.get_team(bid) != c.get_team():
+        return None
+    if c.get_entity_type(bid) not in _TRANSPORT_TYPES:
+        return None
+    return bid
+
+
+def _transport_output(c: Controller, pos: Position, bid: int) -> Position | None:
+    etype = c.get_entity_type(bid)
+    if etype == EntityType.BRIDGE:
+        try:
+            return c.get_bridge_target(bid)
+        except Exception:
+            return None
+    try:
+        direction = c.get_direction(bid)
+    except Exception:
+        return None
+    if direction is None or direction == Direction.CENTRE:
+        return None
+    if etype == EntityType.SPLITTER and direction not in DIRECTIONS_4:
+        return None
+    return pos.add(direction)
+
+
+def _transport_output_from_memory(entry: dict) -> Position | None:
+    out = entry.get("out")
+    if out is None:
+        return None
+    return Position(out[0], out[1])
+
+
+def _chain_memory_entry(self: Harvester, pos: Position) -> dict | None:
+    return self.chain_memory.get((pos.x, pos.y))
+
+
+def _update_chain_memory(self: Harvester, c: Controller) -> None:
+    """Remember nearby allied transport so axionite can join real titanium chains."""
+    now = c.get_current_round()
+    stale_before = now - _CHAIN_MEMORY_TTL
+    for key, entry in list(self.chain_memory.items()):
+        if entry.get("round", 0) < stale_before:
+            self.chain_memory.pop(key, None)
+
+    for pos in c.get_nearby_tiles():
+        bid = _allied_transport_at(c, pos)
+        if bid is None:
+            continue
+
+        stored = c.get_stored_resource(bid)
+        entry = self.chain_memory.get((pos.x, pos.y), {})
+        if stored == ResourceType.TITANIUM:
+            entry["last_titanium_round"] = now
+        entry.update(
+            {
+                "round": now,
+                "type": c.get_entity_type(bid),
+                "out": (
+                    None
+                    if (out := _transport_output(c, pos, bid)) is None
+                    else (out.x, out.y)
+                ),
+                "resource": stored,
+                "resource_id": c.get_stored_resource_id(bid),
+                "dist_core": max(abs(pos.x - self.core_pos.x), abs(pos.y - self.core_pos.y)),
+            }
+        )
+        self.chain_memory[(pos.x, pos.y)] = entry
+
+
 def _on_map(c: Controller, pos: Position) -> bool:
     return 0 <= pos.x < c.get_map_width() and 0 <= pos.y < c.get_map_height()
 
@@ -192,7 +278,7 @@ def _on_map(c: Controller, pos: Position) -> bool:
 def _near_allied_harvester(c: Controller, pos: Position) -> bool:
     for direction in DIRECTIONS_4:
         neighbor = pos.add(direction)
-        if not _on_map(c, neighbor):
+        if not _on_map(c, neighbor) or not c.is_in_vision(neighbor):
             continue
         bid = c.get_tile_building_id(neighbor)
         if (
@@ -211,20 +297,126 @@ def _ensure_current_feeds_join(self: Harvester, c: Controller, join_pos: Positio
 
     bid = c.get_tile_building_id(self.current_pos)
     if bid is not None:
+        stored = c.get_stored_resource(bid) if c.get_entity_type(bid) in _TRANSPORT_TYPES else None
+        if stored is not None and stored != ResourceType.RAW_AXIONITE:
+            return False
         return (
             c.get_team(bid) == c.get_team()
             and c.get_entity_type(bid) == EntityType.CONVEYOR
             and c.get_direction(bid) == feed_dir
         )
+    return False
 
-    if c.get_tile_env(self.current_pos) != Environment.EMPTY:
-        return False
-    conveyor_cost_ti, _ = c.get_conveyor_cost()
-    if self.ti < conveyor_cost_ti:
-        return False
-    if c.can_build_conveyor(self.current_pos, feed_dir):
-        c.build_conveyor(self.current_pos, feed_dir)
-    return _allied_conveyor_at(c, self.current_pos) is not None
+
+def _visible_or_remembered_transport(
+    self: Harvester, c: Controller, pos: Position
+) -> tuple[EntityType | None, Position | None, ResourceType | None, int]:
+    bid = _allied_transport_at(c, pos)
+    if bid is not None:
+        return (
+            c.get_entity_type(bid),
+            _transport_output(c, pos, bid),
+            c.get_stored_resource(bid),
+            c.get_current_round(),
+        )
+
+    entry = _chain_memory_entry(self, pos)
+    if entry is None:
+        return None, None, None, -1
+    return (
+        entry.get("type"),
+        _transport_output_from_memory(entry),
+        entry.get("resource"),
+        entry.get("last_titanium_round", -1),
+    )
+
+
+def _chain_reaches_core(self: Harvester, c: Controller, start: Position) -> bool:
+    seen: set[tuple[int, int]] = set()
+    pos = start
+    for _ in range(_CHAIN_TRACE_LIMIT):
+        if not _on_map(c, pos):
+            return False
+        if reached_core(pos, self.core_pos):
+            return True
+        key = (pos.x, pos.y)
+        if key in seen:
+            return False
+        seen.add(key)
+
+        if c.is_in_vision(pos):
+            bid = c.get_tile_building_id(pos)
+            if bid is not None and c.get_team(bid) == c.get_team() and c.get_entity_type(bid) == EntityType.CORE:
+                return True
+
+        _, out, _, _ = _visible_or_remembered_transport(self, c, pos)
+        if out is None:
+            return False
+        pos = out
+    return False
+
+
+def _candidate_join_score(self: Harvester, c: Controller, join_pos: Position) -> int | None:
+    if self.harvester_pos is not None and join_pos.distance_squared(self.harvester_pos) <= 2:
+        return None
+    if _near_allied_harvester(c, join_pos):
+        return None
+
+    join_id = _allied_conveyor_at(c, join_pos)
+    if join_id is None:
+        return None
+    if c.get_stored_resource(join_id) == ResourceType.RAW_AXIONITE:
+        return None
+
+    feed_dir = self.current_pos.direction_to(join_pos)
+    if feed_dir not in DIRECTIONS_4:
+        return None
+
+    original_dir = c.get_direction(join_id)
+    if original_dir not in DIRECTIONS_4:
+        return None
+
+    out_pos = join_pos.add(original_dir)
+    if not _chain_reaches_core(self, c, out_pos):
+        return None
+
+    score = 100
+    if c.get_stored_resource(join_id) == ResourceType.TITANIUM:
+        score += 80
+
+    entry = _chain_memory_entry(self, join_pos)
+    if entry is not None:
+        if entry.get("resource") == ResourceType.TITANIUM:
+            score += 35
+        last_ti = entry.get("last_titanium_round", -1)
+        if last_ti >= 0:
+            age = c.get_current_round() - last_ti
+            if age <= _CHAIN_MEMORY_TTL:
+                score += max(0, 40 - age)
+
+    if out_pos.distance_squared(self.core_pos) < join_pos.distance_squared(self.core_pos):
+        score += 20
+    # Prefer the tile the return planner already wanted when return_next_dir is
+    # carrying a delayed move from the previous tick.
+    planned = self.current_pos.add(self.return_next_dir) if self.return_next_dir else None
+    if planned is not None and planned == join_pos:
+        score += 10
+    score -= max(abs(join_pos.x - self.core_pos.x), abs(join_pos.y - self.core_pos.y))
+    return score
+
+
+def _finish_foundry_join(self: Harvester, c: Controller, join_pos: Position) -> None:
+    _debug_foundry_join(c, "built_foundry", join_pos)
+    self.foundry_curr_placed = True
+    self.foundry_prev_placed = True
+    self.foundry_placed_round = c.get_current_round()
+    self.returning_from_axionite = False
+    self.target_pos = None
+    self.seek_target_is_ore = False
+    self.harvester_pos = None
+    self.chain_memory.pop((join_pos.x, join_pos.y), None)
+    _reset_return_state(self)
+    self.state = type(self.state).SEEK
 
 
 def _try_join_axionite_to_titanium_chain(
@@ -236,19 +428,31 @@ def _try_join_axionite_to_titanium_chain(
         _debug_foundry_join(c, "skip_foundry_already_marked", join_pos)
         return False
 
-    if self.harvester_pos is not None and join_pos.distance_squared(self.harvester_pos) <= 2:
-        _debug_foundry_join(c, "skip_too_close_to_source", join_pos)
-        return False
-    if _near_allied_harvester(c, join_pos):
-        _debug_foundry_join(c, "skip_near_harvester_ring", join_pos)
+    # The foundry must be the exact intersection tile: the next tile on the
+    # axionite return path, which is also a verified titanium conveyor chain.
+    if _candidate_join_score(self, c, join_pos) is None:
         return False
 
     join_id = _allied_conveyor_at(c, join_pos)
     if join_id is None:
         return False
-    if c.get_stored_resource(join_id) == ResourceType.RAW_AXIONITE:
-        _debug_foundry_join(c, "skip_raw_axionite_conveyor", join_pos)
-        return False
+
+    feed_dir = self.current_pos.direction_to(join_pos)
+    current_id = c.get_tile_building_id(self.current_pos)
+    if current_id is not None and c.get_entity_type(current_id) in (EntityType.MARKER, EntityType.ROAD):
+        if c.can_destroy(self.current_pos):
+            c.destroy(self.current_pos)
+            _debug_foundry_join(c, "cleared_feed_tile_wait", join_pos)
+            return True
+    if current_id is None and c.get_tile_env(self.current_pos) == Environment.EMPTY:
+        conveyor_cost_ti, _ = c.get_conveyor_cost()
+        if self.ti >= conveyor_cost_ti and c.can_build_conveyor(self.current_pos, feed_dir):
+            c.build_conveyor(self.current_pos, feed_dir)
+            _debug_foundry_join(c, "built_feed_conveyor_wait", join_pos)
+            return True
+        if self.ti >= conveyor_cost_ti:
+            _debug_foundry_join(c, "wait_feed_conveyor_action", join_pos)
+            return True
 
     foundry_cost_ti, _ = c.get_foundry_cost()
     if self.ti < foundry_cost_ti:
@@ -267,16 +471,7 @@ def _try_join_axionite_to_titanium_chain(
     c.destroy(join_pos)
     if c.can_build_foundry(join_pos):
         c.build_foundry(join_pos)
-        _debug_foundry_join(c, "built_foundry", join_pos)
-        self.foundry_curr_placed = True
-        self.foundry_prev_placed = True
-        self.foundry_placed_round = c.get_current_round()
-        self.returning_from_axionite = False
-        self.target_pos = None
-        self.seek_target_is_ore = False
-        self.harvester_pos = None
-        _reset_return_state(self)
-        self.state = type(self.state).SEEK
+        _finish_foundry_join(self, c, join_pos)
         return True
 
     _debug_foundry_join(c, "failed_can_build_foundry_after_destroy", join_pos)

@@ -11,6 +11,7 @@ from utils.harvester_states.return_to_core import (
     _build_return_step,
     _handle_post_bridge_conveyor,
     _reset_return_state,
+    _update_chain_memory,
 )
 from utils.harvester_states.seek import (
     _seek as _seek_state,
@@ -67,6 +68,7 @@ class HarvestState(Enum):
 
 _TITANIUM_HARVESTER_TARGET = 3
 _AXIONITE_UNLOCK_ROUND = 200
+_FOUNDRY_SCALE_JUMP = 45.0
 
 
 class Harvester:
@@ -78,6 +80,7 @@ class Harvester:
         self.ti = 0
         self.ax = 0
         self.cost_scale = 100.0
+        self._scale_initialized = False
         self.titanium_found = False
         self.axionite_found = False
         self.foundry_prev_placed = False
@@ -106,6 +109,7 @@ class Harvester:
         self.return_next_dir: Direction | None = None
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
+        self.chain_memory: dict[tuple[int, int], dict] = {}
         self.heal_target: Position | None = None
         self.patrol_turns: int = 0
         self.patrol_target: Position | None = None
@@ -139,24 +143,41 @@ class Harvester:
         self._core_broadcasted = False
         self._enemy_core_broadcasted = False
 
+    def _mark_foundry_seen(self, c: Controller, reason: str, pos: Position | None = None) -> None:
+        if not self.foundry_prev_placed:
+            suffix = "" if pos is None else f" pos=({pos.x},{pos.y})"
+            print(
+                f"[foundry_join] id={c.get_id()} r={c.get_current_round()} "
+                f"{reason}{suffix}",
+                file=sys.stderr,
+            )
+        self.foundry_prev_placed = True
+        self.returning_from_axionite = False
+        if self.target_pos is not None and self.seek_target_is_ore and c.is_in_vision(self.target_pos):
+            if is_ore_axionite(c, self.target_pos):
+                self.blacklisted_ores.discard((self.target_pos.x, self.target_pos.y))
+                self.target_pos = None
+                self.seek_target_is_ore = False
+
     def _check_for_foundry(self, c: Controller):
-        """Identify visible allied foundries without guessing from cost scale."""
+        """Identify the one-foundry cap from vision or a single-turn scale jump."""
         for bid in c.get_nearby_buildings():
             if c.get_team(bid) == c.get_team() and c.get_entity_type(bid) == EntityType.FOUNDRY:
-                if not self.foundry_prev_placed:
-                    pos = c.get_position(bid)
-                    print(
-                        f"[foundry_join] id={c.get_id()} r={c.get_current_round()} "
-                        f"seen_allied_foundry pos=({pos.x},{pos.y})",
-                        file=sys.stderr,
-                    )
-                self.foundry_prev_placed = True
+                self._mark_foundry_seen(c, "seen_allied_foundry", c.get_position(bid))
                 break
+
+        scale = c.get_scale_percent()
+        if self._scale_initialized and scale - self.cost_scale >= _FOUNDRY_SCALE_JUMP:
+            self._mark_foundry_seen(c, f"scale_jump_{self.cost_scale:.1f}_to_{scale:.1f}")
+        self.cost_scale = scale
+        self._scale_initialized = True
 
     def _can_trigger_foundry(self, c: Controller) -> bool:
         return False
 
     def _axionite_unlocked(self, c: Controller) -> bool:
+        if self.foundry_prev_placed:
+            return False
         return (
             self.titanium_harvesters_placed >= _TITANIUM_HARVESTER_TARGET
             or c.get_current_round() >= _AXIONITE_UNLOCK_ROUND
@@ -326,6 +347,7 @@ class Harvester:
         if self.environment_map is None:
             self.environment_map = EnvironmentMap(c.get_map_width(), c.get_map_height())
         self.environment_map.update(c)
+        _update_chain_memory(self, c)
         self._check_for_foundry(c)
 
         if not self.environment_map.symmetry_resolved:

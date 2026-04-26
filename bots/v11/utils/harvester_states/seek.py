@@ -305,6 +305,8 @@ def _target_still_viable(
     if env is None or not env.in_bounds(target.x, target.y):
         return False
     if is_ore_target:
+        if self.foundry_prev_placed and env.tile(target.x, target.y) == ORE_AXIONITE:
+            return False
         if c is not None and c.is_in_vision(target):
             occupier = c.get_tile_builder_bot_id(target)
             if occupier is not None and occupier != c.get_id():

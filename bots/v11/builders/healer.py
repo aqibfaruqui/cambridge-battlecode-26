@@ -4,6 +4,7 @@ from cambc import Controller, Direction, EntityType, Position
 
 from utils.healer_states.defend import _defend_healer
 from utils.healer_states.follow import _follow, _try_enter_follow
+from utils.healing import try_heal_nearby_bot
 
 
 class HealState(Enum):
@@ -178,7 +179,7 @@ class Healer:
             _try_enter_follow(self, c)
 
         healed = False
-        if self._try_heal_self(c):
+        if try_heal_nearby_bot(c, c.get_position()):
             healed = True
         elif self._try_heal_core(c) or self._try_heal_conveyor(c):
             healed = True

@@ -1,5 +1,40 @@
 from cambc import Controller, EntityType, Position
 
+
+def try_heal_nearby_bot(c: Controller, pos: Position) -> bool:
+    """Heal self if damaged, otherwise heal the nearest damaged friendly builder bot
+    within action radius. Returns True if a heal was performed."""
+    if c.get_action_cooldown() > 0:
+        return False
+    my_id = c.get_id()
+    my_team = c.get_team()
+    if c.get_hp(my_id) < c.get_max_hp(my_id) and c.can_heal(pos):
+        c.heal(pos)
+        return True
+    w, h = c.get_map_width(), c.get_map_height()
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if dx == 0 and dy == 0:
+                continue
+            x, y = pos.x + dx, pos.y + dy
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            p = Position(x, y)
+            if not c.is_in_vision(p):
+                continue
+            bot_id = c.get_tile_builder_bot_id(p)
+            if bot_id is None:
+                continue
+            if c.get_team(bot_id) != my_team:
+                continue
+            if c.get_hp(bot_id) >= c.get_max_hp(bot_id):
+                continue
+            if not c.can_heal(p):
+                continue
+            c.heal(p)
+            return True
+    return False
+
 _HEALABLE_TYPES = frozenset({
     EntityType.CONVEYOR,
     EntityType.BRIDGE,

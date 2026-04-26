@@ -8,6 +8,7 @@ from utils.pathfinding.d_star import DStarLite
 from utils.map.raw_map_representation import CORE_ENEMY, EnvironmentMap, Symmetry, WALL
 from utils.comms.broadcaster import Broadcaster
 from utils.comms.for_builder_bot import BuilderBotMessages
+from utils.healing import try_heal_nearby_bot
 
 # Attacker never pathfinds into the enemy core — block CORE_ENEMY statically.
 _ATTACK_BLOCK_MASK = (1 << WALL) | (1 << CORE_ENEMY)
@@ -158,8 +159,7 @@ class Attacker:
             self.blacklist[(self.current_pos.x, self.current_pos.y)] = c.get_current_round()
         self._hp_prev = hp_now
 
-        if hp_now < c.get_max_hp(my_id) and c.can_heal(self.current_pos):
-            c.heal(self.current_pos)
+        try_heal_nearby_bot(c, self.current_pos)
 
         # Drop stale targets before dispatching to a state handler.
         if self.target_conveyor is not None and not target_still_valid(self, c):

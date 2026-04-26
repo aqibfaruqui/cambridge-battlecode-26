@@ -35,6 +35,7 @@ from utils.map.raw_map_representation import EnvironmentMap, Symmetry
 from utils.pathfinding.d_star import DStarLite
 from utils.comms.broadcaster import Broadcaster
 from utils.comms.for_builder_bot import BuilderBotMessages
+from utils.healing import try_heal_nearby_bot
 
 
 # Profiling is only available locally. AWS runners ship a stripped-down CPython
@@ -365,6 +366,8 @@ class Harvester:
                         BuilderBotMessages.encode_enemy_core_position(enemy_core)
                     )
                     self._enemy_core_broadcasted = True
+
+        try_heal_nearby_bot(c, self.current_pos)
 
         if self.state is not HarvestState.DEFEND:
             _try_enter_defend(self, c)

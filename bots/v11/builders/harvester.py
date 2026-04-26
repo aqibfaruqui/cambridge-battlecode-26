@@ -5,7 +5,6 @@ from enum import Enum
 
 from cambc import Controller, Direction, EntityType, Environment, Position
 from utils.map.board import is_ore_axionite, is_ore_titanium
-from utils.harvester_states.foundry import _placing_foundry as _foundry_state
 from utils.harvester_states.return_to_core import (
     _attack_enemy_under_bot,
     _build_return_step,
@@ -60,7 +59,6 @@ class HarvestState(Enum):
     SEEK = "seek"
     PLACING_HARVESTER = "placing_harvester"
     RETURN = "return"
-    PLACING_FOUNDRY = "placing_foundry"
     DEFEND = "defend"
     PATROL = "patrol"
     HEAL = "heal"
@@ -172,9 +170,6 @@ class Harvester:
         self.cost_scale = scale
         self._scale_initialized = True
 
-    def _can_trigger_foundry(self, c: Controller) -> bool:
-        return False
-
     def _axionite_unlocked(self, c: Controller) -> bool:
         if self.foundry_prev_placed:
             return False
@@ -272,7 +267,6 @@ class Harvester:
             HarvestState.SEEK: (0, 0, 255),
             HarvestState.PLACING_HARVESTER: (200, 0, 200),
             HarvestState.RETURN: (255, 165, 0),
-            HarvestState.PLACING_FOUNDRY: (255, 255, 0),
             HarvestState.DEFEND: (255, 0, 0),
             HarvestState.PATROL: (0, 255, 200),
             HarvestState.HEAL: (0, 255, 80),
@@ -284,9 +278,6 @@ class Harvester:
             c.draw_indicator_line(self.current_pos, self.target_pos, r, g, b)
         elif self.state == HarvestState.RETURN and self.current_pos != self.core_pos:
             c.draw_indicator_line(self.current_pos, self.core_pos, 255, 255, 0)
-
-    def _placing_foundry(self, c: Controller):
-        _foundry_state(self, c)
 
     def _placing_harvester(self, c: Controller):
         _placing_harvester_state(self, c)
@@ -307,9 +298,7 @@ class Harvester:
         """Lay conveyors back to the core"""
         # If we're already on/adjacent to core, RETURN is complete.
         if reached_core(self.current_pos, self.core_pos) and self.bridge_jump_target is None:
-            if self._can_trigger_foundry(c):
-                self.state = HarvestState.PLACING_FOUNDRY
-            elif self.harvesters_placed >= 1:
+            if self.harvesters_placed >= 1:
                 self.patrol_tip = self.harvester_pos  # save before it's cleared
                 self.patrol_turns = 0
                 self.patrol_target = None
@@ -380,7 +369,7 @@ class Harvester:
         if self.state is not HarvestState.DEFEND:
             _try_enter_defend(self, c)
 
-        if self.state not in (HarvestState.DEFEND, HarvestState.HEAL, HarvestState.PLACING_HARVESTER, HarvestState.PLACING_FOUNDRY):
+        if self.state not in (HarvestState.DEFEND, HarvestState.HEAL, HarvestState.PLACING_HARVESTER):
             _try_enter_heal(self, c)
 
         match self.state:
@@ -390,8 +379,6 @@ class Harvester:
                 self._placing_harvester(c)
             case HarvestState.RETURN:
                 self._return(c)
-            case HarvestState.PLACING_FOUNDRY:
-                self._placing_foundry(c)
             case HarvestState.DEFEND:
                 self._defend(c)
             case HarvestState.PATROL:

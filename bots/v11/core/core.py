@@ -7,9 +7,9 @@ class Core:
         self.builders_spawned = 0
         self.default_spawn_plan = [
             BuilderType.HARVESTER_1,
-            # BuilderType.ATTACKER_REVAMPED,
+            BuilderType.ATTACKER_REVAMPED,
             BuilderType.HARVESTER_2,
-            # BuilderType.ATTACKER_REVAMPED,
+            BuilderType.ATTACKER_REVAMPED,
             BuilderType.HARVESTER_3,
         ]
         self.spawn_plan = self.default_spawn_plan.copy()

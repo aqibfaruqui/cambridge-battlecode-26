@@ -10,6 +10,7 @@ from utils.harvester_states.return_to_core import (
     _build_return_step,
     _handle_post_bridge_conveyor,
     _reset_return_state,
+    _try_chain_shortcut,
     _update_chain_memory,
 )
 from utils.harvester_states.seek import (
@@ -313,6 +314,9 @@ class Harvester:
             self.harvester_pos = None
             self.returning_from_axionite = False
             _reset_return_state(self)
+            return
+
+        if _try_chain_shortcut(self, c):
             return
 
         # Standing on an enemy walkable tile: fire until it's destroyed, then

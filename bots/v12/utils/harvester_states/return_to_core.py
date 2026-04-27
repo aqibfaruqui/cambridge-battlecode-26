@@ -420,6 +420,57 @@ def _on_map(c: Controller, pos: Position) -> bool:
     return 0 <= pos.x < c.get_map_width() and 0 <= pos.y < c.get_map_height()
 
 
+def _chain_reaches_core(c: Controller, pos: Position, core_pos: Position) -> bool:
+    max_hops = c.get_map_width() + c.get_map_height()
+    current = pos
+    for _ in range(max_hops):
+        if not _on_map(c, current) or not c.is_in_vision(current):
+            return False
+        bid = c.get_tile_building_id(current)
+        if bid is None:
+            return False
+        if c.get_team(bid) != c.get_team():
+            return False
+        etype = c.get_entity_type(bid)
+        if etype == EntityType.CORE:
+            return True
+        if etype in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.SPLITTER):
+            direction = c.get_direction(bid)
+            if direction is None or direction == Direction.CENTRE or direction not in DIRECTIONS_4:
+                return False
+            nxt = current.add(direction)
+            if reached_core(nxt, core_pos):
+                return True
+            current = nxt
+        elif etype == EntityType.BRIDGE:
+            try:
+                target = c.get_bridge_target(bid)
+            except Exception:
+                return False
+            if target is None:
+                return False
+            if reached_core(target, core_pos):
+                return True
+            current = target
+        else:
+            return False
+    return False
+
+
+def _try_chain_shortcut(self: Harvester, c: Controller) -> bool:
+    if (
+        self.bridge_jump_target is not None
+        or self.post_bridge_conveyor
+        or self.return_chain_cursor is not None
+        or self.just_placed
+    ):
+        return False
+    if _chain_reaches_core(c, self.current_pos, self.core_pos):
+        _complete_return_from_bridge(self, c)
+        return True
+    return False
+
+
 
 
 def _next_dir_after_move(self: Harvester, c: Controller, move_dir: Direction) -> Direction | None:

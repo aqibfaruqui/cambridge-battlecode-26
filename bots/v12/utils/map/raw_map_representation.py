@@ -2,12 +2,13 @@ from enum import Enum, auto
 
 from cambc import Controller, EntityType, Environment, Position
 
-_ENV_MAP = {
-    Environment.EMPTY: 1,
-    Environment.WALL: 2,
-    Environment.ORE_TITANIUM: 3,
-    Environment.ORE_AXIONITE: 4,
-}
+# Bind enum members to module-local names so the hot loop can use `is` checks
+# instead of dict lookups (which call enum.__hash__ — measurable in the
+# profile at ~388k calls/run).
+_ENV_EMPTY = Environment.EMPTY
+_ENV_WALL = Environment.WALL
+_ENV_ORE_TI = Environment.ORE_TITANIUM
+# ORE_AXIONITE handled via the else branch in update().
 
 UNKNOWN = 0
 TRAVERSABLE = 1
@@ -87,11 +88,13 @@ class EnvironmentMap:
 
     def update(self, c: Controller) -> None:
         arr = self._array
+        observed = self._observed
+        known_ti = self._known_ti
+        known_ax = self._known_ax
         w = self._w
         wm1 = w - 1
         hm1 = self._h - 1
 
-        env_map = _ENV_MAP
         get_tile_env = c.get_tile_env
 
         cand = self._cand
@@ -104,23 +107,32 @@ class EnvironmentMap:
         get_team = c.get_team
         my_team = c.get_team()
         entity_type_core = EntityType.CORE
+        env_empty = _ENV_EMPTY
+        env_wall = _ENV_WALL
+        env_ti = _ENV_ORE_TI
+        # any other Environment value falls through to ORE_AXIONITE (val=4)
 
-        newly_seen_x: list[int] = []
-        newly_seen_y: list[int] = []
-        newly_seen_v: list[int] = []
-
-        nsx = newly_seen_x.append
-        nsy = newly_seen_y.append
-        nsv = newly_seen_v.append
-
-        has_new = False
+        # Single packed list keeps newly-observed-changed cells: alternating
+        # idx, val pairs. Halves the per-tile bookkeeping vs. three parallel
+        # lists, and the symmetry sections recompute x,y from idx (cheap).
+        newly: list[int] = []
+        nappend = newly.append
 
         for tile in c.get_nearby_tiles():
-            x, y = tile
+            x = tile.x
+            y = tile.y
             idx = y * w + x
 
-            # Base terrain
-            val = env_map[get_tile_env(tile)]
+            # Base terrain via `is` chain — avoids enum.__hash__/dict lookup.
+            e = get_tile_env(tile)
+            if e is env_empty:
+                val = 1
+            elif e is env_wall:
+                val = 2
+            elif e is env_ti:
+                val = 3
+            else:
+                val = 4
 
             # Core override
             bid = get_tile_building_id(tile)
@@ -131,42 +143,65 @@ class EnvironmentMap:
                     val = 6
                     self._enemy_core_found = True
 
-            if not self._set_tile(x, y, val, observed=True):
+            observed[idx] = 1
+            old = arr[idx]
+            if old == val:
                 continue
 
-            nsx(x)
-            nsy(y)
-            nsv(val)
-            has_new = True
+            # Inlined ore-set bookkeeping.
+            if old == 3:
+                known_ti.discard((x, y))
+            elif old == 4:
+                known_ax.discard((x, y))
+            arr[idx] = val
+            if val == 3:
+                known_ti.add((x, y))
+            elif val == 4:
+                known_ax.add((x, y))
 
-        if not has_new:
+            nappend(idx)
+            nappend(val)
+
+        if not newly:
             return
 
         # ---------- symmetry elimination ----------
         if need_elim:
             dead = 0
-            sample_count = len(newly_seen_x)
+            n_pairs = len(newly)
 
             if cand & _SYM_H:
-                for i in range(sample_count):
-                    mirror = arr[newly_seen_y[i] * w + wm1 - newly_seen_x[i]]
-                    if mirror != 0 and mirror != newly_seen_v[i]:
+                i = 0
+                while i < n_pairs:
+                    idx = newly[i]
+                    v = newly[i + 1]
+                    mirror = arr[(idx // w) * w + wm1 - (idx % w)]
+                    if mirror != 0 and mirror != v:
                         dead |= _SYM_H
                         break
+                    i += 2
 
             if cand & _SYM_V:
-                for i in range(sample_count):
-                    mirror = arr[(hm1 - newly_seen_y[i]) * w + newly_seen_x[i]]
-                    if mirror != 0 and mirror != newly_seen_v[i]:
+                i = 0
+                while i < n_pairs:
+                    idx = newly[i]
+                    v = newly[i + 1]
+                    mirror = arr[(hm1 - idx // w) * w + (idx % w)]
+                    if mirror != 0 and mirror != v:
                         dead |= _SYM_V
                         break
+                    i += 2
 
             if cand & _SYM_R:
-                for i in range(sample_count):
-                    mirror = arr[(hm1 - newly_seen_y[i]) * w + wm1 - newly_seen_x[i]]
-                    if mirror != 0 and mirror != newly_seen_v[i]:
+                i = 0
+                while i < n_pairs:
+                    idx = newly[i]
+                    v = newly[i + 1]
+                    mirror = arr[(hm1 - idx // w) * w + wm1 - (idx % w)]
+                    if mirror != 0 and mirror != v:
                         dead |= _SYM_R
                         break
+                    i += 2
 
             if dead:
                 cand &= ~dead
@@ -175,25 +210,40 @@ class EnvironmentMap:
 
         # ---------- symmetry propagation ----------
         if resolved:
-            sample_count = len(newly_seen_x)
-
+            n_pairs = len(newly)
             if cand == _SYM_H:
-                for i in range(sample_count):
-                    idx = newly_seen_y[i] * w + wm1 - newly_seen_x[i]
-                    if arr[idx] == UNKNOWN:
-                        self._set_tile(wm1 - newly_seen_x[i], newly_seen_y[i], newly_seen_v[i])
-
+                i = 0
+                while i < n_pairs:
+                    idx = newly[i]
+                    v = newly[i + 1]
+                    x = idx % w
+                    y = idx // w
+                    midx = y * w + wm1 - x
+                    if arr[midx] == UNKNOWN:
+                        self._set_tile(wm1 - x, y, v)
+                    i += 2
             elif cand == _SYM_V:
-                for i in range(sample_count):
-                    idx = (hm1 - newly_seen_y[i]) * w + newly_seen_x[i]
-                    if arr[idx] == UNKNOWN:
-                        self._set_tile(newly_seen_x[i], hm1 - newly_seen_y[i], newly_seen_v[i])
-
+                i = 0
+                while i < n_pairs:
+                    idx = newly[i]
+                    v = newly[i + 1]
+                    x = idx % w
+                    y = idx // w
+                    midx = (hm1 - y) * w + x
+                    if arr[midx] == UNKNOWN:
+                        self._set_tile(x, hm1 - y, v)
+                    i += 2
             else:  # rotational
-                for i in range(sample_count):
-                    idx = (hm1 - newly_seen_y[i]) * w + wm1 - newly_seen_x[i]
-                    if arr[idx] == UNKNOWN:
-                        self._set_tile(wm1 - newly_seen_x[i], hm1 - newly_seen_y[i], newly_seen_v[i])
+                i = 0
+                while i < n_pairs:
+                    idx = newly[i]
+                    v = newly[i + 1]
+                    x = idx % w
+                    y = idx // w
+                    midx = (hm1 - y) * w + wm1 - x
+                    if arr[midx] == UNKNOWN:
+                        self._set_tile(wm1 - x, hm1 - y, v)
+                    i += 2
 
     @property
     def width(self) -> int:

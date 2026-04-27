@@ -98,6 +98,8 @@ class DStarLite:
         "_unknown_cost",
         "_use_bridges",
         "_diag_cost",
+        "_recompute_rhs",
+        "_bridge_offsets",
     )
 
     def __init__(
@@ -120,7 +122,10 @@ class DStarLite:
         self._rhs = [_INF] * self._n
 
         self._open: List[Tuple[Tuple[float, float], int]] = []
-        self._in_open = [False] * self._n
+        # bytearray indexed by node id; 0 = stale/absent, 1 = live entry.
+        # Faster than list[bool] for indexed writes (no Py_True/Py_False
+        # rebind) and for the hot stale-entry check in _compute_shortest_path.
+        self._in_open = bytearray(self._n)
 
         self._km = 0.0
 
@@ -140,17 +145,34 @@ class DStarLite:
         # bytearray index. The invariant blocked[start]=0 is enforced across
         # set_position / notify_map_changes / set_dynamic_blockers so the
         # frequent `s == start` override in _recompute_rhs can be dropped.
-        self._blocked = bytearray(self._n)
-        arr = env._array
+        # Build the bitmap with a single C-level translate over the env array,
+        # one byte per terrain code (0..255 covers the 7 enum values).
         mask = self._block_mask
-        blocked = self._blocked
-        for i in range(self._n):
-            if (mask >> arr[i]) & 1:
-                blocked[i] = 1
-        blocked[self._start] = 0  # force-walkable invariant for current position
+        _table = bytes(((mask >> v) & 1) for v in range(256))
+        self._blocked = bytearray(env._array).translate(_table)
+        self._blocked[self._start] = 0  # force-walkable invariant for current position
         self._unknown_cost = unknown_cost
         self._use_bridges = use_bridges
         self._diag_cost = _BRIDGE_JUMP_COST if use_bridges else _SQRT2
+        # Precompute flat per-row index offsets for bridge jumps, so the
+        # interior fast path can iterate without per-iteration bounds checks.
+        # `_BRIDGE_JUMPS` is geometric and depends only on the game constant.
+        if use_bridges:
+            w = self._w
+            self._bridge_offsets = tuple(jdy * w + jdx for jdx, jdy in _BRIDGE_JUMPS)
+        else:
+            self._bridge_offsets = ()
+
+        # Specialise the recompute hot path. The common case (unknown_cost==1.0
+        # without bridges, which holds for every planner except the return one)
+        # makes the per-neighbour `arr[s]==0` cost branch dead AND the bridge
+        # loop dead, so we bind a uniform variant with literal step costs and
+        # no bridge code. Anything else (return planner today, future hybrids)
+        # falls back to the general implementation.
+        if unknown_cost == 1.0 and not use_bridges:
+            self._recompute_rhs = self._recompute_rhs_uniform  # type: ignore[method-assign]
+        else:
+            self._recompute_rhs = self._recompute_rhs_general  # type: ignore[method-assign]
 
     # ---------- Public API ----------
 
@@ -292,11 +314,16 @@ class DStarLite:
                 recompute(i)
 
                 if use_bridges:
-                    for jdx, jdy in _BRIDGE_JUMPS:
-                        px = x - jdx
-                        py = y - jdy
-                        if 0 <= px < w and 0 <= py < h:
-                            recompute(py * w + px)
+                    bd = _BRIDGE_D
+                    if bd <= x < w - bd and bd <= y < h - bd:
+                        for off in self._bridge_offsets:
+                            recompute(i - off)
+                    else:
+                        for jdx, jdy in _BRIDGE_JUMPS:
+                            px = x - jdx
+                            py = y - jdy
+                            if 0 <= px < w and 0 <= py < h:
+                                recompute(py * w + px)
 
             i += 1
 
@@ -552,7 +579,7 @@ class DStarLite:
             # the canonical else-branch below set g[u]=INF for a consistent u,
             # cascading spurious updates before the next recompute corrected it.
             if gu == ru:
-                in_open[u] = False
+                in_open[u] = 0
                 continue
 
             # Inlined calc_key(u) — this is the hottest call site.
@@ -567,11 +594,15 @@ class DStarLite:
                 dy = -dy
             m = dx if dx < dy else dy
             k_new_primary = g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + km
-            if k_old < (k_new_primary, g_rhs):
+            # Avoid building the (k_new_primary, g_rhs) tuple just for the
+            # compare — k_old is already a tuple, so unpack-and-compare in
+            # scalar space (saves an allocation per heap pop, ~62k/run).
+            k_old_0 = k_old[0]
+            if k_old_0 < k_new_primary or (k_old_0 == k_new_primary and k_old[1] < g_rhs):
                 heapq.heappush(open_heap, ((k_new_primary, g_rhs), u))
                 continue
 
-            in_open[u] = False
+            in_open[u] = 0
 
             if gu > ru:
                 g[u] = ru
@@ -601,11 +632,17 @@ class DStarLite:
                 recompute(u)
 
             if use_bridges:
-                for jdx, jdy in _BRIDGE_JUMPS:
-                    px = ux - jdx
-                    py = uy - jdy
-                    if 0 <= px < w and 0 <= py <= h_minus_1:
-                        recompute(py * w + px)
+                bd = _BRIDGE_D
+                if bd <= ux <= w_minus_1 - bd and bd <= uy <= h_minus_1 - bd:
+                    # All predecessor offsets are in-bounds — skip per-iter checks.
+                    for off in self._bridge_offsets:
+                        recompute(u - off)
+                else:
+                    for jdx, jdy in _BRIDGE_JUMPS:
+                        px = ux - jdx
+                        py = uy - jdy
+                        if 0 <= px < w and 0 <= py <= h_minus_1:
+                            recompute(py * w + px)
 
             if not open_heap:
                 break
@@ -616,7 +653,141 @@ class DStarLite:
             if rhs[start] == gs and (gs + km, gs) <= open_heap[0][0]:
                 break
 
-    def _recompute_rhs(self, u: int) -> None:
+    def _recompute_rhs_uniform(self, u: int) -> None:
+        """Specialised _recompute_rhs for unknown_cost == 1.0.
+
+        With unk_cost == 1.0, both `(unk_cost if arr[s]==0 else 1.0)` and
+        `(diag_unk_cost if arr[s]==0 else diag_cost)` are constants, so the
+        per-neighbour cost branch and the `arr` access vanish entirely.
+        Bound at construction time for every planner except the return one.
+        """
+        if u == self._goal:
+            return
+
+        w = self._w
+        h = self._h
+        x = u % w
+        y = u // w
+
+        g = self._g
+        blocked = self._blocked
+        diag_cost = self._diag_cost
+
+        min_rhs = _INF
+
+        if 0 < x < w - 1 and 0 < y < h - 1:
+            s = u - w  # N
+            if not blocked[s]:
+                v = 1.0 + g[s]
+                if v < min_rhs:
+                    min_rhs = v
+            s = u + w  # S
+            if not blocked[s]:
+                v = 1.0 + g[s]
+                if v < min_rhs:
+                    min_rhs = v
+            s = u - 1  # W
+            if not blocked[s]:
+                v = 1.0 + g[s]
+                if v < min_rhs:
+                    min_rhs = v
+            s = u + 1  # E
+            if not blocked[s]:
+                v = 1.0 + g[s]
+                if v < min_rhs:
+                    min_rhs = v
+            s = u - w - 1  # NW
+            if not blocked[s]:
+                v = diag_cost + g[s]
+                if v < min_rhs:
+                    min_rhs = v
+            s = u - w + 1  # NE
+            if not blocked[s]:
+                v = diag_cost + g[s]
+                if v < min_rhs:
+                    min_rhs = v
+            s = u + w - 1  # SW
+            if not blocked[s]:
+                v = diag_cost + g[s]
+                if v < min_rhs:
+                    min_rhs = v
+            s = u + w + 1  # SE
+            if not blocked[s]:
+                v = diag_cost + g[s]
+                if v < min_rhs:
+                    min_rhs = v
+        else:
+            if y > 0:
+                s = u - w
+                if not blocked[s]:
+                    v = 1.0 + g[s]
+                    if v < min_rhs:
+                        min_rhs = v
+                if x > 0:
+                    s = u - w - 1
+                    if not blocked[s]:
+                        v = diag_cost + g[s]
+                        if v < min_rhs:
+                            min_rhs = v
+                if x < w - 1:
+                    s = u - w + 1
+                    if not blocked[s]:
+                        v = diag_cost + g[s]
+                        if v < min_rhs:
+                            min_rhs = v
+            if y < h - 1:
+                s = u + w
+                if not blocked[s]:
+                    v = 1.0 + g[s]
+                    if v < min_rhs:
+                        min_rhs = v
+                if x > 0:
+                    s = u + w - 1
+                    if not blocked[s]:
+                        v = diag_cost + g[s]
+                        if v < min_rhs:
+                            min_rhs = v
+                if x < w - 1:
+                    s = u + w + 1
+                    if not blocked[s]:
+                        v = diag_cost + g[s]
+                        if v < min_rhs:
+                            min_rhs = v
+            if x > 0:
+                s = u - 1
+                if not blocked[s]:
+                    v = 1.0 + g[s]
+                    if v < min_rhs:
+                        min_rhs = v
+            if x < w - 1:
+                s = u + 1
+                if not blocked[s]:
+                    v = 1.0 + g[s]
+                    if v < min_rhs:
+                        min_rhs = v
+
+        # NB: uniform planners never enable bridges (use_bridges currently
+        # implies unknown_cost == 3.0). Dropping the dead `if self._use_bridges`
+        # check shaves an attribute lookup + branch off every call.
+
+        self._rhs[u] = min_rhs
+        gu = g[u]
+        if gu != min_rhs:
+            g_rhs = min_rhs if min_rhs < gu else gu
+            dx = self._start_x - x
+            if dx < 0:
+                dx = -dx
+            dy = self._start_y - y
+            if dy < 0:
+                dy = -dy
+            m = dx if dx < dy else dy
+            key = (g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km, g_rhs)
+            heapq.heappush(self._open, (key, u))
+            self._in_open[u] = 1
+        else:
+            self._in_open[u] = 0
+
+    def _recompute_rhs_general(self, u: int) -> None:
         if u == self._goal:
             return
 
@@ -630,7 +801,8 @@ class DStarLite:
         blocked = self._blocked
         unk_cost = self._unknown_cost
         diag_cost = self._diag_cost
-        diag_unk_cost = diag_cost if self._use_bridges else diag_cost * unk_cost
+        use_bridges = self._use_bridges
+        diag_unk_cost = diag_cost if use_bridges else diag_cost * unk_cost
 
         min_rhs = _INF
 
@@ -761,16 +933,26 @@ class DStarLite:
                         if v < min_rhs:
                             min_rhs = v
 
-        if self._use_bridges:
-            for jdx, jdy in _BRIDGE_JUMPS:
-                jx = x + jdx
-                jy = y + jdy
-                if 0 <= jx < w and 0 <= jy < h:
-                    s = jy * w + jx
+        if use_bridges:
+            bd = _BRIDGE_D
+            if bd <= x < w - bd and bd <= y < h - bd:
+                # All jumps land in-bounds — iterate flat offsets only.
+                for off in self._bridge_offsets:
+                    s = u + off
                     if not blocked[s]:
                         v = _BRIDGE_JUMP_COST + g[s]
                         if v < min_rhs:
                             min_rhs = v
+            else:
+                for jdx, jdy in _BRIDGE_JUMPS:
+                    jx = x + jdx
+                    jy = y + jdy
+                    if 0 <= jx < w and 0 <= jy < h:
+                        s = jy * w + jx
+                        if not blocked[s]:
+                            v = _BRIDGE_JUMP_COST + g[s]
+                            if v < min_rhs:
+                                min_rhs = v
 
         self._rhs[u] = min_rhs
         # Inlined _maybe_enqueue + _enqueue.
@@ -786,16 +968,13 @@ class DStarLite:
             m = dx if dx < dy else dy
             key = (g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km, g_rhs)
             heapq.heappush(self._open, (key, u))
-            self._in_open[u] = True
+            self._in_open[u] = 1
         else:
-            # Consistent: invalidate any stale open-heap entry. The entry
-            # remains in the heap (lazy deletion), but in_open[u]=False makes
-            # it skip on pop, avoiding redundant processing.
-            self._in_open[u] = False
+            self._in_open[u] = 0
 
     def _enqueue(self, u: int) -> None:
         heapq.heappush(self._open, (self._calc_key(u), u))
-        self._in_open[u] = True
+        self._in_open[u] = 1
 
     def _calc_key(self, u: int) -> tuple[float, float]:
         gu = self._g[u]

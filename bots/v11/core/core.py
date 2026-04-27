@@ -9,7 +9,7 @@ class Core:
             BuilderType.HARVESTER_1,
             BuilderType.ATTACKER_REVAMPED,
             BuilderType.HARVESTER_2,
-            BuilderType.ATTACKER_REVAMPED,
+            BuilderType.ASSASSIN,
             BuilderType.HARVESTER_3,
         ]
         self.spawn_plan = self.default_spawn_plan.copy()

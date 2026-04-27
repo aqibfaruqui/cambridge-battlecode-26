@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from builders.harvester import Harvester
 
 _DEGENERATE_ROOM = 3
-_FRONTIER_STRIDE = 3
+_FRONTIER_STRIDE = 1
 
 
 def _read_nearby_claims(c: Controller) -> set[tuple[int, int]]:
@@ -142,11 +142,11 @@ def _frontier_score(
 
     lane_bonus = 0.0
     if preferred_offset != 0:
-        lane_strength = max(20, 120 - abs(preferred_offset) * 8)
+        lane_strength = max(10, 60 - abs(preferred_offset) * 4)
         if preferred_offset * lane_sign > 0:
             lane_bonus += lane_strength
         else:
-            lane_bonus -= lane_strength * 0.75
+            lane_bonus -= lane_strength * 0.4
 
     core_dist = max(abs(target.x - self.core_pos.x), abs(target.y - self.core_pos.y))
     if core_dist <= 5 and abs(cross_offset) <= 1 and preferred_offset * lane_sign <= 0:
@@ -410,7 +410,7 @@ def _seek(self: Harvester, c: Controller):
     else:
         self.seek_stall_target = self.target_pos
         self.seek_target_turns = 1
-    if self.seek_target_turns >= 50:
+    if self.seek_target_turns >= 25:
         key = (self.target_pos.x, self.target_pos.y)
         if self.seek_target_is_ore:
             self.blacklisted_ores.add(key)

@@ -96,12 +96,22 @@ Re-scrape documentation with:
 uv run scripts/scrape_docs.py
 ```
 
-### Profile harvester_revamped
+### Profile a v12 bot
 
-Bots are bytecode-validated by `cambc` (no `try/finally`) and run in sub-interpreters, so `py-spy` can't see bot frames — profiling is done via in-bot `cProfile` instrumentation. `bots/v10/builders/harvester_revamped.py` is pre-instrumented and dumps `.pstats` files to `/tmp/harvester_profiles/`.
+Bots are bytecode-validated by `cambc` (no `try/finally`) and run in sub-interpreters, so `py-spy` can't see bot frames — profiling is done via in-bot `cProfile` instrumentation. Two v12 bots are pre-instrumented and dump `.pstats` files to per-target directories:
+
+| Target      | Source                              | Dump directory             |
+| ----------- | ----------------------------------- | -------------------------- |
+| `harvester` | `bots/v12/builders/harvester.py`    | `/tmp/harvester_profiles/` |
+| `attacker`  | `bots/v12/builders/attacker.py`     | `/tmp/attacker_profiles/`  |
+
+`scripts/profile.py` requires the target as a positional argument — there is no default, you must pick `harvester` or `attacker`.
 
 ```sh
-uv run scripts/profile.py run                       # run match, print top hotspots
-uv run scripts/profile.py report --filter d_star    # re-analyze, filtered
-uv run scripts/profile.py callers _succ             # who calls a hot function
+uv run scripts/profile.py run harvester                       # run match, print top hotspots
+uv run scripts/profile.py run attacker -m default_large1
+uv run scripts/profile.py report harvester --filter d_star    # re-analyze, filtered
+uv run scripts/profile.py callers attacker _succ              # who calls a hot function
 ```
+
+Pass `--profile-dir <path>` to override the per-target directory (useful for side-by-side runs of the same target).

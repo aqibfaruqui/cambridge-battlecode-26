@@ -40,19 +40,28 @@ uv run scripts/rag.py ask -k 10 "What are all the turret types?"
 
 `cambc` bytecode-validates bots before executing them and **disallows `try/finally` blocks** — instrument hot paths with bare `enable()`/`disable()` calls instead. Bots run in per-team sub-interpreters inside a single process, so `py-spy` will not see bot frames; use `cProfile` instrumentation instead.
 
-The harvester is already wired up: `bots/v10/builders/harvester_revamped.py` owns a module-level `cProfile.Profile` that dumps `.pstats` files (one per subinterpreter) to `/tmp/harvester_profiles/` every 100 `run()` calls.
+Two v12 bots are wired up. Each owns a module-level `cProfile.Profile` that dumps `.pstats` files (one per subinterpreter) every 100 `run()` calls to its own directory:
+
+| Target      | Source                              | Dump directory             |
+| ----------- | ----------------------------------- | -------------------------- |
+| `harvester` | `bots/v12/builders/harvester.py`    | `/tmp/harvester_profiles/` |
+| `attacker`  | `bots/v12/builders/attacker.py`     | `/tmp/attacker_profiles/`  |
+
+`scripts/profile.py` requires you to **explicitly pick a target** as a positional argument (`harvester` or `attacker`) — there is no default, so harvester and attacker runs never accidentally share a directory.
 
 Run a match and print an aggregated report:
 ```sh
-uv run scripts/profile.py run                              # v10 vs v10 on separated, TLE off
-uv run scripts/profile.py run -m default_large1 --bot-b v9
+uv run scripts/profile.py run harvester                                  # v12 vs v12 on separated, TLE off
+uv run scripts/profile.py run attacker -m default_large1 --bot-b v11
 ```
 
-Analyze existing `.pstats` files without rerunning:
+Analyze existing `.pstats` files without rerunning (target picks the dir):
 ```sh
-uv run scripts/profile.py report --sort tottime --top 30
-uv run scripts/profile.py report --filter d_star          # only frames matching regex
-uv run scripts/profile.py callers _succ                   # who calls this function
-uv run scripts/profile.py callees _recompute_rhs          # what does it call
+uv run scripts/profile.py report harvester --sort tottime --top 30
+uv run scripts/profile.py report attacker --filter d_star          # only frames matching regex
+uv run scripts/profile.py callers harvester _succ                  # who calls this function
+uv run scripts/profile.py callees attacker _recompute_rhs          # what does it call
 ```
+
+Override the per-target directory with `--profile-dir <path>` if you want to compare two runs of the same target side-by-side.
 

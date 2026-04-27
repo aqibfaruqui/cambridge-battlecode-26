@@ -1,3 +1,5 @@
+import os
+import uuid
 from itertools import product
 
 from cambc import Controller, Direction, EntityType, Position
@@ -12,6 +14,23 @@ from utils.healing import try_heal_nearby_bot
 
 # Attacker never pathfinds into the enemy core — block CORE_ENEMY statically.
 _ATTACK_BLOCK_MASK = (1 << WALL) | (1 << CORE_ENEMY)
+
+
+# Profiling is only available locally. AWS runners ship a stripped-down CPython
+# without _lsprof (the C extension cProfile depends on), so we probe for it
+# capability-style rather than sniffing env vars (which the sandbox may hide).
+try:
+    import cProfile
+    _PROFILER = cProfile.Profile()
+    _PROFILE_DIR = "/tmp/attacker_profiles"
+    _PROFILE_ID = f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    _PROFILE_PATH = os.path.join(_PROFILE_DIR, f"attk_{_PROFILE_ID}.pstats")
+    _PROFILE_CALLS = 0
+    _PROFILE_DUMP_EVERY = 100
+    os.makedirs(_PROFILE_DIR, exist_ok=True)
+    _PROFILE_ENABLED = True
+except ImportError:
+    _PROFILE_ENABLED = False
 
 
 class Attacker:
@@ -124,6 +143,9 @@ class Attacker:
     # ---------- main loop ----------
 
     def run(self, c: Controller):
+        if _PROFILE_ENABLED:
+            global _PROFILE_CALLS
+            _PROFILER.enable()
         if self._env_map is None:
             self._env_map = EnvironmentMap(c.get_map_width(), c.get_map_height())
         self._env_map.update(c)
@@ -218,3 +240,8 @@ class Attacker:
 
         self._sync_claim_broadcast()
         self.broadcaster.run(c)
+        if _PROFILE_ENABLED:
+            _PROFILER.disable()
+            _PROFILE_CALLS += 1
+            if _PROFILE_CALLS % _PROFILE_DUMP_EVERY == 0:
+                _PROFILER.dump_stats(_PROFILE_PATH)

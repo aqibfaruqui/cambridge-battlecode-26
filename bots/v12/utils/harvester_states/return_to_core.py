@@ -55,6 +55,7 @@ def _reset_return_state(self: Harvester):
     self.return_planner = None
     self.post_bridge_conveyor = False
     self.return_bridge_fail_counts = {}
+    self.failed_bridge_targets.clear()
 
 
 def _clear_bridge_walk_state(self: Harvester, *, reset_return_planner: bool = False) -> None:
@@ -80,6 +81,8 @@ def _bridge_fail(self: Harvester, key) -> None:
     fails = self.return_bridge_fail_counts.get(key, 0) + 1
     self.return_bridge_fail_counts[key] = fails
     if fails >= _MAX_BRIDGE_FAILS:
+        if self.bridge_jump_target is not None:
+            self.failed_bridge_targets.add((self.bridge_jump_target.x, self.bridge_jump_target.y))
         _clear_bridge_walk_state(self, reset_return_planner=True)
         self.return_bridge_fail_counts.pop(key, None)
 
@@ -114,7 +117,7 @@ def _attack_enemy_under_bot(self: Harvester, c: Controller) -> bool:
     return True
 
 
-def _return_dynamic_blockers(c: Controller) -> list[tuple[int, int]]:
+def _return_dynamic_blockers(self: Harvester, c: Controller) -> list[tuple[int, int]]:
     team = c.get_team()
     blockers: list[tuple[int, int]] = []
     ti_harvester_adj: set[tuple[int, int]] = set()
@@ -128,7 +131,8 @@ def _return_dynamic_blockers(c: Controller) -> list[tuple[int, int]]:
         if entity_type == EntityType.HARVESTER or c.get_team(build_id) != team:
             blockers.append((pos.x, pos.y))
             # Block tiles adjacent to allied Ti harvesters so Ax chains route away from Ti chains.
-            if entity_type == EntityType.HARVESTER and c.get_team(build_id) == team and c.get_tile_env(pos) == Environment.ORE_TITANIUM:
+            # Only in axionite return during the normal walk (not bridge walk/post-bridge).
+            if self.returning_from_axionite and self.bridge_jump_target is None and not self.post_bridge_conveyor and entity_type == EntityType.HARVESTER and c.get_team(build_id) == team and c.get_tile_env(pos) == Environment.ORE_TITANIUM:
                 for d in DIRECTIONS_4:
                     adj = pos.add(d)
                     if _on_map(c, adj) and c.is_in_vision(adj):
@@ -137,8 +141,8 @@ def _return_dynamic_blockers(c: Controller) -> list[tuple[int, int]]:
     return blockers
 
 
-def _body_dynamic_blockers(c: Controller) -> list[tuple[int, int]]:
-    blockers = _return_dynamic_blockers(c)
+def _body_dynamic_blockers(self: Harvester, c: Controller) -> list[tuple[int, int]]:
+    blockers = _return_dynamic_blockers(self, c)
     my_id = c.get_id()
     for pos in c.get_nearby_tiles():
         bot_id = c.get_tile_builder_bot_id(pos)
@@ -159,7 +163,7 @@ def _ensure_return_planner(self: Harvester, c: Controller):
         )
     p = self.return_planner
     if p is not None:
-        p.set_dynamic_blockers(_return_dynamic_blockers(c))
+        p.set_dynamic_blockers(_return_dynamic_blockers(self, c))
         p.notify_map_changes()
     return p
 
@@ -272,7 +276,7 @@ def _move_toward_remote_build_spot(
     if env is None:
         return False
 
-    blockers = _body_dynamic_blockers(c)
+    blockers = _body_dynamic_blockers(self, c)
     for goal in _remote_build_spots(self, c, target):
         if goal == self.current_pos:
             return True
@@ -460,7 +464,8 @@ def _chain_reaches_core(c: Controller, pos: Position, core_pos: Position) -> boo
 
 def _try_chain_shortcut(self: Harvester, c: Controller) -> bool:
     if (
-        self.bridge_jump_target is not None
+        self.returning_from_axionite
+        or self.bridge_jump_target is not None
         or self.post_bridge_conveyor
         or self.return_chain_cursor is not None
         or self.just_placed
@@ -592,7 +597,7 @@ def _ensure_bridge_target_planner(self: Harvester, c: Controller, target: Positi
     p = self.bridge_target_planner
     if p is not None:
         p.set_position(self.current_pos.x, self.current_pos.y)
-        p.set_dynamic_blockers(_body_dynamic_blockers(c))
+        p.set_dynamic_blockers(_body_dynamic_blockers(self, c))
         p.notify_map_changes()
     return p
 
@@ -644,9 +649,10 @@ def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
     if target is None:
         return False
 
-    if reached_core(self.current_pos, self.core_pos):
-        _complete_return_from_bridge(self, c)
-        return True
+    if reached_core(target, self.core_pos):
+        if reached_core(self.current_pos, self.core_pos):
+            _complete_return_from_bridge(self, c)
+            return True
 
     if self.current_pos == target:
         if reached_core(target, self.core_pos):
@@ -739,7 +745,10 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
             tx, ty = step_xy
             dsq = (tx - cx) * (tx - cx) + (ty - cy) * (ty - cy)
             if dsq > 1:
-                return _handle_bridge_jump(self, c, Position(tx, ty))
+                if (tx, ty) in self.failed_bridge_targets:
+                    self.return_planner = None
+                else:
+                    return _handle_bridge_jump(self, c, Position(tx, ty))
             planner_step = self.current_pos.direction_to(Position(tx, ty))
 
     if self.return_next_dir is not None:

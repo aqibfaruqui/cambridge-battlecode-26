@@ -110,6 +110,7 @@ class Harvester:
         self.return_chain_cursor: Position | None = None
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
+        self.failed_bridge_targets: set[tuple[int, int]] = set()
         self.chain_memory: dict[tuple[int, int], dict] = {}
         self.heal_target: Position | None = None
         self.patrol_turns: int = 0
@@ -311,6 +312,8 @@ class Harvester:
                 self.state = HarvestState.SEEK
             self.target_pos = None
             self.seek_target_is_ore = False
+            self.blacklisted_ores.clear()
+            self.blacklisted_seek_targets.clear()
             self.harvester_pos = None
             self.returning_from_axionite = False
             _reset_return_state(self)

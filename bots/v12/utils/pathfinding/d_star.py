@@ -91,7 +91,7 @@ class DStarLite:
         "_start_y",
         "_goal",
         "_last",
-        "_snapshot",
+        "_log_version",
         "_block_mask",
         "_dynamic_blocked",
         "_blocked",
@@ -100,6 +100,7 @@ class DStarLite:
         "_diag_cost",
         "_recompute_rhs",
         "_bridge_offsets",
+        "_uniform_cost",
     )
 
     def __init__(
@@ -121,7 +122,7 @@ class DStarLite:
         self._g = [_INF] * self._n
         self._rhs = [_INF] * self._n
 
-        self._open: List[Tuple[Tuple[float, float], int]] = []
+        self._open: List[Tuple[float, float, int]] = []
         # bytearray indexed by node id; 0 = stale/absent, 1 = live entry.
         # Faster than list[bool] for indexed writes (no Py_True/Py_False
         # rebind) and for the hot stale-entry check in _compute_shortest_path.
@@ -138,7 +139,10 @@ class DStarLite:
         self._rhs[self._goal] = 0.0
         self._enqueue(self._goal)
 
-        self._snapshot = bytearray(env._array)
+        # Track our position in the env's append-only change log; we'll only
+        # scan indices appended after this version on `notify_map_changes`,
+        # avoiding the previous O(w*h) per-call diff.
+        self._log_version = len(env._change_log)
         self._dynamic_blocked: set[int] = set()
         # Combined static-mask + dynamic blocker bitmap. Hot-path membership test
         # collapses (s not in dyn) and ((mask >> arr[s]) & 1) into one C-level
@@ -173,6 +177,13 @@ class DStarLite:
             self._recompute_rhs = self._recompute_rhs_uniform  # type: ignore[method-assign]
         else:
             self._recompute_rhs = self._recompute_rhs_general  # type: ignore[method-assign]
+
+        # When unknown_cost == 1.0 the per-neighbour cost depends only on
+        # blocked[s] (not on arr[s]). That lets notify_map_changes skip the
+        # 8-neighbour recompute fan-out for any cell whose blocked bit didn't
+        # actually flip — e.g. the attacker's UNKNOWN→TRAVERSABLE storm under
+        # a mask that blocks neither.
+        self._uniform_cost = unknown_cost == 1.0
 
     # ---------- Public API ----------
 
@@ -259,75 +270,98 @@ class DStarLite:
                 recompute(new_start + 1)
 
     def notify_map_changes(self) -> bool:
-        arr = self._env._array
-        snapshot = self._snapshot
+        env = self._env
+        change_log = env._change_log
+        log_len = len(change_log)
+        last_seen = self._log_version
 
-        # Fast path: bytearray equality is a single C memcmp.
-        if arr == snapshot:
+        # Fast path: nothing has been appended since we last looked.
+        if log_len == last_seen:
             return False
+        self._log_version = log_len
 
+        arr = env._array
         w = self._w
         h = self._h
-        n = self._n
         recompute = self._recompute_rhs
         blocked = self._blocked
         dyn = self._dynamic_blocked
         mask = self._block_mask
         use_bridges = self._use_bridges
         current_start = self._start
+        uniform_cost = self._uniform_cost
 
-        i = 0
-        while i < n:
-            if arr[i] != snapshot[i]:
-                new_val = arr[i]
-                snapshot[i] = new_val
+        # The same idx may appear several times in the log when a tile flips
+        # twice between two notify calls; dedupe so we only re-derive the
+        # blocked bit and fan out predecessor recomputes once per cell.
+        seen: set[int] = set()
+        any_recompute = False
 
-                # Refresh combined blocked bitmap for this cell. Preserve the
-                # blocked[start]=0 invariant.
-                if i == current_start:
-                    blocked[i] = 0
-                elif (mask >> new_val) & 1 or i in dyn:
-                    blocked[i] = 1
-                else:
-                    blocked[i] = 0
+        for k in range(last_seen, log_len):
+            i = change_log[k]
+            if i in seen:
+                continue
+            seen.add(i)
 
-                x = i % w
-                y = i // w
-                # Inlined: for pred in _pred(i): recompute(pred)
-                if y > 0:
-                    recompute(i - w)
-                    if x > 0:
-                        recompute(i - w - 1)
-                    if x < w - 1:
-                        recompute(i - w + 1)
-                if y < h - 1:
-                    recompute(i + w)
-                    if x > 0:
-                        recompute(i + w - 1)
-                    if x < w - 1:
-                        recompute(i + w + 1)
+            new_val = arr[i]
+
+            # Refresh combined blocked bitmap for this cell. Preserve the
+            # blocked[start]=0 invariant.
+            old_b = blocked[i]
+            if i == current_start:
+                new_b = 0
+            elif (mask >> new_val) & 1 or i in dyn:
+                new_b = 1
+            else:
+                new_b = 0
+            blocked[i] = new_b
+
+            # When step cost depends only on blocked-state (uniform_cost),
+            # an arr-only flip (UNKNOWN↔TRAVERSABLE↔ORE… all on the same
+            # side of the block mask) leaves every neighbour's rhs intact.
+            # Skip the 8+ recompute fan-out — this is the dominant case
+            # for the attacker on partially-explored maps.
+            if uniform_cost and old_b == new_b:
+                continue
+
+            any_recompute = True
+
+            x = i % w
+            y = i // w
+            # Inlined: for pred in _pred(i): recompute(pred)
+            if y > 0:
+                recompute(i - w)
                 if x > 0:
-                    recompute(i - 1)
+                    recompute(i - w - 1)
                 if x < w - 1:
-                    recompute(i + 1)
+                    recompute(i - w + 1)
+            if y < h - 1:
+                recompute(i + w)
+                if x > 0:
+                    recompute(i + w - 1)
+                if x < w - 1:
+                    recompute(i + w + 1)
+            if x > 0:
+                recompute(i - 1)
+            if x < w - 1:
+                recompute(i + 1)
 
-                recompute(i)
+            recompute(i)
 
-                if use_bridges:
-                    bd = _BRIDGE_D
-                    if bd <= x < w - bd and bd <= y < h - bd:
-                        for off in self._bridge_offsets:
-                            recompute(i - off)
-                    else:
-                        for jdx, jdy in _BRIDGE_JUMPS:
-                            px = x - jdx
-                            py = y - jdy
-                            if 0 <= px < w and 0 <= py < h:
-                                recompute(py * w + px)
+            if use_bridges:
+                bd = _BRIDGE_D
+                if bd <= x < w - bd and bd <= y < h - bd:
+                    for off in self._bridge_offsets:
+                        recompute(i - off)
+                else:
+                    for jdx, jdy in _BRIDGE_JUMPS:
+                        px = x - jdx
+                        py = y - jdy
+                        if 0 <= px < w and 0 <= py < h:
+                            recompute(py * w + px)
 
-            i += 1
-
-        self._compute_shortest_path()
+        if any_recompute:
+            self._compute_shortest_path()
         return True
 
     def set_dynamic_blockers(self, blocked_xy: list[tuple[int, int]]) -> bool:
@@ -353,15 +387,27 @@ class DStarLite:
         recompute = self._recompute_rhs
         current_start = self._start
 
+        any_recompute = False
         for idx in changed_nodes:
+            old_b = blocked[idx]
             if idx == current_start:
-                blocked[idx] = 0  # preserve start=walkable invariant
+                new_b = 0  # preserve start=walkable invariant
             elif (mask >> arr[idx]) & 1:
-                blocked[idx] = 1  # still statically blocked
+                new_b = 1  # still statically blocked
             elif idx in new_blocked:
-                blocked[idx] = 1
+                new_b = 1
             else:
-                blocked[idx] = 0
+                new_b = 0
+
+            # set_dynamic_blockers only flips dyn membership; arr is unchanged.
+            # If the bitmap didn't actually flip (e.g. a dyn add on a cell
+            # that's already statically blocked), every neighbour cost is
+            # unchanged and the recompute fan-out is dead work — irrespective
+            # of the cost variant.
+            if old_b == new_b:
+                continue
+            blocked[idx] = new_b
+            any_recompute = True
 
             x = idx % w
             y = idx // w
@@ -383,7 +429,7 @@ class DStarLite:
             if x < w - 1:
                 recompute(idx + 1)
 
-        if changed_nodes:
+        if any_recompute:
             self._compute_shortest_path()
 
         return True
@@ -567,7 +613,10 @@ class DStarLite:
         km = self._km
 
         while open_heap:
-            k_old, u = heapq.heappop(open_heap)
+            # Heap entries are flattened 3-tuples (primary, secondary, u) —
+            # tuple ordering matches the original ((primary, secondary), u)
+            # nesting but removes the inner-tuple allocation per push/pop.
+            k_old_0, k_old_1, u = heapq.heappop(open_heap)
 
             if not in_open[u]:
                 continue
@@ -594,12 +643,8 @@ class DStarLite:
                 dy = -dy
             m = dx if dx < dy else dy
             k_new_primary = g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + km
-            # Avoid building the (k_new_primary, g_rhs) tuple just for the
-            # compare — k_old is already a tuple, so unpack-and-compare in
-            # scalar space (saves an allocation per heap pop, ~62k/run).
-            k_old_0 = k_old[0]
-            if k_old_0 < k_new_primary or (k_old_0 == k_new_primary and k_old[1] < g_rhs):
-                heapq.heappush(open_heap, ((k_new_primary, g_rhs), u))
+            if k_old_0 < k_new_primary or (k_old_0 == k_new_primary and k_old_1 < g_rhs):
+                heapq.heappush(open_heap, (k_new_primary, g_rhs, u))
                 continue
 
             in_open[u] = 0
@@ -649,9 +694,15 @@ class DStarLite:
 
             # h(start, start) = 0, so calc_key(start) simplifies to (gs+km, gs)
             # whenever rhs[start] == g[start] (the termination condition).
+            # Compare the heap top in flat scalars to avoid building the
+            # (gs+km, gs) tuple just for the lex compare.
             gs = g[start]
-            if rhs[start] == gs and (gs + km, gs) <= open_heap[0][0]:
-                break
+            if rhs[start] == gs:
+                gs_km = gs + km
+                top = open_heap[0]
+                top0 = top[0]
+                if gs_km < top0 or (gs_km == top0 and gs <= top[1]):
+                    break
 
     def _recompute_rhs_uniform(self, u: int) -> None:
         """Specialised _recompute_rhs for unknown_cost == 1.0.
@@ -781,8 +832,10 @@ class DStarLite:
             if dy < 0:
                 dy = -dy
             m = dx if dx < dy else dy
-            key = (g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km, g_rhs)
-            heapq.heappush(self._open, (key, u))
+            heapq.heappush(
+                self._open,
+                (g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km, g_rhs, u),
+            )
             self._in_open[u] = 1
         else:
             self._in_open[u] = 0
@@ -966,14 +1019,17 @@ class DStarLite:
             if dy < 0:
                 dy = -dy
             m = dx if dx < dy else dy
-            key = (g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km, g_rhs)
-            heapq.heappush(self._open, (key, u))
+            heapq.heappush(
+                self._open,
+                (g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km, g_rhs, u),
+            )
             self._in_open[u] = 1
         else:
             self._in_open[u] = 0
 
     def _enqueue(self, u: int) -> None:
-        heapq.heappush(self._open, (self._calc_key(u), u))
+        primary, secondary = self._calc_key(u)
+        heapq.heappush(self._open, (primary, secondary, u))
         self._in_open[u] = 1
 
     def _calc_key(self, u: int) -> tuple[float, float]:

@@ -49,6 +49,7 @@ class EnvironmentMap:
         "_enemy_core_found",
         "_known_ti",
         "_known_ax",
+        "_change_log",
     )
 
     def __init__(self, w: int, h: int):
@@ -60,6 +61,11 @@ class EnvironmentMap:
         self._enemy_core_found = False
         self._known_ti: set[tuple[int, int]] = set()
         self._known_ax: set[tuple[int, int]] = set()
+        # Append-only log of indices mutated in `_array`. D*Lite planners
+        # remember the length they last consumed and pull only the new tail
+        # on `notify_map_changes`, replacing the old O(w*h) full-array scan.
+        # May contain duplicates if a tile flips repeatedly; consumers dedupe.
+        self._change_log: list[int] = []
 
     def _set_tile(self, x: int, y: int, val: int, observed: bool = False) -> bool:
         idx = y * self._w + x
@@ -76,6 +82,7 @@ class EnvironmentMap:
             self._known_ax.discard(key)
 
         self._array[idx] = val
+        self._change_log.append(idx)
         if observed:
             self._observed[idx] = 1
 
@@ -91,6 +98,8 @@ class EnvironmentMap:
         observed = self._observed
         known_ti = self._known_ti
         known_ax = self._known_ax
+        change_log = self._change_log
+        log_append = change_log.append
         w = self._w
         wm1 = w - 1
         hm1 = self._h - 1
@@ -123,6 +132,15 @@ class EnvironmentMap:
             y = tile.y
             idx = y * w + x
 
+            # Terrain (Environment + own/enemy core) is static for the entire
+            # match — cores don't relocate, walls/ore don't transform. Once a
+            # tile is observed=1, arr[idx] is final, so skip the get_tile_env /
+            # get_tile_building_id controller calls entirely. Predicted-via-
+            # symmetry tiles (arr set, observed=0) still flow through the slow
+            # path so direct sight can correct a bad symmetry guess.
+            if observed[idx]:
+                continue
+
             # Base terrain via `is` chain — avoids enum.__hash__/dict lookup.
             e = get_tile_env(tile)
             if e is env_empty:
@@ -154,6 +172,7 @@ class EnvironmentMap:
             elif old == 4:
                 known_ax.discard((x, y))
             arr[idx] = val
+            log_append(idx)
             if val == 3:
                 known_ti.add((x, y))
             elif val == 4:

@@ -10,6 +10,7 @@ from utils.harvester_states.return_to_core import (
     _build_return_step,
     _handle_post_bridge_conveyor,
     _reset_return_state,
+    _try_chain_shortcut,
     _update_chain_memory,
 )
 from utils.harvester_states.seek import (
@@ -106,6 +107,7 @@ class Harvester:
         # carry-forward: direction to move on the next _build_return_step call;
         # set by the first-connector step, diagonal splits, and post-bridge conveyor.
         self.return_next_dir: Direction | None = None
+        self.return_chain_cursor: Position | None = None
         self.post_bridge_conveyor = False
         self.return_bridge_fail_counts = {}
         self.chain_memory: dict[tuple[int, int], dict] = {}
@@ -312,6 +314,9 @@ class Harvester:
             self.harvester_pos = None
             self.returning_from_axionite = False
             _reset_return_state(self)
+            return
+
+        if _try_chain_shortcut(self, c):
             return
 
         # Standing on an enemy walkable tile: fire until it's destroyed, then

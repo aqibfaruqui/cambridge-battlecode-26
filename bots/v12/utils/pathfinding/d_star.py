@@ -711,6 +711,21 @@ class DStarLite:
         `(diag_unk_cost if arr[s]==0 else diag_cost)` are constants, so the
         per-neighbour cost branch and the `arr` access vanish entirely.
         Bound at construction time for every planner except the return one.
+
+        Per-neighbour reads g[s] into a local and prunes via `gs < min_rhs`
+        before doing the cost add — for unreachable (g=INF) and already-
+        dominated neighbours this skips a float add and a compare. During
+        first-compute, where most neighbours start at g=INF, this is the
+        common case.
+
+        Returns without touching the heap when the recomputed `min_rhs`
+        matches the stored `rhs[u]`. Same-rhs recomputes are pure noise:
+        any existing heap entry already carries the correct `(g, rhs)`
+        relationship, so a fresh push would just become another stale
+        entry to skip on pop. This is the dominant path during first-
+        compute fan-out — once a cell's optimal predecessor lands a g
+        value, recomputes triggered by its other (longer-distance)
+        predecessors find the same min and previously pushed redundantly.
         """
         if u == self._goal:
             return
@@ -721,6 +736,7 @@ class DStarLite:
         y = u // w
 
         g = self._g
+        rhs = self._rhs
         blocked = self._blocked
         diag_cost = self._diag_cost
 
@@ -729,101 +745,140 @@ class DStarLite:
         if 0 < x < w - 1 and 0 < y < h - 1:
             s = u - w  # N
             if not blocked[s]:
-                v = 1.0 + g[s]
-                if v < min_rhs:
-                    min_rhs = v
+                gs = g[s]
+                if gs < min_rhs:
+                    v = 1.0 + gs
+                    if v < min_rhs:
+                        min_rhs = v
             s = u + w  # S
             if not blocked[s]:
-                v = 1.0 + g[s]
-                if v < min_rhs:
-                    min_rhs = v
+                gs = g[s]
+                if gs < min_rhs:
+                    v = 1.0 + gs
+                    if v < min_rhs:
+                        min_rhs = v
             s = u - 1  # W
             if not blocked[s]:
-                v = 1.0 + g[s]
-                if v < min_rhs:
-                    min_rhs = v
+                gs = g[s]
+                if gs < min_rhs:
+                    v = 1.0 + gs
+                    if v < min_rhs:
+                        min_rhs = v
             s = u + 1  # E
             if not blocked[s]:
-                v = 1.0 + g[s]
-                if v < min_rhs:
-                    min_rhs = v
+                gs = g[s]
+                if gs < min_rhs:
+                    v = 1.0 + gs
+                    if v < min_rhs:
+                        min_rhs = v
             s = u - w - 1  # NW
             if not blocked[s]:
-                v = diag_cost + g[s]
-                if v < min_rhs:
-                    min_rhs = v
+                gs = g[s]
+                if gs < min_rhs:
+                    v = diag_cost + gs
+                    if v < min_rhs:
+                        min_rhs = v
             s = u - w + 1  # NE
             if not blocked[s]:
-                v = diag_cost + g[s]
-                if v < min_rhs:
-                    min_rhs = v
+                gs = g[s]
+                if gs < min_rhs:
+                    v = diag_cost + gs
+                    if v < min_rhs:
+                        min_rhs = v
             s = u + w - 1  # SW
             if not blocked[s]:
-                v = diag_cost + g[s]
-                if v < min_rhs:
-                    min_rhs = v
+                gs = g[s]
+                if gs < min_rhs:
+                    v = diag_cost + gs
+                    if v < min_rhs:
+                        min_rhs = v
             s = u + w + 1  # SE
             if not blocked[s]:
-                v = diag_cost + g[s]
-                if v < min_rhs:
-                    min_rhs = v
+                gs = g[s]
+                if gs < min_rhs:
+                    v = diag_cost + gs
+                    if v < min_rhs:
+                        min_rhs = v
         else:
             if y > 0:
                 s = u - w
                 if not blocked[s]:
-                    v = 1.0 + g[s]
-                    if v < min_rhs:
-                        min_rhs = v
+                    gs = g[s]
+                    if gs < min_rhs:
+                        v = 1.0 + gs
+                        if v < min_rhs:
+                            min_rhs = v
                 if x > 0:
                     s = u - w - 1
                     if not blocked[s]:
-                        v = diag_cost + g[s]
-                        if v < min_rhs:
-                            min_rhs = v
+                        gs = g[s]
+                        if gs < min_rhs:
+                            v = diag_cost + gs
+                            if v < min_rhs:
+                                min_rhs = v
                 if x < w - 1:
                     s = u - w + 1
                     if not blocked[s]:
-                        v = diag_cost + g[s]
-                        if v < min_rhs:
-                            min_rhs = v
+                        gs = g[s]
+                        if gs < min_rhs:
+                            v = diag_cost + gs
+                            if v < min_rhs:
+                                min_rhs = v
             if y < h - 1:
                 s = u + w
                 if not blocked[s]:
-                    v = 1.0 + g[s]
-                    if v < min_rhs:
-                        min_rhs = v
+                    gs = g[s]
+                    if gs < min_rhs:
+                        v = 1.0 + gs
+                        if v < min_rhs:
+                            min_rhs = v
                 if x > 0:
                     s = u + w - 1
                     if not blocked[s]:
-                        v = diag_cost + g[s]
-                        if v < min_rhs:
-                            min_rhs = v
+                        gs = g[s]
+                        if gs < min_rhs:
+                            v = diag_cost + gs
+                            if v < min_rhs:
+                                min_rhs = v
                 if x < w - 1:
                     s = u + w + 1
                     if not blocked[s]:
-                        v = diag_cost + g[s]
-                        if v < min_rhs:
-                            min_rhs = v
+                        gs = g[s]
+                        if gs < min_rhs:
+                            v = diag_cost + gs
+                            if v < min_rhs:
+                                min_rhs = v
             if x > 0:
                 s = u - 1
                 if not blocked[s]:
-                    v = 1.0 + g[s]
-                    if v < min_rhs:
-                        min_rhs = v
+                    gs = g[s]
+                    if gs < min_rhs:
+                        v = 1.0 + gs
+                        if v < min_rhs:
+                            min_rhs = v
             if x < w - 1:
                 s = u + 1
                 if not blocked[s]:
-                    v = 1.0 + g[s]
-                    if v < min_rhs:
-                        min_rhs = v
+                    gs = g[s]
+                    if gs < min_rhs:
+                        v = 1.0 + gs
+                        if v < min_rhs:
+                            min_rhs = v
 
-        # NB: uniform planners never enable bridges (use_bridges currently
-        # implies unknown_cost == 3.0). Dropping the dead `if self._use_bridges`
-        # check shaves an attribute lookup + branch off every call.
-
-        self._rhs[u] = min_rhs
+        # Skip the heap dance only when both rhs[u] and the in_open marker
+        # already reflect the post-recompute consistency state. The extra
+        # `_in_open` check matters in one specific path: `_compute_shortest_path`
+        # sets `g[u]=INF` and `in_open[u]=0` for an underconsistent u, then
+        # immediately calls `recompute(u)` — gu just flipped, so if min_rhs
+        # happens to match the stale rhs we still owe u a fresh heap entry,
+        # otherwise the D* Lite invariant (inconsistent ⇒ enqueued) breaks.
         gu = g[u]
-        if gu != min_rhs:
+        need_in_open = gu != min_rhs
+        in_open = self._in_open
+        if min_rhs == rhs[u] and (in_open[u] != 0) == need_in_open:
+            return
+        rhs[u] = min_rhs
+        if need_in_open:
             g_rhs = min_rhs if min_rhs < gu else gu
             dx = self._start_x - x
             if dx < 0:
@@ -836,9 +891,9 @@ class DStarLite:
                 self._open,
                 (g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km, g_rhs, u),
             )
-            self._in_open[u] = 1
+            in_open[u] = 1
         else:
-            self._in_open[u] = 0
+            in_open[u] = 0
 
     def _recompute_rhs_general(self, u: int) -> None:
         if u == self._goal:
@@ -993,9 +1048,11 @@ class DStarLite:
                 for off in self._bridge_offsets:
                     s = u + off
                     if not blocked[s]:
-                        v = _BRIDGE_JUMP_COST + g[s]
-                        if v < min_rhs:
-                            min_rhs = v
+                        gs = g[s]
+                        if gs < min_rhs:
+                            v = _BRIDGE_JUMP_COST + gs
+                            if v < min_rhs:
+                                min_rhs = v
             else:
                 for jdx, jdy in _BRIDGE_JUMPS:
                     jx = x + jdx
@@ -1003,14 +1060,23 @@ class DStarLite:
                     if 0 <= jx < w and 0 <= jy < h:
                         s = jy * w + jx
                         if not blocked[s]:
-                            v = _BRIDGE_JUMP_COST + g[s]
-                            if v < min_rhs:
-                                min_rhs = v
+                            gs = g[s]
+                            if gs < min_rhs:
+                                v = _BRIDGE_JUMP_COST + gs
+                                if v < min_rhs:
+                                    min_rhs = v
 
-        self._rhs[u] = min_rhs
-        # Inlined _maybe_enqueue + _enqueue.
+        # Skip the heap dance only when both rhs and in_open already match
+        # the post-recompute state — see _recompute_rhs_uniform for the
+        # underconsistent-self edge case the in_open check guards against.
+        rhs = self._rhs
         gu = g[u]
-        if gu != min_rhs:
+        need_in_open = gu != min_rhs
+        in_open = self._in_open
+        if min_rhs == rhs[u] and (in_open[u] != 0) == need_in_open:
+            return
+        rhs[u] = min_rhs
+        if need_in_open:
             g_rhs = min_rhs if min_rhs < gu else gu
             dx = self._start_x - x
             if dx < 0:
@@ -1023,9 +1089,9 @@ class DStarLite:
                 self._open,
                 (g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km, g_rhs, u),
             )
-            self._in_open[u] = 1
+            in_open[u] = 1
         else:
-            self._in_open[u] = 0
+            in_open[u] = 0
 
     def _enqueue(self, u: int) -> None:
         primary, secondary = self._calc_key(u)

@@ -272,6 +272,7 @@ def _move_toward_remote_build_spot(
     if env is None:
         return False
 
+    blockers = _body_dynamic_blockers(c)
     for goal in _remote_build_spots(self, c, target):
         if goal == self.current_pos:
             return True
@@ -283,7 +284,7 @@ def _move_toward_remote_build_spot(
             unknown_cost=3.0,
         )
         planner.set_position(self.current_pos.x, self.current_pos.y)
-        planner.set_dynamic_blockers(_body_dynamic_blockers(c))
+        planner.set_dynamic_blockers(blockers)
         planner.notify_map_changes()
         move_dir = planner.step()
         if move_dir is None or move_dir == Direction.CENTRE:

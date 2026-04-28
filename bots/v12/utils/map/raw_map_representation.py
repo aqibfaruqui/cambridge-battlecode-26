@@ -93,7 +93,15 @@ class EnvironmentMap:
 
         return True
 
-    def update(self, c: Controller) -> None:
+    def update(self, c: Controller, tiles=None) -> None:
+        """Refresh the map from controller vision.
+
+        `tiles`: an optional iterable of Position from `c.get_nearby_tiles()`.
+        Passing one in lets the caller share a single vision query with
+        downstream consumers (e.g. attacker._search) instead of paying for
+        two get_nearby_tiles calls and ~70 redundant Position allocations
+        per turn.
+        """
         arr = self._array
         observed = self._observed
         known_ti = self._known_ti
@@ -127,7 +135,9 @@ class EnvironmentMap:
         newly: list[int] = []
         nappend = newly.append
 
-        for tile in c.get_nearby_tiles():
+        if tiles is None:
+            tiles = c.get_nearby_tiles()
+        for tile in tiles:
             x = tile.x
             y = tile.y
             idx = y * w + x

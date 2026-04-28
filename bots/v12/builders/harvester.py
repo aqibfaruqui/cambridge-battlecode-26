@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 import uuid
@@ -25,7 +26,6 @@ from utils.harvester_states.placing_harvester import (
 )
 from utils.harvester_states.defend import (
     _defend as _defend_state,
-    _try_enter_defend,
 )
 from utils.harvester_states.heal import (
     _heal as _heal_state,
@@ -36,7 +36,7 @@ from utils.map.raw_map_representation import EnvironmentMap, Symmetry
 from utils.pathfinding.d_star import DStarLite
 from utils.comms.broadcaster import Broadcaster
 from utils.comms.for_builder_bot import BuilderBotMessages
-from utils.healing import try_heal_nearby_bot
+from utils.healing import try_heal_nearby_bot, try_heal_nearby_building
 
 
 # Profiling is only available locally. AWS runners ship a stripped-down CPython
@@ -117,6 +117,7 @@ class Harvester:
         self.patrol_target: Position | None = None
         self.patrol_going_out: bool = True
         self.patrol_tip: Position | None = None
+        self.patrol_inner: Position | None = None
 
         self.placing_ore_pos: Position | None = None
         self.placing_exit_pos: Position | None = None
@@ -126,14 +127,12 @@ class Harvester:
         self.placing_is_titanium: bool = False
 
         self.defend_prev_state: HarvestState | None = None
-        self.defend_enemy_id: int | None = None
         self.defend_target_tile: Position | None = None
-        self.defend_gunner_pos: Position | None = None
-        self.defend_orig_conveyor_dir: Direction | None = None
-        self.enemy_tile_hp: dict[tuple[int, int], int] = {}
+        self.defend_cleared_tiles: list[tuple[int, int, Direction]] = []
 
         self.heal_prev_state: HarvestState | None = None
         self.heal_interrupt_target: Position | None = None
+        self.heal_idle_turns: int = 0
 
         self.harvesters_placed = 0
         self.titanium_harvesters_placed = 0
@@ -303,7 +302,27 @@ class Harvester:
         # If we're already on/adjacent to core, RETURN is complete.
         if reached_core(self.current_pos, self.core_pos) and self.bridge_jump_target is None:
             if self.harvesters_placed >= 1:
-                self.patrol_tip = self.harvester_pos  # save before it's cleared
+                tip = self.harvester_pos
+                mx = (self.core_pos.x + tip.x) // 2
+                my = (self.core_pos.y + tip.y) // 2
+                dx = tip.x - self.core_pos.x
+                dy = tip.y - self.core_pos.y
+                dist = max((dx * dx + dy * dy) ** 0.5, 1.0)
+                # Minimum patrol window that guarantees full chain coverage:
+                # stay near midpoint (max conveyor density) and only extend
+                # outward until vision just reaches each chain endpoint.
+                _VISION_R = math.sqrt(20)
+                half_window = max(1.5, dist / 2 - _VISION_R)
+                scale = half_window / dist
+                w, h = c.get_map_width(), c.get_map_height()
+                self.patrol_tip = Position(
+                    max(0, min(w - 1, round(mx + dx * scale))),
+                    max(0, min(h - 1, round(my + dy * scale))),
+                )
+                self.patrol_inner = Position(
+                    max(0, min(w - 1, round(mx - dx * scale))),
+                    max(0, min(h - 1, round(my - dy * scale))),
+                )
                 self.patrol_turns = 0
                 self.patrol_target = None
                 self.patrol_going_out = True
@@ -376,9 +395,7 @@ class Harvester:
                     self._enemy_core_broadcasted = True
 
         try_heal_nearby_bot(c, self.current_pos)
-
-        if self.state is not HarvestState.DEFEND:
-            _try_enter_defend(self, c)
+        try_heal_nearby_building(c, self.current_pos)
 
         if self.state not in (HarvestState.DEFEND, HarvestState.HEAL, HarvestState.PLACING_HARVESTER):
             _try_enter_heal(self, c)

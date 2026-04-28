@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from cambc import Controller, Direction, EntityType, Position
+from cambc import Controller, Direction, EntityType, Environment, Position
 
 from utils.healing import try_heal_nearby_conveyor
 from utils.harvester_states.seek import _seek_direction
@@ -50,12 +50,12 @@ def _patrol_step(self: Harvester, c: Controller, going_out: bool) -> Direction |
             return move_dir
         # Blocked — fall through to D* to navigate around
 
-    # Not on a conveyor (e.g. at core, or stepped off the chain) — use D*.
+    # Not on a conveyor — use D*.
     if going_out:
         raw = self.patrol_tip
         waypoint = _passable_near(self, raw) if raw is not None else self.core_pos
     else:
-        waypoint = self.core_pos
+        waypoint = self.patrol_inner if self.patrol_inner is not None else self.core_pos
     return _seek_direction(self, c, waypoint)
 
 
@@ -73,8 +73,9 @@ def _patrol(self: Harvester, c: Controller) -> None:
     # Flip direction when we reach the end of a leg.
     tip = self.patrol_tip
     at_tip = tip is not None and self.current_pos.distance_squared(tip) <= 2
-    at_core = self.current_pos.distance_squared(self.core_pos) <= 1
-    if (self.patrol_going_out and at_tip) or (not self.patrol_going_out and at_core):
+    inner = self.patrol_inner if self.patrol_inner is not None else self.core_pos
+    at_inner = self.current_pos.distance_squared(inner) <= 1
+    if (self.patrol_going_out and at_tip) or (not self.patrol_going_out and at_inner):
         self.patrol_going_out = not self.patrol_going_out
 
     move_dir = _patrol_step(self, c, self.patrol_going_out)

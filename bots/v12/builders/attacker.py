@@ -103,6 +103,13 @@ class Attacker:
         # decision, so cache hits cost just a bytearray read + a bool OR.
         self._bld_kind: bytearray | None = None  # 0=unseen, else _BLD_*
         self._bld_last_refresh: int = -10_000  # forces first turn to refresh
+        # Per-unit entity-type cache. Unit IDs are stable for a unit's
+        # lifetime, and a unit's type never changes — we only call
+        # get_entity_type once per distinct ID we see, then route via these
+        # sets. The non-bot set absorbs turrets/cores; the bot set is what
+        # the per-tile blocker check ultimately consults via positions.
+        self._unit_is_bot: set[int] = set()
+        self._unit_not_bot: set[int] = set()
 
         self._hp_prev: int | None = None
 
@@ -141,6 +148,7 @@ class Attacker:
         blockers: list = []
         env_arr = env_map._array
         w_map = env_map._w
+        h_map = env_map._h
         skip_mask = _SEARCH_TERRAIN_SKIP_MASK
         bld_kind = self._bld_kind
         assert bld_kind is not None
@@ -149,12 +157,38 @@ class Attacker:
         force_refresh = round_now - self._bld_last_refresh >= _BLD_TTL
         if force_refresh:
             self._bld_last_refresh = round_now
+        # Batched builder-bot blocker bitmap. One get_nearby_units call
+        # replaces ~70 per-tile get_tile_builder_bot_id calls. get_nearby_units
+        # also returns turrets and cores, so filter to BUILDER_BOT and route
+        # repeat IDs via the long-lived unit_is_bot / unit_not_bot sets so
+        # get_entity_type fires only once per distinct unit ID we see.
+        unit_blocker = bytearray(w_map * h_map)
+        bb_kind = EntityType.BUILDER_BOT
+        unit_is_bot = self._unit_is_bot
+        unit_not_bot = self._unit_not_bot
+        for uid in c.get_nearby_units():
+            if uid == my_id:
+                continue
+            if uid in unit_is_bot:
+                pass  # known builder bot
+            elif uid in unit_not_bot:
+                continue
+            else:
+                if c.get_entity_type(uid) == bb_kind:
+                    unit_is_bot.add(uid)
+                else:
+                    unit_not_bot.add(uid)
+                    continue
+            up = c.get_position(uid)
+            ux = up[0]
+            uy = up[1]
+            if 0 <= ux < w_map and 0 <= uy < h_map:
+                unit_blocker[uy * w_map + ux] = 1
         for p in self._tiles:
             idx = p[1] * w_map + p[0]
             if (skip_mask >> env_arr[idx]) & 1:
                 continue
-            bot_id = c.get_tile_builder_bot_id(p)
-            if bot_id is not None and bot_id != my_id:
+            if unit_blocker[idx]:
                 blockers.append(p)
                 continue
 

@@ -1,6 +1,8 @@
 import math
 import os
+import struct
 import sys
+import time
 import uuid
 from enum import Enum
 
@@ -54,6 +56,56 @@ try:
     _PROFILE_ENABLED = True
 except ImportError:
     _PROFILE_ENABLED = False
+
+# Per-turn ns timing (independent of cProfile). cProfile averages everything;
+# this captures the FULL distribution so we can attack p99/max spikes that
+# are otherwise hidden by the long tail of cheap turns. We record per-turn
+# total time plus a fixed-order array of per-section times so worst-N turns
+# can be attributed to the dominant section without re-running.
+_SPIKE_DIR = "/tmp/harvester_spikes"
+_SPIKE_ID = f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
+_SPIKE_PATH = os.path.join(_SPIKE_DIR, f"harv_{_SPIKE_ID}.spikes")
+os.makedirs(_SPIKE_DIR, exist_ok=True)
+# Section indices — keep stable; scripts/spike.py reads in the same order.
+_SECTION_NAMES = (
+    "env_update",
+    "chain_memory",
+    "foundry_check",
+    "symmetry_broadcast",
+    "heal_nearby",
+    "try_enter_defend",
+    "try_enter_heal",
+    "state_seek",
+    "state_placing",
+    "state_return",
+    "state_defend",
+    "state_patrol",
+    "state_heal",
+    "broadcaster",
+    "draw_log",
+)
+_N_SECTIONS = len(_SECTION_NAMES)
+# Buffered samples: (round, total_ns, *section_ns). Flushed every 100 turns.
+_SPIKE_BUF: list[tuple] = []
+_SPIKE_FLUSH_EVERY = 100
+# Binary record format: round (uint32), total_ns (uint64), N section ns (uint64 each).
+_SPIKE_FMT = "<IQ" + "Q" * _N_SECTIONS
+_SPIKE_PACK = struct.Struct(_SPIKE_FMT).pack
+# Write a 12-byte ASCII header so the reader can sanity-check section count.
+# Avoids `with` blocks (compile to try/finally bytecode, which cambc rejects).
+_fh = open(_SPIKE_PATH, "wb")
+_fh.write(struct.pack("<4sII", b"SPK1", _N_SECTIONS, struct.calcsize(_SPIKE_FMT)))
+_fh.close()
+
+
+def _spike_flush() -> None:
+    if not _SPIKE_BUF:
+        return
+    blob = b"".join(_SPIKE_PACK(*rec) for rec in _SPIKE_BUF)
+    fh = open(_SPIKE_PATH, "ab")
+    fh.write(blob)
+    fh.close()
+    _SPIKE_BUF.clear()
 
 class HarvestState(Enum):
     __slots__ = ()
@@ -137,6 +189,15 @@ class Harvester:
         self.harvesters_placed = 0
         self.titanium_harvesters_placed = 0
         self.axionite_harvesters_placed = 0
+
+        # Per-bot constants — Controller returns the same value for the entire
+        # match. Cached on first run() call to drop millions of getter dispatches
+        # (baseline: 8.1M get_team + 2.6M get_map_width + 2.6M get_map_height).
+        # Helpers reach for these via `self.my_team` / `self.map_w` / `self.map_h`
+        # instead of going through the Controller.
+        self.my_team = -1
+        self.map_w = 0
+        self.map_h = 0
         self.returning_from_axionite = False
 
         self.broadcaster = Broadcaster()
@@ -161,9 +222,24 @@ class Harvester:
                 self.seek_target_is_ore = False
 
     def _check_for_foundry(self, c: Controller):
-        """Identify the one-foundry cap from vision or a single-turn scale jump."""
+        """Identify the one-foundry cap from vision or a single-turn scale jump.
+
+        Once we've already locked in `foundry_prev_placed`, both detectors are
+        no-ops — the building scan can't unmark it, the scale jump only fires
+        on the *initial* placement transition. Skip the per-turn nearby-buildings
+        loop and the cost_scale bookkeeping entirely after that point. Saves
+        the get_team / get_entity_type fan-out across remaining ~hundreds of
+        turns of every match.
+        """
+        if self.foundry_prev_placed:
+            return
+
+        my_team = self.my_team
+        get_team = c.get_team
+        get_etype = c.get_entity_type
+        et_foundry = EntityType.FOUNDRY
         for bid in c.get_nearby_buildings():
-            if c.get_team(bid) == c.get_team() and c.get_entity_type(bid) == EntityType.FOUNDRY:
+            if get_team(bid) == my_team and get_etype(bid) is et_foundry:
                 self._mark_foundry_seen(c, "seen_allied_foundry", c.get_position(bid))
                 break
 
@@ -355,18 +431,43 @@ class Harvester:
         if _PROFILE_ENABLED:
             global _PROFILE_CALLS
             _PROFILER.enable()
+        # Per-turn ns timer. perf_counter_ns is monotonic and pure-Python-call
+        # cheap (~50ns), well below the resolution we care about (~1µs sections).
+        # Sections are accumulated into a fixed-size list so we can pack them
+        # without dict overhead.
+        _pcn = time.perf_counter_ns
+        _t_run_start = _pcn()
+        secs = [0] * _N_SECTIONS
+
         self.current_pos = c.get_position()
         if self.spawn_pos is None:
             self.spawn_pos = self.current_pos
+        # Initialise per-bot constants on first run() — these are immutable for
+        # the entire match. Helpers read self.my_team / self.map_w / self.map_h
+        # instead of paying for repeated Controller dispatches in hot loops.
+        if self.map_w == 0:
+            self.my_team = c.get_team()
+            self.map_w = c.get_map_width()
+            self.map_h = c.get_map_height()
         self.ti, self.ax = c.get_global_resources()
         if self.ax > 0:
             self.axionite_found = True
         if self.environment_map is None:
-            self.environment_map = EnvironmentMap(c.get_map_width(), c.get_map_height())
-        self.environment_map.update(c)
-        _update_chain_memory(self, c)
-        self._check_for_foundry(c)
+            self.environment_map = EnvironmentMap(self.map_w, self.map_h)
 
+        _t = _pcn()
+        self.environment_map.update(c)
+        secs[0] = _pcn() - _t
+
+        _t = _pcn()
+        _update_chain_memory(self, c)
+        secs[1] = _pcn() - _t
+
+        _t = _pcn()
+        self._check_for_foundry(c)
+        secs[2] = _pcn() - _t
+
+        _t = _pcn()
         if not self.environment_map.symmetry_resolved:
             raw = BuilderBotMessages.read_nearby_symmetry(c)
             if raw is not None:
@@ -393,31 +494,60 @@ class Harvester:
                         BuilderBotMessages.encode_enemy_core_position(enemy_core)
                     )
                     self._enemy_core_broadcasted = True
+        secs[3] = _pcn() - _t
 
+        _t = _pcn()
         try_heal_nearby_bot(c, self.current_pos)
         try_heal_nearby_building(c, self.current_pos)
+        secs[4] = _pcn() - _t
 
+        _t = _pcn()
+        if self.state is not HarvestState.DEFEND:
+            _try_enter_defend(self, c)
+        secs[5] = _pcn() - _t
+
+        _t = _pcn()
         if self.state not in (HarvestState.DEFEND, HarvestState.HEAL, HarvestState.PLACING_HARVESTER):
             _try_enter_heal(self, c)
+        secs[6] = _pcn() - _t
 
+        # Only one state runs per turn, so only one of secs[7..12] is non-zero.
+        _t = _pcn()
         match self.state:
             case HarvestState.SEEK:
                 self._seek(c)
+                secs[7] = _pcn() - _t
             case HarvestState.PLACING_HARVESTER:
                 self._placing_harvester(c)
+                secs[8] = _pcn() - _t
             case HarvestState.RETURN:
                 self._return(c)
+                secs[9] = _pcn() - _t
             case HarvestState.DEFEND:
                 self._defend(c)
+                secs[10] = _pcn() - _t
             case HarvestState.PATROL:
                 self._patrol(c)
+                secs[11] = _pcn() - _t
             case HarvestState.HEAL:
                 self._heal(c)
+                secs[12] = _pcn() - _t
 
+        _t = _pcn()
         self.broadcaster.run(c)
+        secs[13] = _pcn() - _t
 
+        _t = _pcn()
         self._draw_debug(c)
         self._log_turn_state(c)
+        secs[14] = _pcn() - _t
+
+        total_ns = _pcn() - _t_run_start
+        round_no = c.get_current_round()
+        _SPIKE_BUF.append((round_no, total_ns, *secs))
+        if len(_SPIKE_BUF) >= _SPIKE_FLUSH_EVERY:
+            _spike_flush()
+
         if _PROFILE_ENABLED:
             _PROFILER.disable()
             _PROFILE_CALLS += 1

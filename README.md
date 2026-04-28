@@ -115,3 +115,15 @@ uv run scripts/profile.py callers attacker _succ              # who calls a hot 
 ```
 
 Pass `--profile-dir <path>` to override the per-target directory (useful for side-by-side runs of the same target).
+
+### Spike analysis (p99 / max per turn)
+
+cProfile averages over the whole run; spiky turns get drowned out. The harvester also runs a lightweight per-turn `time.perf_counter_ns()` harness that captures total + per-section wall time for every `run()` call and writes binary traces to `/tmp/harvester_spikes/`. `scripts/spike.py` analyses them:
+
+```sh
+uv run scripts/spike.py report harvester        # mean, p50/p90/p99/p99.9/max + per-section sums
+uv run scripts/spike.py worst harvester --n 15  # 15 slowest turns with full section breakdown
+uv run scripts/spike.py sections harvester      # per-section percentile distribution
+```
+
+Use this when you care about p99/max latency rather than mean — e.g. tracking down which section blows up on a specific turn. The harness is on at all times the bot runs locally; one `profile.py run` populates both `cProfile` pstats and the spike traces.

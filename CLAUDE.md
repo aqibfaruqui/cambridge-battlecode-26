@@ -65,3 +65,19 @@ uv run scripts/profile.py callees attacker _recompute_rhs          # what does i
 
 Override the per-target directory with `--profile-dir <path>` if you want to compare two runs of the same target side-by-side.
 
+## Per-turn spike analysis (p99 / max)
+
+cProfile aggregates over the whole run, which hides spiky turns behind the long tail of cheap ones. The harvester is also wired with a lightweight per-turn `time.perf_counter_ns()` harness that records, for every `run()` call, the total wall time and a fixed-order array of per-section times (env_update, chain_memory, foundry_check, …, state_seek, state_return, …, broadcaster, draw_log). Output goes to `/tmp/harvester_spikes/*.spikes` (binary, one file per subinterpreter). It runs alongside `cProfile` — a single `profile.py run` populates both directories.
+
+`scripts/spike.py` reads those traces and reports:
+
+```sh
+uv run scripts/spike.py report harvester      # mean, p50/p90/p99/p99.9/max + per-section sums
+uv run scripts/spike.py worst harvester --n 15 # the 15 slowest turns with section breakdown
+uv run scripts/spike.py sections harvester     # per-section percentile distribution
+```
+
+Use `report` to see how concentrated total runtime is in the worst 1% of turns; use `worst` to find which section caused a specific spike (typically `state_return` when D* Lite recomputes from a fresh planner, or `state_seek` when an ore reroute fires); use `sections` when you want to know which section's *tail* is the dominant spike source even if its mean is small.
+
+Override the directory with `--spike-dir <path>` for side-by-side runs.
+

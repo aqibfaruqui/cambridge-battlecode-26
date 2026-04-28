@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from cambc import Controller, Direction, EntityType, Position, ResourceType
 
 from utils.attacker_states.state import AttackState
+from utils.comms.for_builder_bot import BuilderBotMessageType, BuilderBotMessages
 from utils.map.raw_map_representation import WALL
 from utils.pathfinding.movement import on_map
 
@@ -126,6 +127,23 @@ def _chain_feeds_friendly_turret(
     return hits_turret
 
 
+def _read_claimed_positions(c: Controller) -> set[tuple[int, int]]:
+    """Collect positions claimed by other friendly attackers via markers."""
+    my_team = c.get_team()
+    claimed: set[tuple[int, int]] = set()
+    for tile in c.get_nearby_tiles():
+        bid = c.get_tile_building_id(tile)
+        if bid is None or c.get_entity_type(bid) != EntityType.MARKER:
+            continue
+        if c.get_team(bid) != my_team:
+            continue
+        val = c.get_marker_value(bid)
+        if BuilderBotMessages.get_message_type(val) == BuilderBotMessageType.CLAIM_POSITION:
+            cp = BuilderBotMessages.decode_claim_position(val)
+            claimed.add((cp.x, cp.y))
+    return claimed
+
+
 def _pick_target(self: Attacker, c: Controller):
     """Find the best enemy conveyor/bridge currently carrying titanium."""
     my_team = c.get_team()
@@ -134,6 +152,8 @@ def _pick_target(self: Attacker, c: Controller):
     best: Position | None = None
     best_score = float("inf")
     friendly_sentinels = 0
+
+    claimed = _read_claimed_positions(c)
 
     for bld_id in c.get_nearby_buildings():
         team = c.get_team(bld_id)
@@ -154,6 +174,10 @@ def _pick_target(self: Attacker, c: Controller):
         conv_pos = c.get_position(bld_id)
         key = (conv_pos.x, conv_pos.y)
         if key in self.blacklist:
+            continue
+        if key in claimed:
+            continue
+        if c.get_tile_builder_bot_id(conv_pos) is not None:
             continue
 
         if etype == EntityType.SPLITTER and not _splitter_is_networked(c, conv_pos):

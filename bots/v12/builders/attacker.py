@@ -52,6 +52,24 @@ class Attacker:
 
         self.broadcaster = Broadcaster()
         self._broadcasted = False
+        self._permanent_broadcasts: list[int] = []
+        self._broadcasted_claim: tuple[int, int] | None = None
+
+    # ---------- claim broadcast ----------
+
+    def _sync_claim_broadcast(self) -> None:
+        """Keep the broadcaster in sync with the current target_conveyor."""
+        cur = (self.target_conveyor.x, self.target_conveyor.y) if self.target_conveyor else None
+        if cur == self._broadcasted_claim:
+            return
+        self._broadcasted_claim = cur
+        self.broadcaster.clear_broadcasts()
+        for msg in self._permanent_broadcasts:
+            self.broadcaster.add_broadcast(msg)
+        if cur is not None:
+            self.broadcaster.add_broadcast(
+                BuilderBotMessages.encode_claim_position(self.target_conveyor)
+            )
 
     # ---------- navigation (shared by SCAN's idle probe and APPROACH) ----------
 
@@ -137,9 +155,13 @@ class Attacker:
         # Symmetry resolving implies assumed_centre is non-None.
         if self._env_map.symmetry is not None and not self._broadcasted:
             assert assumed_centre is not None
-            self.broadcaster.add_broadcast(BuilderBotMessages.encode_symmetry(self._env_map.symmetry.value))
-            self.broadcaster.add_broadcast(BuilderBotMessages.encode_core_position(self.core_pos))
-            self.broadcaster.add_broadcast(BuilderBotMessages.encode_enemy_core_position(assumed_centre))
+            for msg in [
+                BuilderBotMessages.encode_symmetry(self._env_map.symmetry.value),
+                BuilderBotMessages.encode_core_position(self.core_pos),
+                BuilderBotMessages.encode_enemy_core_position(assumed_centre),
+            ]:
+                self._permanent_broadcasts.append(msg)
+                self.broadcaster.add_broadcast(msg)
             self._broadcasted = True
 
         if not self.enemy_core_candidates:
@@ -194,4 +216,5 @@ class Attacker:
         if self.state == AttackState.REPLACE:
             replace(self, c)
 
+        self._sync_claim_broadcast()
         self.broadcaster.run(c)

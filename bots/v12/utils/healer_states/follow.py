@@ -1,12 +1,10 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from cambc import Controller, EntityType, Position
+from cambc import Controller, EntityType
 
 from utils.defense.combat import (
-    ATTACKABLE_TYPES,
     VISION_RADIUS_SQ,
-    detect_attacked_tile,
     find_enemy_pos,
     step_toward,
 )
@@ -42,48 +40,12 @@ def _try_enter_follow(self: Healer, c: Controller) -> bool:
     if eid is None:
         return False
     self.follow_enemy_id = eid
-    # Seed HP snapshots so detect_attacked_tile has prev-HP data next turn.
-    detect_attacked_tile(self, c)
     self.state = HealState.FOLLOW
     return True
 
 
-def _detect_attack_by_tracked(self: Healer, c: Controller) -> Position | None:
-    """Return the tile being drilled by the tracked enemy, or None.
-
-    Still updates self.enemy_tile_hp for every enemy-occupied ally tile so
-    a switch between turns doesn't drop HP history.
-    """
-    my_team = c.get_team()
-    tracked = self.follow_enemy_id
-    new_tracking: dict[tuple[int, int], int] = {}
-    hit: Position | None = None
-    for uid in c.get_nearby_units():
-        if c.get_team(uid) == my_team:
-            continue
-        pos = c.get_position(uid)
-        if not c.is_in_vision(pos):
-            continue
-        bid = c.get_tile_building_id(pos)
-        if bid is None:
-            continue
-        if c.get_team(bid) != my_team:
-            continue
-        if c.get_entity_type(bid) not in ATTACKABLE_TYPES:
-            continue
-        hp = c.get_hp(bid)
-        key = (pos.x, pos.y)
-        prev = self.enemy_tile_hp.get(key)
-        new_tracking[key] = hp
-        if hit is None and uid == tracked and prev is not None and hp < prev:
-            hit = pos
-    self.enemy_tile_hp = new_tracking
-    return hit
-
-
 def _follow(self: Healer, c: Controller) -> None:
     from builders.healer import HealState
-    from utils.healer_states.defend import _try_enter_defend_healer
 
     enemy_id = self.follow_enemy_id
     if enemy_id is None:
@@ -93,10 +55,6 @@ def _follow(self: Healer, c: Controller) -> None:
     enemy_pos = find_enemy_pos(c, enemy_id)
     if enemy_pos is None:
         c.self_destruct()
-        return
-
-    tile = _detect_attack_by_tracked(self, c)
-    if tile is not None and _try_enter_defend_healer(self, c, tile):
         return
 
     if c.get_move_cooldown() > 0:

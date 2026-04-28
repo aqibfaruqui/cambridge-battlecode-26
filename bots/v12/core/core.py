@@ -10,7 +10,7 @@ class Core:
             BuilderType.ATTACKER_REVAMPED,
             BuilderType.HARVESTER_2,
             BuilderType.ATTACKER_REVAMPED,
-            BuilderType.HARVESTER_3,
+            # BuilderType.HARVESTER_3,
         ]
         self.spawn_plan = self.default_spawn_plan.copy()
         self.healer_id: int | None = None

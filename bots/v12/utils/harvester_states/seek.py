@@ -374,14 +374,17 @@ def _seek(self: Harvester, c: Controller):
         return
 
     if self.heal_target is not None:
-        bid = c.get_tile_building_id(self.heal_target)
-        if (
-            bid is None
-            or c.get_team(bid) != c.get_team()
-            or c.get_entity_type(bid) not in (EntityType.CONVEYOR, EntityType.BRIDGE)
-            or c.get_hp(bid) >= c.get_max_hp(bid)
-        ):
+        if not c.is_in_vision(self.heal_target):
             self.heal_target = None
+        else:
+            bid = c.get_tile_building_id(self.heal_target)
+            if (
+                bid is None
+                or c.get_team(bid) != c.get_team()
+                or c.get_entity_type(bid) not in (EntityType.CONVEYOR, EntityType.BRIDGE)
+                or c.get_hp(bid) >= c.get_max_hp(bid)
+            ):
+                self.heal_target = None
 
     if self.heal_target is None:
         self.heal_target = _find_damaged_conveyor(c)

@@ -1,22 +1,23 @@
 from enum import Enum
 
-from cambc import Controller, Direction, EntityType, Position
+from cambc import Controller, Direction, EntityType, Environment, Position
 
-from utils.healer_states.defend import _defend_healer
-from utils.healer_states.follow import _follow, _try_enter_follow
-from utils.healing import try_heal_nearby_bot
+from utils.harvester_states.heal import (
+    _best_coverage_tile,
+    _critical_damaged,
+)
+from utils.harvester_states.seek import _seek_direction
+from utils.healing import try_heal_nearby_bot, try_heal_nearby_building
+from utils.map.raw_map_representation import EnvironmentMap
+from utils.pathfinding.d_star import DStarLite
 
 
 class HealState(Enum):
     __slots__ = ()
 
     PATROL = "patrol"
-    FOLLOW = "follow"
-    DEFEND = "defend"
 
 
-# Clockwise ordering of the eight tiles surrounding the core, starting at EAST
-# — the spawn offset for the healer (see BuilderType.HEALER).
 _RING_DIRECTIONS = [
     Direction.EAST,
     Direction.SOUTHEAST,
@@ -34,20 +35,17 @@ class Healer:
         self.core_pos = core_pos
         self.core_id: int | None = None
         self.ring_idx = 0
-        self._last_hp: int | None = None
-        self._patrol_only = False
 
-        self.state = HealState.PATROL
         self.current_pos = Position(0, 0)
         self.ti = 0
         self.ax = 0
 
-        self.follow_enemy_id: int | None = None
-        self.defend_enemy_id: int | None = None
-        self.defend_target_tile: Position | None = None
-        self.defend_gunner_pos: Position | None = None
-        self.defend_orig_conveyor_dir: Direction | None = None
-        self.enemy_tile_hp: dict[tuple[int, int], int] = {}
+        self.heal_target: Position | None = None
+
+        # D* Lite pathfinding state
+        self.environment_map: EnvironmentMap | None = None
+        self.seek_planner: DStarLite | None = None
+        self.seek_planner_goal: tuple[int, int] | None = None
 
     def _ring_pos(self, idx: int) -> Position:
         return self.core_pos.add(_RING_DIRECTIONS[idx % len(_RING_DIRECTIONS)])
@@ -65,73 +63,17 @@ class Healer:
                 self.ring_idx = i
                 return
 
-    def _core_damaged(self, c: Controller) -> bool:
-        if self.core_id is None:
-            return False
-        try:
-            hp = c.get_hp(self.core_id)
-            max_hp = c.get_max_hp(self.core_id)
-            return hp < max_hp
-        except Exception:
-            return False
-
-    def _try_heal_self(self, c: Controller) -> bool:
-        if c.get_action_cooldown() > 0:
-            return False
-        my_id = c.get_id()
-        if c.get_hp(my_id) >= c.get_max_hp(my_id):
-            return False
-        me = c.get_position()
-        if not c.can_heal(me):
-            return False
-        c.heal(me)
-        return True
-
-    def _try_heal_core(self, c: Controller) -> bool:
-        if not self._core_damaged(c):
-            return False
-        if not c.can_heal(self.core_pos):
-            return False
-        c.heal(self.core_pos)
-        return True
-
-    def _try_heal_conveyor(self, c: Controller) -> bool:
-        """Heal the lowest-HP allied conveyor within action radius 2."""
-        if c.get_action_cooldown() > 0:
-            return False
-        me = c.get_position()
-        my_team = c.get_team()
-        w, h = c.get_map_width(), c.get_map_height()
-        best: Position | None = None
-        best_hp = float("inf")
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
-                x, y = me.x + dx, me.y + dy
-                if not (0 <= x < w and 0 <= y < h):
-                    continue
-                p = Position(x, y)
-                if not c.is_in_vision(p):
-                    continue
-                bid = c.get_tile_building_id(p)
-                if bid is None:
-                    continue
-                if c.get_team(bid) != my_team:
-                    continue
-                if c.get_entity_type(bid) != EntityType.CONVEYOR:
-                    continue
-                max_hp = c.get_max_hp(bid)
-                hp = c.get_hp(bid)
-                if hp >= max_hp:
-                    continue
-                if not c.can_heal(p):
-                    continue
-                if hp < best_hp:
-                    best_hp = hp
-                    best = p
-        if best is None:
-            return False
-        c.heal(best)
-        return True
+    def _advance(self, c: Controller, move_dir: Direction | None) -> None:
+        if move_dir is None:
+            return
+        move_pos = self.current_pos.add(move_dir)
+        build_id = c.get_tile_building_id(move_pos)
+        if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER and c.can_destroy(move_pos):
+            c.destroy(move_pos)
+        if c.get_tile_env(move_pos) == Environment.EMPTY and c.can_build_road(move_pos):
+            c.build_road(move_pos)
+        if c.can_move(move_dir):
+            c.move(move_dir)
 
     def _patrol(self, c: Controller) -> None:
         if c.get_move_cooldown() > 0:
@@ -142,8 +84,6 @@ class Healer:
         step1_idx = (self.ring_idx + 1) % len(_RING_DIRECTIONS)
         step1_pos = self._ring_pos(step1_idx)
 
-        # Prefer stepping one tile clockwise; fall back to step=2 (still
-        # adjacent on diagonals) so a permanently-blocked tile can be skipped.
         for step in (1, 2):
             next_idx = (self.ring_idx + step) % len(_RING_DIRECTIONS)
             next_pos = self._ring_pos(next_idx)
@@ -157,63 +97,65 @@ class Healer:
                 self.ring_idx = next_idx
                 return
 
-        # Another builder bot is parked on the next tile — detour through
-        # the core (centre of the 3x3) and resume at the square past the
-        # blocker on the following tick.
-        if c.get_tile_builder_bot_id(step1_pos) is not None:
+        if c.is_in_vision(step1_pos) and c.get_tile_builder_bot_id(step1_pos) is not None:
             direction = me.direction_to(self.core_pos)
             if direction != Direction.CENTRE and c.can_move(direction):
                 c.move(direction)
                 self.ring_idx = step1_idx
                 return
 
-        # Nothing walkable ahead — pave the immediate next tile so we can
-        # cross it next turn.
         if c.get_action_cooldown() == 0 and c.can_build_road(step1_pos):
             c.build_road(step1_pos)
 
-    def _run_patrol(self, c: Controller, took_damage: bool) -> None:
-        # Try to acquire a target. If we do, the state change takes effect
-        # next turn; this turn we still heal + walk the ring.
-        if not self._patrol_only:
-            _try_enter_follow(self, c)
-
-        healed = False
-        if try_heal_nearby_bot(c, c.get_position()):
-            healed = True
-        elif self._try_heal_core(c) or self._try_heal_conveyor(c):
-            healed = True
-
-        if took_damage or not healed:
-            self._patrol(c)
+    def _draw_debug(self, c: Controller) -> None:
+        if self.heal_target is not None:
+            c.draw_indicator_dot(self.current_pos, 60, 255, 100)
+            c.draw_indicator_line(self.current_pos, self.heal_target, 60, 255, 100)
+        else:
+            c.draw_indicator_dot(self.current_pos, 0, 200, 255)
 
     def run(self, c: Controller):
         if self.core_id is None:
             self._resolve_core_id(c)
-            if self.core_id is not None:
-                hp = c.get_hp(self.core_id)
-                max_hp = c.get_max_hp(self.core_id)
-                if 5 * hp < 4 * max_hp:
-                    self._patrol_only = True
-
-        if self._patrol_only and self.core_id is not None:
-            if not self._core_damaged(c):
-                 self._patrol_only = False
 
         self.current_pos = c.get_position()
         self.ti, self.ax = c.get_global_resources()
         self._align_ring_idx(c)
 
-        my_id = c.get_id()
-        hp_now = c.get_hp(my_id)
-        took_damage = self._last_hp is not None and hp_now < self._last_hp
+        if self.environment_map is None:
+            self.environment_map = EnvironmentMap(c.get_map_width(), c.get_map_height())
+        self.environment_map.update(c)
 
-        match self.state:
-            case HealState.PATROL:
-                self._run_patrol(c, took_damage)
-            case HealState.FOLLOW:
-                _follow(self, c)
-            case HealState.DEFEND:
-                _defend_healer(self, c)
+        damaged = _critical_damaged(c)
 
-        self._last_hp = c.get_hp(my_id)
+        # Re-validate committed target each turn.
+        committed = self.heal_target
+        if committed is not None and c.is_in_vision(committed):
+            bid = c.get_tile_building_id(committed)
+            if (
+                bid is None
+                or c.get_team(bid) != c.get_team()
+                or c.get_hp(bid) / c.get_max_hp(bid) >= 0.8
+            ):
+                committed = None
+        if committed is None and damaged:
+            committed = damaged[0]
+        self.heal_target = committed
+
+        me = self.current_pos
+
+        # Heal action: bots first (including self), then buildings.
+        if not try_heal_nearby_bot(c, me):
+            try_heal_nearby_building(c, me)
+
+        # Movement: navigate toward best coverage tile via D* Lite; patrol ring when idle.
+        if c.get_move_cooldown() == 0:
+            if damaged:
+                approach = _best_coverage_tile(c, me, damaged)
+                if me.distance_squared(approach) > 0:
+                    move_dir = _seek_direction(self, c, approach)  # type: ignore[arg-type]
+                    self._advance(c, move_dir)
+            else:
+                self._patrol(c)
+
+        self._draw_debug(c)

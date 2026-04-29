@@ -28,6 +28,7 @@ from utils.harvester_states.placing_harvester import (
 )
 from utils.harvester_states.defend import (
     _defend as _defend_state,
+    _try_enter_defend,
 )
 from utils.harvester_states.heal import (
     _heal as _heal_state,

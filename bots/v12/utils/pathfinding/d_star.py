@@ -16,8 +16,6 @@ _BRIDGE_JUMPS: list[tuple[int, int]] = [
     if 2 < dx * dx + dy * dy <= GameConstants.BRIDGE_TARGET_RADIUS_SQ
 ]
 _BRIDGE_JUMP_COST = 5.0
-_heappush = heapq.heappush
-_heappop = heapq.heappop
 
 _INF = float("inf")
 _SQRT2 = math.sqrt(2)
@@ -76,97 +74,6 @@ _BRIDGE_WALK_BLOCK_MASK = (
     | (1 << _ENEMY_CORE)
 )
 
-_COORD_CACHE: dict[tuple[int, int], tuple[bytearray, bytearray]] = {}
-_PRED_CACHE: dict[tuple[int, int, bool], tuple[tuple[int, ...], ...]] = {}
-_BRIDGE_SUCC_CACHE: dict[tuple[int, int], tuple[tuple[int, ...], ...]] = {}
-
-
-def _coord_arrays(w: int, h: int) -> tuple[bytearray, bytearray]:
-    # Maps are at most 50x50, so bytearray coordinates always fit.
-    key = (w, h)
-    cached = _COORD_CACHE.get(key)
-    if cached is not None:
-        return cached
-
-    n = w * h
-    xs = bytearray(n)
-    ys = bytearray(n)
-
-    i = 0
-    for y in range(h):
-        row_end = i + w
-        x = 0
-        while i < row_end:
-            xs[i] = x
-            ys[i] = y
-            i += 1
-            x += 1
-
-    cached = (xs, ys)
-    _COORD_CACHE[key] = cached
-    return cached
-
-
-def _pred_arrays(w: int, h: int, use_bridges: bool) -> tuple[tuple[int, ...], ...]:
-    key = (w, h, use_bridges)
-    cached = _PRED_CACHE.get(key)
-    if cached is not None:
-        return cached
-
-    out: list[tuple[int, ...]] = []
-    for y in range(h):
-        for x in range(w):
-            preds: list[int] = []
-            if y > 0:
-                preds.append((y - 1) * w + x)
-                if x > 0:
-                    preds.append((y - 1) * w + x - 1)
-                if x < w - 1:
-                    preds.append((y - 1) * w + x + 1)
-            if y < h - 1:
-                preds.append((y + 1) * w + x)
-                if x > 0:
-                    preds.append((y + 1) * w + x - 1)
-                if x < w - 1:
-                    preds.append((y + 1) * w + x + 1)
-            if x > 0:
-                preds.append(y * w + x - 1)
-            if x < w - 1:
-                preds.append(y * w + x + 1)
-            if use_bridges:
-                for jdx, jdy in _BRIDGE_JUMPS:
-                    px = x - jdx
-                    py = y - jdy
-                    if 0 <= px < w and 0 <= py < h:
-                        preds.append(py * w + px)
-            out.append(tuple(preds))
-
-    cached = tuple(out)
-    _PRED_CACHE[key] = cached
-    return cached
-
-
-def _bridge_succ_arrays(w: int, h: int) -> tuple[tuple[int, ...], ...]:
-    key = (w, h)
-    cached = _BRIDGE_SUCC_CACHE.get(key)
-    if cached is not None:
-        return cached
-
-    out: list[tuple[int, ...]] = []
-    for y in range(h):
-        for x in range(w):
-            succs: list[int] = []
-            for jdx, jdy in _BRIDGE_JUMPS:
-                jx = x + jdx
-                jy = y + jdy
-                if 0 <= jx < w and 0 <= jy < h:
-                    succs.append(jy * w + jx)
-            out.append(tuple(succs))
-
-    cached = tuple(out)
-    _BRIDGE_SUCC_CACHE[key] = cached
-    return cached
-
 
 class DStarLite:
     __slots__ = (
@@ -174,16 +81,10 @@ class DStarLite:
         "_w",
         "_h",
         "_n",
-        "_xs",
-        "_ys",
-        "_preds",
-        "_bridge_succs",
         "_g",
         "_rhs",
         "_open",
         "_in_open",
-        "_open_k1",
-        "_open_k2",
         "_km",
         "_start",
         "_start_x",
@@ -213,18 +114,13 @@ class DStarLite:
         self._w = env._w
         self._h = env._h
         self._n = self._w * self._h
-        self._xs, self._ys = _coord_arrays(self._w, self._h)
-        self._preds = _pred_arrays(self._w, self._h, use_bridges)
-        self._bridge_succs = _bridge_succ_arrays(self._w, self._h) if use_bridges else ()
         self._block_mask = block_mask
 
         self._g = [_INF] * self._n
         self._rhs = [_INF] * self._n
 
-        self._open: List[Tuple[float, float, int]] = []
+        self._open: List[Tuple[Tuple[float, float], int]] = []
         self._in_open = [False] * self._n
-        self._open_k1 = [_INF] * self._n
-        self._open_k2 = [_INF] * self._n
 
         self._km = 0.0
 
@@ -259,14 +155,7 @@ class DStarLite:
     # ---------- Public API ----------
 
     def set_goal(self, gx: int, gy: int) -> None:
-        self.__init__(
-            self._env,
-            gx,
-            gy,
-            block_mask=self._block_mask,
-            unknown_cost=self._unknown_cost,
-            use_bridges=self._use_bridges,
-        )
+        self.__init__(self._env, gx, gy, block_mask=self._block_mask)
 
     def set_position(self, sx: int, sy: int) -> None:
         w = self._w
@@ -296,24 +185,56 @@ class DStarLite:
         mask = self._block_mask
         blocked = self._blocked
         dyn = self._dynamic_blocked
-        preds = self._preds
+        h = self._h
 
         # Re-derive old_start's true blocked state (it was forced to 0).
         true_old = 1 if ((mask >> arr[old_start]) & 1) or (old_start in dyn) else 0
         if true_old != 0:
             blocked[old_start] = 1
+            x = old_start % w
+            y = old_start // w
             recompute = self._recompute_rhs
             recompute(old_start)
-            for p in preds[old_start]:
-                recompute(p)
+            if y > 0:
+                recompute(old_start - w)
+                if x > 0:
+                    recompute(old_start - w - 1)
+                if x < w - 1:
+                    recompute(old_start - w + 1)
+            if y < h - 1:
+                recompute(old_start + w)
+                if x > 0:
+                    recompute(old_start + w - 1)
+                if x < w - 1:
+                    recompute(old_start + w + 1)
+            if x > 0:
+                recompute(old_start - 1)
+            if x < w - 1:
+                recompute(old_start + 1)
 
         # Force new_start unblocked. If it was blocked, propagate.
         if blocked[new_start]:
             blocked[new_start] = 0
+            x = sx
+            y = sy
             recompute = self._recompute_rhs
             recompute(new_start)
-            for p in preds[new_start]:
-                recompute(p)
+            if y > 0:
+                recompute(new_start - w)
+                if x > 0:
+                    recompute(new_start - w - 1)
+                if x < w - 1:
+                    recompute(new_start - w + 1)
+            if y < h - 1:
+                recompute(new_start + w)
+                if x > 0:
+                    recompute(new_start + w - 1)
+                if x < w - 1:
+                    recompute(new_start + w + 1)
+            if x > 0:
+                recompute(new_start - 1)
+            if x < w - 1:
+                recompute(new_start + 1)
 
     def notify_map_changes(self) -> bool:
         arr = self._env._array
@@ -323,13 +244,15 @@ class DStarLite:
         if arr == snapshot:
             return False
 
+        w = self._w
+        h = self._h
         n = self._n
         recompute = self._recompute_rhs
         blocked = self._blocked
         dyn = self._dynamic_blocked
         mask = self._block_mask
+        use_bridges = self._use_bridges
         current_start = self._start
-        preds = self._preds
 
         i = 0
         while i < n:
@@ -346,10 +269,34 @@ class DStarLite:
                 else:
                     blocked[i] = 0
 
-                for p in preds[i]:
-                    recompute(p)
+                x = i % w
+                y = i // w
+                # Inlined: for pred in _pred(i): recompute(pred)
+                if y > 0:
+                    recompute(i - w)
+                    if x > 0:
+                        recompute(i - w - 1)
+                    if x < w - 1:
+                        recompute(i - w + 1)
+                if y < h - 1:
+                    recompute(i + w)
+                    if x > 0:
+                        recompute(i + w - 1)
+                    if x < w - 1:
+                        recompute(i + w + 1)
+                if x > 0:
+                    recompute(i - 1)
+                if x < w - 1:
+                    recompute(i + 1)
 
                 recompute(i)
+
+                if use_bridges:
+                    for jdx, jdy in _BRIDGE_JUMPS:
+                        px = x - jdx
+                        py = y - jdy
+                        if 0 <= px < w and 0 <= py < h:
+                            recompute(py * w + px)
 
             i += 1
 
@@ -378,7 +325,6 @@ class DStarLite:
         mask = self._block_mask
         recompute = self._recompute_rhs
         current_start = self._start
-        preds = self._preds
 
         for idx in changed_nodes:
             if idx == current_start:
@@ -390,9 +336,25 @@ class DStarLite:
             else:
                 blocked[idx] = 0
 
+            x = idx % w
+            y = idx // w
             recompute(idx)
-            for p in preds[idx]:
-                recompute(p)
+            if y > 0:
+                recompute(idx - w)
+                if x > 0:
+                    recompute(idx - w - 1)
+                if x < w - 1:
+                    recompute(idx - w + 1)
+            if y < h - 1:
+                recompute(idx + w)
+                if x > 0:
+                    recompute(idx + w - 1)
+                if x < w - 1:
+                    recompute(idx + w + 1)
+            if x > 0:
+                recompute(idx - 1)
+            if x < w - 1:
+                recompute(idx + 1)
 
         if changed_nodes:
             self._compute_shortest_path()
@@ -412,8 +374,8 @@ class DStarLite:
 
         w = self._w
         h = self._h
-        x = self._xs[start]
-        y = self._ys[start]
+        x = start % w
+        y = start // w
         blocked = self._blocked
 
         best = None
@@ -452,8 +414,8 @@ class DStarLite:
 
         w = self._w
         h = self._h
-        x = self._xs[start]
-        y = self._ys[start]
+        x = start % w
+        y = start // w
         blocked = self._blocked
 
         best_idx: int | None = None
@@ -563,16 +525,13 @@ class DStarLite:
     def _compute_shortest_path(self) -> None:
         open_heap = self._open
         in_open = self._in_open
-        open_k1 = self._open_k1
-        open_k2 = self._open_k2
         g = self._g
         rhs = self._rhs
+        w = self._w
+        h_minus_1 = self._h - 1
+        w_minus_1 = w - 1
         recompute = self._recompute_rhs
-        preds = self._preds
-        xs = self._xs
-        ys = self._ys
-        heappop = _heappop
-        heappush = _heappush
+        use_bridges = self._use_bridges
 
         # Start doesn't move inside this loop; cache once. km is also constant.
         start = self._start
@@ -581,9 +540,9 @@ class DStarLite:
         km = self._km
 
         while open_heap:
-            k1_old, k2_old, u = heappop(open_heap)
+            k_old, u = heapq.heappop(open_heap)
 
-            if not in_open[u] or k1_old != open_k1[u] or k2_old != open_k2[u]:
+            if not in_open[u]:
                 continue
 
             gu = g[u]
@@ -594,14 +553,12 @@ class DStarLite:
             # cascading spurious updates before the next recompute corrected it.
             if gu == ru:
                 in_open[u] = False
-                open_k1[u] = _INF
-                open_k2[u] = _INF
                 continue
 
             # Inlined calc_key(u) — this is the hottest call site.
             g_rhs = ru if ru < gu else gu
-            ux = xs[u]
-            uy = ys[u]
+            ux = u % w
+            uy = u // w
             dx = start_x - ux
             if dx < 0:
                 dx = -dx
@@ -610,15 +567,11 @@ class DStarLite:
                 dy = -dy
             m = dx if dx < dy else dy
             k_new_primary = g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + km
-            if k1_old < k_new_primary or (k1_old == k_new_primary and k2_old < g_rhs):
-                open_k1[u] = k_new_primary
-                open_k2[u] = g_rhs
-                heappush(open_heap, (k_new_primary, g_rhs, u))
+            if k_old < (k_new_primary, g_rhs):
+                heapq.heappush(open_heap, ((k_new_primary, g_rhs), u))
                 continue
 
             in_open[u] = False
-            open_k1[u] = _INF
-            open_k2[u] = _INF
 
             if gu > ru:
                 g[u] = ru
@@ -626,11 +579,33 @@ class DStarLite:
             else:
                 g[u] = _INF
                 also_self = True
-            for p in preds[u]:
-                recompute(p)
+            # Inlined: for p in _pred(u): _recompute_rhs(p)
+            if uy > 0:
+                recompute(u - w)
+                if ux > 0:
+                    recompute(u - w - 1)
+                if ux < w_minus_1:
+                    recompute(u - w + 1)
+            if uy < h_minus_1:
+                recompute(u + w)
+                if ux > 0:
+                    recompute(u + w - 1)
+                if ux < w_minus_1:
+                    recompute(u + w + 1)
+            if ux > 0:
+                recompute(u - 1)
+            if ux < w_minus_1:
+                recompute(u + 1)
 
             if also_self:
                 recompute(u)
+
+            if use_bridges:
+                for jdx, jdy in _BRIDGE_JUMPS:
+                    px = ux - jdx
+                    py = uy - jdy
+                    if 0 <= px < w and 0 <= py <= h_minus_1:
+                        recompute(py * w + px)
 
             if not open_heap:
                 break
@@ -638,8 +613,7 @@ class DStarLite:
             # h(start, start) = 0, so calc_key(start) simplifies to (gs+km, gs)
             # whenever rhs[start] == g[start] (the termination condition).
             gs = g[start]
-            top = open_heap[0]
-            if rhs[start] == gs and (gs + km, gs) <= (top[0], top[1]):
+            if rhs[start] == gs and (gs + km, gs) <= open_heap[0][0]:
                 break
 
     def _recompute_rhs(self, u: int) -> None:
@@ -648,45 +622,15 @@ class DStarLite:
 
         w = self._w
         h = self._h
-        x = self._xs[u]
-        y = self._ys[u]
+        x = u % w
+        y = u // w
 
         g = self._g
-        in_open = self._in_open
-        open_k1 = self._open_k1
-        open_k2 = self._open_k2
         arr = self._env._array
         blocked = self._blocked
-        if blocked[u]:
-            self._rhs[u] = _INF
-            gu = g[u]
-            if gu != _INF:
-                start_x = self._start_x
-                start_y = self._start_y
-                dx = start_x - x
-                if dx < 0:
-                    dx = -dx
-                dy = start_y - y
-                if dy < 0:
-                    dy = -dy
-                m = dx if dx < dy else dy
-                k1 = gu + (dx + dy) + _SQRT2_MINUS_2 * m + self._km
-                if in_open[u] and open_k1[u] == k1 and open_k2[u] == gu:
-                    return
-                open_k1[u] = k1
-                open_k2[u] = gu
-                _heappush(self._open, (k1, gu, u))
-                in_open[u] = True
-            else:
-                in_open[u] = False
-                open_k1[u] = _INF
-                open_k2[u] = _INF
-            return
-
         unk_cost = self._unknown_cost
         diag_cost = self._diag_cost
         diag_unk_cost = diag_cost if self._use_bridges else diag_cost * unk_cost
-        bridge_succs = self._bridge_succs
 
         min_rhs = _INF
 
@@ -817,47 +761,40 @@ class DStarLite:
                         if v < min_rhs:
                             min_rhs = v
 
-        if bridge_succs:
-            for s in bridge_succs[u]:
-                if not blocked[s]:
-                    v = _BRIDGE_JUMP_COST + g[s]
-                    if v < min_rhs:
-                        min_rhs = v
+        if self._use_bridges:
+            for jdx, jdy in _BRIDGE_JUMPS:
+                jx = x + jdx
+                jy = y + jdy
+                if 0 <= jx < w and 0 <= jy < h:
+                    s = jy * w + jx
+                    if not blocked[s]:
+                        v = _BRIDGE_JUMP_COST + g[s]
+                        if v < min_rhs:
+                            min_rhs = v
 
         self._rhs[u] = min_rhs
         # Inlined _maybe_enqueue + _enqueue.
         gu = g[u]
         if gu != min_rhs:
-            start_x = self._start_x
-            start_y = self._start_y
             g_rhs = min_rhs if min_rhs < gu else gu
-            dx = start_x - x
+            dx = self._start_x - x
             if dx < 0:
                 dx = -dx
-            dy = start_y - y
+            dy = self._start_y - y
             if dy < 0:
                 dy = -dy
             m = dx if dx < dy else dy
-            k1 = g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km
-            if in_open[u] and open_k1[u] == k1 and open_k2[u] == g_rhs:
-                return
-            open_k1[u] = k1
-            open_k2[u] = g_rhs
-            _heappush(self._open, (k1, g_rhs, u))
-            in_open[u] = True
+            key = (g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km, g_rhs)
+            heapq.heappush(self._open, (key, u))
+            self._in_open[u] = True
         else:
             # Consistent: invalidate any stale open-heap entry. The entry
             # remains in the heap (lazy deletion), but in_open[u]=False makes
             # it skip on pop, avoiding redundant processing.
-            in_open[u] = False
-            open_k1[u] = _INF
-            open_k2[u] = _INF
+            self._in_open[u] = False
 
     def _enqueue(self, u: int) -> None:
-        k1, k2 = self._calc_key(u)
-        self._open_k1[u] = k1
-        self._open_k2[u] = k2
-        _heappush(self._open, (k1, k2, u))
+        heapq.heappush(self._open, (self._calc_key(u), u))
         self._in_open[u] = True
 
     def _calc_key(self, u: int) -> tuple[float, float]:
@@ -865,8 +802,9 @@ class DStarLite:
         ru = self._rhs[u]
         g_rhs = ru if ru < gu else gu
 
-        ux = self._xs[u]
-        uy = self._ys[u]
+        w = self._w
+        ux = u % w
+        uy = u // w
         dx = self._start_x - ux
         if dx < 0:
             dx = -dx
@@ -906,7 +844,7 @@ class DStarLite:
         return y * self._w + x
 
     def _to_xy(self, idx: int) -> tuple[int, int]:
-        return self._xs[idx], self._ys[idx]
+        return idx % self._w, idx // self._w
 
     def _in_bounds(self, x: int, y: int) -> bool:
         return 0 <= x < self._w and 0 <= y < self._h

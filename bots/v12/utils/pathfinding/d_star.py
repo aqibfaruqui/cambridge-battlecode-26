@@ -112,7 +112,7 @@ class DStarLite:
         block_mask: int = _DEFAULT_BLOCK_MASK,
         unknown_cost: float = 1.0,
         use_bridges: bool = False,
-        cpu_budget_us: int = 5000,
+        cpu_budget_us: int = 50000, # override to be useful
         time_fn: Callable[[], int] | None = None,
     ):
         self._env = env

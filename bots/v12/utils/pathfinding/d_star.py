@@ -76,7 +76,7 @@ _BRIDGE_WALK_BLOCK_MASK = (
 
 # Budget polls every N heap pops. Tuned to make time_fn() overhead negligible
 # while still bailing within a small fraction of the budget.
-_BUDGET_CHECK_INTERVAL = 64
+_BUDGET_CHECK_INTERVAL = 32
 
 
 class DStarLite:
@@ -100,6 +100,8 @@ class DStarLite:
         "_use_bridges",
         "_cpu_budget_us",
         "_time_fn",
+        "_external_deadline_us",
+        "_eager_drain",
         "last_completed",
     )
 
@@ -114,6 +116,7 @@ class DStarLite:
         use_bridges: bool = False,
         cpu_budget_us: int = 50000, # override to be useful
         time_fn: Callable[[], int] | None = None,
+        eager_drain: bool = False,
     ):
         self._env = env
         self._w = env._w
@@ -124,6 +127,16 @@ class DStarLite:
         self._use_bridges = use_bridges
         self._cpu_budget_us = cpu_budget_us
         self._time_fn = time_fn
+        # When set, _compute_shortest_path uses this absolute time_fn() cutoff
+        # instead of computing a fresh deadline per call. Lets multiple
+        # compute calls within one turn share a single budget pool.
+        self._external_deadline_us: int | None = None
+        # Standard D* Lite breaks out as soon as g[start] is consistent; this
+        # leaves intermediate cells with stale g, which is fine for step()
+        # but can break extract_path's greedy walk. eager_drain=True forces
+        # the heap to drain to empty (or to the budget cutoff) so extract_path
+        # always sees consistent g along the full path.
+        self._eager_drain = eager_drain
         # True iff the most recent _compute_shortest_path drained to optimality.
         # False means it bailed on the CPU budget — callers should not interpret
         # an INF g[start] as "unreachable".
@@ -148,6 +161,7 @@ class DStarLite:
     # ---------- Public API ----------
 
     def set_goal(self, gx: int, gy: int) -> None:
+        prev_deadline = self._external_deadline_us
         self.__init__(
             self._env,
             gx,
@@ -157,7 +171,20 @@ class DStarLite:
             use_bridges=self._use_bridges,
             cpu_budget_us=self._cpu_budget_us,
             time_fn=self._time_fn,
+            eager_drain=self._eager_drain,
         )
+        # __init__ clears the external deadline; restore it so a turn-scoped
+        # cutoff survives a mid-turn goal switch.
+        self._external_deadline_us = prev_deadline
+
+    def set_deadline(self, absolute_us: int) -> None:
+        """Pin _compute_shortest_path's cutoff to this absolute time_fn() value.
+        Multiple compute calls in the same turn share one budget pool."""
+        self._external_deadline_us = absolute_us
+
+    def clear_deadline(self) -> None:
+        """Revert to per-call cpu_budget_us deadline computation."""
+        self._external_deadline_us = None
 
     def set_position(self, sx: int, sy: int) -> None:
         new_start = self._to_idx(sx, sy)
@@ -309,8 +336,28 @@ class DStarLite:
         rhs = self._rhs
 
         time_fn = self._time_fn
-        deadline_us = time_fn() + self._cpu_budget_us if time_fn is not None else 0
-        iters_since_check = 0
+        if time_fn is not None:
+            ext = self._external_deadline_us
+            deadline_us = ext if ext is not None else time_fn() + self._cpu_budget_us
+        else:
+            deadline_us = 0
+        # Visibility for HybridPath instances: log every drain entry with the
+        # round-elapsed clock and remaining budget. Gated on eager_drain so
+        # the standalone return_planner (no eager_drain) stays silent.
+        if self._eager_drain and open_heap:
+            elapsed = time_fn() if time_fn is not None else -1
+            sx = self._start % self._w
+            sy = self._start // self._w
+            gx = self._goal % self._w
+            gy = self._goal // self._w
+            print(
+                f"[HybridPath] D* compute begin: round_elapsed={elapsed}us, "
+                f"deadline={deadline_us}us, heap={len(open_heap)}, "
+                f"({sx},{sy})->({gx},{gy})"
+            )
+        # Force a budget poll on iter 1 so an already-past external deadline
+        # bails before doing real work.
+        iters_since_check = _BUDGET_CHECK_INTERVAL - 1
 
         # Pessimistic until we cleanly exit. Any early return on budget leaves
         # this False so callers can tell "ran out of time" from "unreachable".
@@ -360,12 +407,17 @@ class DStarLite:
             if not open_heap:
                 break
 
-            # h(start, start) = 0, so calc_key(start) simplifies to (gs+km, gs)
-            # whenever rhs[start] == g[start] (the termination condition).
-            start = self._start
-            gs = g[start]
-            if rhs[start] == gs and (gs + self._km, gs) <= open_heap[0][0]:
-                break
+            # Early-termination optimization: once g[start] is consistent and
+            # no remaining heap node has a lower key, the next step from start
+            # is correct. Skipped under eager_drain because extract_path's
+            # greedy walk requires consistent g along the *full* path.
+            if not self._eager_drain:
+                # h(start, start) = 0, so calc_key(start) simplifies to (gs+km,
+                # gs) whenever rhs[start] == g[start].
+                start = self._start
+                gs = g[start]
+                if rhs[start] == gs and (gs + self._km, gs) <= open_heap[0][0]:
+                    break
 
         self.last_completed = True
 

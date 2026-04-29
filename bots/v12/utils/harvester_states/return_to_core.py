@@ -6,6 +6,7 @@ from cambc import Direction, EntityType, Environment, Position, Controller, Reso
 
 from utils.pathfinding.bug import BugPath
 from utils.pathfinding.d_star import DStarLite, _RETURN_BLOCK_MASK
+from utils.pathfinding.hybrid import HybridPath
 from utils.pathfinding.movement import (
     DIRECTIONS_4,
     get_direction_4,
@@ -587,13 +588,14 @@ def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) ->
     return True
 
 
-def _ensure_bridge_target_planner(self: Harvester, c: Controller, target: Position) -> BugPath | None:
+def _ensure_bridge_target_planner(self: Harvester, c: Controller, target: Position) -> HybridPath | None:
     if self.bridge_target_planner is None and self.environment_map is not None:
-        self.bridge_target_planner = BugPath(
+        self.bridge_target_planner = HybridPath(
             self.environment_map,
             target.x,
             target.y,
             block_mask=_RETURN_BLOCK_MASK,
+            time_fn=c.get_cpu_time_elapsed,
         )
     p = self.bridge_target_planner
     if p is not None:

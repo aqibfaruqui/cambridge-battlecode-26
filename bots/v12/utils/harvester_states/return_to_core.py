@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from cambc import Direction, EntityType, Environment, Position, Controller, ResourceType
 
-from utils.pathfinding.d_star import DStarLite, _RETURN_BLOCK_MASK
+from utils.pathfinding.ad_star import AnytimeDStar, _RETURN_BLOCK_MASK
 from utils.pathfinding.movement import (
     DIRECTIONS_4,
     get_direction_4,
@@ -153,7 +153,8 @@ def _body_dynamic_blockers(self: Harvester, c: Controller) -> list[tuple[int, in
 
 def _ensure_return_planner(self: Harvester, c: Controller):
     if self.return_planner is None and self.environment_map is not None:
-        self.return_planner = DStarLite(
+        self.return_planner = AnytimeDStar(
+            c,
             self.environment_map,
             self.core_pos.x,
             self.core_pos.y,
@@ -280,7 +281,8 @@ def _move_toward_remote_build_spot(
     for goal in _remote_build_spots(self, c, target):
         if goal == self.current_pos:
             return True
-        planner = DStarLite(
+        planner = AnytimeDStar(
+            c,
             env,
             goal.x,
             goal.y,
@@ -586,9 +588,10 @@ def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) ->
     return True
 
 
-def _ensure_bridge_target_planner(self: Harvester, c: Controller, target: Position) -> DStarLite | None:
+def _ensure_bridge_target_planner(self: Harvester, c: Controller, target: Position) -> AnytimeDStar | None:
     if self.bridge_target_planner is None and self.environment_map is not None:
-        self.bridge_target_planner = DStarLite(
+        self.bridge_target_planner = AnytimeDStar(
+            c,
             self.environment_map,
             target.x,
             target.y,

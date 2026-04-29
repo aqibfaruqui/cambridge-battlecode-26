@@ -32,7 +32,7 @@ from utils.harvester_states.heal import (
 )
 from utils.pathfinding.movement import DIRECTIONS_4, reached_core
 from utils.map.raw_map_representation import EnvironmentMap, Symmetry
-from utils.pathfinding.d_star import DStarLite
+from utils.pathfinding.ad_star import AnytimeDStar
 from utils.comms.broadcaster import Broadcaster
 from utils.comms.for_builder_bot import BuilderBotMessages
 from utils.healing import try_heal_nearby_bot, try_heal_nearby_building
@@ -88,9 +88,9 @@ class Harvester:
         self.foundry_placed_round: int = -1
         
         self.environment_map: EnvironmentMap | None = None
-        self.seek_planner: DStarLite | None = None
+        self.seek_planner: AnytimeDStar | None = None
         self.seek_planner_goal: tuple[int, int] | None = None
-        self.return_planner: DStarLite | None = None
+        self.return_planner: AnytimeDStar | None = None
         self.target_pos: Position | None = None
         self.seek_target_is_ore = False
         self.blacklisted_ores: set[tuple[int, int]] = set()
@@ -102,7 +102,7 @@ class Harvester:
         self.harvester_pos: Position | None = None
         self.just_placed = False
         self.bridge_jump_target: Position | None = None
-        self.bridge_target_planner: DStarLite | None = None
+        self.bridge_target_planner: AnytimeDStar | None = None
         # carry-forward: direction to move on the next _build_return_step call;
         # set by the first-connector step, diagonal splits, and post-bridge conveyor.
         self.return_next_dir: Direction | None = None

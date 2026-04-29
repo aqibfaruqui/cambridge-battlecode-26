@@ -9,7 +9,7 @@ from utils.harvester_states.heal import (
 from utils.harvester_states.seek import _seek_direction
 from utils.healing import try_heal_nearby_bot, try_heal_nearby_building
 from utils.map.raw_map_representation import EnvironmentMap
-from utils.pathfinding.d_star import DStarLite
+from utils.pathfinding.ad_star import AnytimeDStar
 
 
 class HealState(Enum):
@@ -44,7 +44,7 @@ class Healer:
 
         # D* Lite pathfinding state
         self.environment_map: EnvironmentMap | None = None
-        self.seek_planner: DStarLite | None = None
+        self.seek_planner: AnytimeDStar | None = None
         self.seek_planner_goal: tuple[int, int] | None = None
 
     def _ring_pos(self, idx: int) -> Position:

@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 from cambc import Direction, EntityType, Environment, Position, Controller
 
-from utils.pathfinding.d_star import DStarLite, _SEEK_BLOCK_MASK
+from utils.pathfinding.ad_star import AnytimeDStar, _SEEK_BLOCK_MASK
 from utils.map.raw_map_representation import ORE_AXIONITE, ORE_TITANIUM
 from utils.pathfinding.movement import DIRECTIONS_4, _chebyshev, random_direction_4
 from utils.comms.for_builder_bot import BuilderBotMessages, BuilderBotMessageType
@@ -347,7 +347,8 @@ def _seek_direction(
 
     goal = (move_target.x, move_target.y)
     if self.seek_planner is None or self.seek_planner_goal != goal:
-        self.seek_planner = DStarLite(
+        self.seek_planner = AnytimeDStar(
+            c,
             self.environment_map,
             move_target.x,
             move_target.y,

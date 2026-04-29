@@ -4,7 +4,7 @@ from cambc import Controller, Direction, EntityType, Position
 from utils.attacker_states.replace import replace, target_still_valid
 from utils.attacker_states.scan import scan
 from utils.attacker_states.state import AttackState
-from utils.pathfinding.d_star import DStarLite
+from utils.pathfinding.ad_star import AnytimeDStar
 from utils.map.raw_map_representation import CORE_ENEMY, EnvironmentMap, Symmetry, WALL
 from utils.comms.broadcaster import Broadcaster
 from utils.comms.for_builder_bot import BuilderBotMessages
@@ -44,7 +44,7 @@ class Attacker:
         self._attack_max_hp = 0
 
         self._env_map: EnvironmentMap | None = None
-        self._planner: DStarLite | None = None
+        self._planner: AnytimeDStar | None = None
         self._planner_goal: tuple[int, int] | None = None
         self.target_pos: Position | None = None  # for debug lines
 
@@ -83,8 +83,8 @@ class Attacker:
         pos = c.get_position()
         goal = (target.x, target.y)
         if self._planner is None or self._planner_goal != goal:
-            self._planner = DStarLite(
-                env_map, target.x, target.y, block_mask=_ATTACK_BLOCK_MASK
+            self._planner = AnytimeDStar(
+                c, env_map, target.x, target.y, block_mask=_ATTACK_BLOCK_MASK
             )
             self._planner_goal = goal
 

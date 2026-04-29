@@ -16,6 +16,28 @@ class Core:
         self.healer_id: int | None = None
         self.last_periodic_attacker_round = 0
 
+    def _has_enemy_builder_bot_in_vision_unhandled(self, c: Controller) -> bool:
+        my_team = c.get_team()
+        ours = [
+            bb
+            for bb in c.get_nearby_units()
+            if c.get_team(bb) == my_team
+            and c.get_entity_type(bb) == EntityType.BUILDER_BOT
+        ]
+        enemies = [
+            bb
+            for bb in c.get_nearby_units()
+            if c.get_team(bb) != my_team
+            and c.get_entity_type(bb) == EntityType.BUILDER_BOT
+        ]
+
+        for e in enemies:
+            if not any(
+                c.get_position(e).distance_squared(c.get_position(o)) <= 2 for o in ours
+            ):
+                return True
+        return False
+
     def _has_enemy_builder_bot_in_vision(self, c: Controller) -> bool:
         my_team = c.get_team()
         for eid in c.get_nearby_entities():
@@ -59,7 +81,7 @@ class Core:
         return c.spawn_builder(spawn_pos)
 
     def _should_spawn_healer(self, c: Controller) -> bool:
-        if not self._has_enemy_builder_bot_in_vision(c):
+        if not self._has_enemy_builder_bot_in_vision_unhandled(c):
             return False
         if self._builder_bots_on_core_ring_count(c) > self._builders_on_core_allowed(c):
             return False
@@ -95,8 +117,8 @@ class Core:
         round_now = c.get_current_round()
         if (
             round_now > 200
-            and round_now - self.last_periodic_attacker_round >= 100
-            and c.get_scale_percent() < 600
+            and round_now - self.last_periodic_attacker_round >= 70
+            and c.get_scale_percent() < 800
         ):
             print("Periodic attacker spawn check")
             if self._try_spawn(c, BuilderType.ATTACKER_REVAMPED) is not None:

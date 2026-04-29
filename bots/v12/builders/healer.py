@@ -219,6 +219,37 @@ class Healer:
         self.seek_planner_goal = None
         return True
 
+    def _reset_follow_to_patrol(self) -> None:
+        self.follow_enemy_id = None
+        self.follow_enemy_last_pos = None
+        self.state = HealState.PATROL
+        self.seek_planner = None
+        self.seek_planner_goal = None
+        self.patrol_target = None
+
+    def _has_adjacent_different_enemy_builder(
+        self, c: Controller, tracked_enemy_id: int
+    ) -> bool:
+        me = self.current_pos
+        my_team = c.get_team()
+        for uid in c.get_nearby_units():
+            if uid == tracked_enemy_id:
+                continue
+            if c.get_team(uid) == my_team:
+                continue
+            if c.get_entity_type(uid) != EntityType.BUILDER_BOT:
+                continue
+            if me.distance_squared(c.get_position(uid)) <= 2:
+                return True
+        return False
+
+    def _should_drop_follow_target(
+        self, c: Controller, enemy_id: int, enemy_pos: Position | None
+    ) -> bool:
+        if not self._has_adjacent_different_enemy_builder(c, enemy_id):
+            return False
+        return enemy_pos is None or self.current_pos.distance_squared(enemy_pos) > 2
+
     def _follow_approach_pos(self, c: Controller, enemy_pos: Position) -> Position:
         me = self.current_pos
         best = enemy_pos
@@ -250,6 +281,9 @@ class Healer:
         enemy_pos = self._enemy_builder_pos(c, enemy_id)
         if enemy_pos is not None:
             self.follow_enemy_last_pos = enemy_pos
+        if self._should_drop_follow_target(c, enemy_id, enemy_pos):
+            self._reset_follow_to_patrol()
+            return
         target = self.follow_enemy_last_pos
         if target is None or c.get_move_cooldown() > 0:
             return
@@ -301,6 +335,8 @@ class Healer:
         self._advance(c, move_dir)
 
     def _draw_debug(self, c: Controller) -> None:
+        if self.follow_enemy_last_pos is not None:
+            c.draw_indicator_line(self.current_pos, self.follow_enemy_last_pos, 0, 0, 0)
         if self.heal_target is not None:
             c.draw_indicator_dot(self.current_pos, 60, 255, 100)
             c.draw_indicator_line(self.current_pos, self.heal_target, 60, 255, 100)
@@ -360,9 +396,12 @@ class Healer:
 
         if self.state == HealState.FOLLOW:
             self._follow(c)
-            self._draw_debug(c)
-            self._log_turn_state(c)
-            return
+            if self.state == HealState.PATROL:
+                self._try_enter_follow(c)
+            if self.state == HealState.FOLLOW:
+                self._draw_debug(c)
+                self._log_turn_state(c)
+                return
 
         # Movement: navigate toward best coverage tile via D* Lite; patrol ring when idle.
         if c.get_move_cooldown() == 0:

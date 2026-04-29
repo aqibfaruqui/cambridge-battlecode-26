@@ -24,7 +24,7 @@ _ORBIT_STUCK_TURNS = 30
 
 # After the enemy core has been known this long without entering REPLACE, stop
 # orbiting and actively search the core's nearby ore field.
-_PROACTIVE_AFTER_CORE_KNOWN_TURNS = 50
+_PROACTIVE_AFTER_CORE_KNOWN_TURNS = 200
 
 # Chebyshev-radius ring around the enemy core — keeps us circling belts
 # rather than beelining at the core.
@@ -137,7 +137,7 @@ def _pick_harvester_block_target(
     claimed: set[tuple[int, int]],
 ) -> Position | None:
     """Find a tile cardinally adjacent to an enemy harvester that we can drop
-    a gunner on (empty, or only a marker, and not in a launcher's pickup ring).
+    a gunner on (empty, marker, or our road, and not in a launcher's pickup ring).
     """
     my_team = c.get_team()
     me = self.current_pos
@@ -159,8 +159,12 @@ def _pick_harvester_block_target(
             if key in self.blacklist or key in claimed:
                 continue
             adj_bid = c.get_tile_building_id(adj)
-            if adj_bid is not None and c.get_entity_type(adj_bid) != EntityType.MARKER:
-                continue
+            if adj_bid is not None:
+                adj_type = c.get_entity_type(adj_bid)
+                if adj_type != EntityType.MARKER and not (
+                    adj_type == EntityType.ROAD and c.get_team(adj_bid) == my_team
+                ):
+                    continue
             bb = c.get_tile_builder_bot_id(adj)
             if bb is not None and bb != my_id:
                 continue

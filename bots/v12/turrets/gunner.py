@@ -52,17 +52,24 @@ class Gunner:
         my_pos = c.get_position()
 
         target = c.get_gunner_target()
-        enemy_core = self._enemy_core_ahead(c, my_pos, c.get_direction(), my_team)
+        enemy_core = self._enemy_core_in_range(c, my_pos, c.get_direction(), my_team)
         if enemy_core is not None:
-            target = enemy_core if c.can_fire(enemy_core) else target
+            enemy_core_pos, enemy_core_dir = enemy_core
+            if c.can_fire(enemy_core_pos):
+                target = enemy_core_pos
             if (
                 target is not None
+                and c.get_direction() == enemy_core_dir
                 and not self._is_friendly_titanium_source(c, target, my_team)
                 and c.can_fire(target)
             ):
                 c.fire(target)
                 c.draw_indicator_dot(my_pos, 255, 0, 0)
-                c.draw_indicator_line(my_pos, enemy_core, 255, 0, 0)
+                c.draw_indicator_line(my_pos, enemy_core_pos, 255, 0, 0)
+                return
+            if c.can_rotate(enemy_core_dir):
+                c.rotate(enemy_core_dir)
+                c.draw_indicator_line(my_pos, enemy_core_pos, 255, 0, 0)
                 return
 
         if target is not None and self._is_enemy_priority(c, target, my_team):
@@ -83,7 +90,7 @@ class Gunner:
         # sitting on one of the 8 rays from this tile.
         best: list[tuple[Position, int] | None] = [None] * len(_PRIORITY)
         for dir in DIRECTIONS_8:
-            for dist in range(1, 4):
+            for dist in range(1, 5):
                 target = my_pos
                 for _ in range(dist):
                     target = target.add(dir)
@@ -163,7 +170,27 @@ class Gunner:
             return True
         return False
 
-    def _enemy_core_ahead(
+    def _enemy_core_in_range(
+        self,
+        c: Controller,
+        my_pos: Position,
+        preferred_direction: Direction,
+        my_team,
+    ) -> tuple[Position, Direction] | None:
+        directions = []
+        if preferred_direction != Direction.CENTRE:
+            directions.append(preferred_direction)
+        for direction in DIRECTIONS_8:
+            if direction != preferred_direction:
+                directions.append(direction)
+
+        for direction in directions:
+            pos = self._enemy_core_on_ray(c, my_pos, direction, my_team)
+            if pos is not None:
+                return pos, direction
+        return None
+
+    def _enemy_core_on_ray(
         self,
         c: Controller,
         my_pos: Position,

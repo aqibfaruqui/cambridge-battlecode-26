@@ -50,6 +50,8 @@ class Attacker:
 
         self.target_conveyor: Position | None = None
         self.harvester_block_target: Position | None = None
+        self._approach_target_key: tuple[int, int] | None = None
+        self._approach_started_round = 0
 
         # Hard-failed targets: skip for _BLACKLIST_TTL turns then retry.
         self.blacklist: dict[tuple[int, int], int] = {}
@@ -59,6 +61,7 @@ class Attacker:
         self._attack_target_key: tuple[int, int] | None = None
         self._attack_turns = 0
         self._attack_max_hp = 0
+        self._replace_commit_key: tuple[int, int] | None = None
 
         self._env_map: EnvironmentMap | None = None
         self._planner: DStarLite | None = None
@@ -115,6 +118,7 @@ class Attacker:
             if bb is not None and bb != my_id:
                 self.state = AttackState.SCAN
                 self.target_conveyor = None
+                self._approach_target_key = None
                 self._planner_goal = None
                 return
 
@@ -232,7 +236,9 @@ class Attacker:
         if self.target_conveyor is not None and not target_still_valid(self, c):
             self.blacklist[(self.target_conveyor.x, self.target_conveyor.y)] = c.get_current_round()
             self.target_conveyor = None
+            self._approach_target_key = None
             self._planner_goal = None
+            self._replace_commit_key = None
             self.state = AttackState.SCAN
 
         print(
@@ -254,10 +260,21 @@ class Attacker:
             block_harvester(self, c)
         if self.state == AttackState.APPROACH:
             assert self.target_conveyor is not None
+            target_key = (self.target_conveyor.x, self.target_conveyor.y)
+            if self._approach_target_key != target_key:
+                self._approach_target_key = target_key
+                self._approach_started_round = round_now
             self.target_pos = self.target_conveyor
             c.draw_indicator_line(self.current_pos, self.target_pos, 255, 0, 255)
             if self.current_pos == self.target_conveyor:
+                self._approach_target_key = None
                 self.state = AttackState.REPLACE
+            elif round_now - self._approach_started_round >= 80:
+                self.blacklist[target_key] = round_now
+                self.target_conveyor = None
+                self._approach_target_key = None
+                self._planner_goal = None
+                self.state = AttackState.SCAN
             else:
                 self._search(c, self.target_conveyor)
         if self.state == AttackState.REPLACE:

@@ -34,8 +34,12 @@ def _target_still_valid(self: Attacker, c: Controller) -> bool:
     if not c.is_in_vision(target):
         return True
     bid = c.get_tile_building_id(target)
-    if bid is not None and c.get_entity_type(bid) != EntityType.MARKER:
-        return False
+    if bid is not None:
+        etype = c.get_entity_type(bid)
+        if etype != EntityType.MARKER and not (
+            etype == EntityType.ROAD and c.get_team(bid) == c.get_team()
+        ):
+            return False
     return _enemy_harvester_dir(c, target, c.get_team()) is not None
 
 
@@ -70,6 +74,16 @@ def block_harvester(self: Attacker, c: Controller) -> None:
             facing = _enemy_harvester_dir(c, target, my_team) or me.direction_to(target)
             if facing == Direction.CENTRE:
                 facing = Direction.NORTH
+            gunner_cost_ti = c.get_gunner_cost()[0]
+            bid = c.get_tile_building_id(target)
+            if (
+                bid is not None
+                and c.get_entity_type(bid) == EntityType.ROAD
+                and c.get_team(bid) == my_team
+                and c.get_global_resources()[0] >= gunner_cost_ti
+                and c.can_destroy(target)
+            ):
+                c.destroy(target)
             if c.can_build_gunner(target, facing):
                 c.build_gunner(target, facing)
                 self.harvester_block_target = None

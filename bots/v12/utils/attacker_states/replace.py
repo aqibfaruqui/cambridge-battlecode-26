@@ -168,6 +168,8 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
     assert target is not None
     me = self.current_pos
     my_team = c.get_team()
+    key = (target.x, target.y)
+    committed = self._replace_commit_key == key
 
     bld_id = c.get_tile_building_id(target)
     team = c.get_team(bld_id) if bld_id is not None else None
@@ -186,7 +188,6 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
         case (t, _) if t not in (None, my_team):
             # Enemy on target: walk on (conveyor is walkable) and own-tile fire.
             if me == target:
-                key = (target.x, target.y)
                 if self._attack_target_key != key:
                     self._attack_target_key = key
                     self._attack_turns = 0
@@ -198,6 +199,7 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
                     return False
                 if c.can_fire(me):
                     c.fire(me)
+                    self._replace_commit_key = key
                     self._attack_turns += 1
             elif c.can_move(me.direction_to(target)):
                 c.move(me.direction_to(target))
@@ -213,7 +215,7 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
             return False
 
     # Turrets are expensive — only commit if titanium is still flowing here.
-    if not _titanium_reaches(c, target):
+    if not committed and not _titanium_reaches(c, target):
         self.blacklist[(target.x, target.y)] = c.get_current_round()
         return True
 
@@ -249,6 +251,7 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
         if not c.can_destroy(target):
             return False
         c.destroy(target)
+        self._replace_commit_key = key
 
     if can_build_turret(target, facing):
         build_turret(target, facing)
@@ -277,4 +280,8 @@ def replace(self: Attacker, c: Controller) -> None:
     if _execute_replacement(self, c):
         self.target_conveyor = None
         self._planner_goal = None
+        self._replace_commit_key = None
+        self._attack_target_key = None
+        self._attack_turns = 0
+        self._attack_max_hp = 0
         self.state = AttackState.SCAN

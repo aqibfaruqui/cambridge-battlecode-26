@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from cambc import Direction, EntityType, Environment, Position, Controller, ResourceType
 
-from utils.pathfinding.d_star import DStarLite, _RETURN_BLOCK_MASK
+from utils.pathfinding.d_star import DSTAR_CPU_DEADLINE_US, DStarLite, _RETURN_BLOCK_MASK
 from utils.pathfinding.movement import (
     DIRECTIONS_4,
     get_direction_4,
@@ -163,8 +163,12 @@ def _ensure_return_planner(self: Harvester, c: Controller):
         )
     p = self.return_planner
     if p is not None:
-        p.set_dynamic_blockers(_return_dynamic_blockers(self, c))
-        p.notify_map_changes()
+        p.set_dynamic_blockers(
+            _return_dynamic_blockers(self, c),
+            DSTAR_CPU_DEADLINE_US,
+            c.get_cpu_time_elapsed,
+        )
+        p.notify_map_changes(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
     return p
 
 
@@ -288,9 +292,11 @@ def _move_toward_remote_build_spot(
             unknown_cost=3.0,
         )
         planner.set_position(self.current_pos.x, self.current_pos.y)
-        planner.set_dynamic_blockers(blockers)
-        planner.notify_map_changes()
-        move_dir = planner.step()
+        planner.set_dynamic_blockers(
+            blockers, DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed
+        )
+        planner.notify_map_changes(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
+        move_dir = planner.step(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
         if move_dir is None or move_dir == Direction.CENTRE:
             continue
 
@@ -597,8 +603,12 @@ def _ensure_bridge_target_planner(self: Harvester, c: Controller, target: Positi
     p = self.bridge_target_planner
     if p is not None:
         p.set_position(self.current_pos.x, self.current_pos.y)
-        p.set_dynamic_blockers(_body_dynamic_blockers(self, c))
-        p.notify_map_changes()
+        p.set_dynamic_blockers(
+            _body_dynamic_blockers(self, c),
+            DSTAR_CPU_DEADLINE_US,
+            c.get_cpu_time_elapsed,
+        )
+        p.notify_map_changes(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
     return p
 
 
@@ -663,8 +673,14 @@ def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
         return True
 
     p = _ensure_bridge_target_planner(self, c, target)
-    move_dir = p.step() if p is not None else None
+    move_dir = (
+        p.step(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
+        if p is not None
+        else None
+    )
     if move_dir is None or move_dir == Direction.CENTRE:
+        if p is not None and p.planning_pending():
+            return True
         key = ("bridge_walk", self.current_pos.x, self.current_pos.y, target.x, target.y)
         _bridge_fail(self, key)
         return True
@@ -739,7 +755,7 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
     if planner is not None:
         planner.set_position(self.current_pos.x, self.current_pos.y)
 
-        step_xy = planner.step_xy()
+        step_xy = planner.step_xy(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
         if step_xy is not None:
             cx, cy = self.current_pos.x, self.current_pos.y
             tx, ty = step_xy
@@ -750,6 +766,8 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
                 else:
                     return _handle_bridge_jump(self, c, Position(tx, ty))
             planner_step = self.current_pos.direction_to(Position(tx, ty))
+        elif planner.planning_pending():
+            return True
 
     if self.return_next_dir is not None:
         move_dir = self.return_next_dir

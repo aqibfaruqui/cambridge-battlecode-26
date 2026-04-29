@@ -42,7 +42,6 @@ class BuilderBotMessages(IntEnum):
 
     @classmethod
     def encode_claim_ore(cls, position: Position) -> int:
-        print(f"[BuilderBotMessages] encode CLAIM_ORE position=({position.x}, {position.y})")
         message = (
             (cls.FOR_BUILDER_BOT << 28)
             | (BuilderBotMessageType.CLAIM_ORE << 24)
@@ -54,12 +53,10 @@ class BuilderBotMessages(IntEnum):
     def decode_claim_ore(cls, data: int) -> Position:
         data = Encryption.decrypt(data)
         position = PositionEncoder.decode(data & 0x00000FFF)
-        print(f"[BuilderBotMessages] CLAIM_ORE position=({position.x}, {position.y})")
         return position
 
     @classmethod
     def encode_core_position(cls, position: Position) -> int:
-        print(f"[BuilderBotMessages] encode CORE_POSITION position=({position.x}, {position.y})")
         message = (
             (cls.FOR_BUILDER_BOT << 28)
             | (BuilderBotMessageType.CORE_POSITION << 24)
@@ -71,12 +68,10 @@ class BuilderBotMessages(IntEnum):
     def decode_core_position(cls, data: int) -> Position:
         data = Encryption.decrypt(data)
         position = PositionEncoder.decode(data & 0x00000FFF)
-        print(f"[BuilderBotMessages] CORE_POSITION position=({position.x}, {position.y})")
         return position
 
     @classmethod
     def encode_enemy_core_position(cls, position: Position) -> int:
-        print(f"[BuilderBotMessages] encode ENEMY_CORE_POSITION position=({position.x}, {position.y})")
         message = (
             (cls.FOR_BUILDER_BOT << 28)
             | (BuilderBotMessageType.ENEMY_CORE_POSITION << 24)
@@ -88,12 +83,10 @@ class BuilderBotMessages(IntEnum):
     def decode_enemy_core_position(cls, data: int) -> Position:
         data = Encryption.decrypt(data)
         position = PositionEncoder.decode(data & 0x00000FFF)
-        print(f"[BuilderBotMessages] ENEMY_CORE_POSITION position=({position.x}, {position.y})")
         return position
 
     @classmethod
     def encode_claim_position(cls, position: Position) -> int:
-        print(f"[BuilderBotMessages] encode CLAIM_POSITION position=({position.x}, {position.y})")
         message = (
             (cls.FOR_BUILDER_BOT << 28)
             | (BuilderBotMessageType.CLAIM_POSITION << 24)
@@ -105,12 +98,10 @@ class BuilderBotMessages(IntEnum):
     def decode_claim_position(cls, data: int) -> Position:
         data = Encryption.decrypt(data)
         position = PositionEncoder.decode(data & 0x00000FFF)
-        print(f"[BuilderBotMessages] CLAIM_POSITION position=({position.x}, {position.y})")
         return position
 
     @classmethod
     def encode_symmetry(cls, symmetry: int) -> int:
-        print(f"[BuilderBotMessages] encode SYMMETRY value={symmetry}")
         message = (
             (cls.FOR_BUILDER_BOT << 28)
             | (BuilderBotMessageType.SYMMETRY << 24)
@@ -122,17 +113,15 @@ class BuilderBotMessages(IntEnum):
     def decode_symmetry(cls, data: int) -> int:
         data = Encryption.decrypt(data)
         value = data & 0xFF
-        print(f"[BuilderBotMessages] decode SYMMETRY value={value}")
         return value
 
     @classmethod
-    def read_nearby_symmetry(cls, c: Controller) -> Optional[int]:
+    def read_nearby_symmetry(cls, c: Controller, nearby_buildings=None) -> Optional[int]:
         """Scan own-team markers in vision for a SYMMETRY broadcast; return raw value or None."""
         my_team = c.get_team()
-        for tile in c.get_nearby_tiles():
-            bid = c.get_tile_building_id(tile)
-            if bid is None:
-                continue
+        if nearby_buildings is None:
+            nearby_buildings = c.get_nearby_buildings()
+        for bid in nearby_buildings:
             if c.get_entity_type(bid) != EntityType.MARKER:
                 continue
             if c.get_team(bid) != my_team:

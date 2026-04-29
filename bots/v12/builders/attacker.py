@@ -70,6 +70,7 @@ class Attacker:
         for msg in self._permanent_broadcasts:
             self.broadcaster.add_broadcast(msg)
         if cur is not None:
+            assert self.target_conveyor is not None
             self.broadcaster.add_broadcast(
                 BuilderBotMessages.encode_claim_position(self.target_conveyor)
             )
@@ -94,6 +95,15 @@ class Attacker:
         my_id = c.get_id()
         my_team = c.get_team()
         blockers: list[tuple[int, int]] = []
+
+        if c.is_in_vision(target):
+            bb = c.get_tile_builder_bot_id(target)
+            if bb is not None and bb != my_id:
+                self.state = AttackState.SCAN
+                self.target_conveyor = None
+                self._planner_goal = None
+                return
+
         for p in c.get_nearby_tiles():
             bot_id = c.get_tile_builder_bot_id(p)
             if bot_id is not None and bot_id != my_id:

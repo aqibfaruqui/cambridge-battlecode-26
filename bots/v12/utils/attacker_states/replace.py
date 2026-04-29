@@ -112,6 +112,11 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
     bld_id = c.get_tile_building_id(target)
     team = c.get_team(bld_id) if bld_id is not None else None
     etype = c.get_entity_type(bld_id) if bld_id is not None else None
+    bb = c.get_tile_builder_bot_id(target) if target is not None else None
+
+    if bb is not None and bb != c.get_id():
+        # early return when a not-us bb is on the tile and reset state as normal
+        return True
 
     match (team, etype):
         case (t, EntityType.SENTINEL | EntityType.GUNNER) if t == my_team:

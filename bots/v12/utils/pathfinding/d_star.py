@@ -95,6 +95,7 @@ class DStarLite:
         "_block_mask",
         "_dynamic_blocked",
         "_blocked",
+        "_affected",
         "_unknown_cost",
         "_use_bridges",
         "_diag_cost",
@@ -141,6 +142,7 @@ class DStarLite:
         # set_position / notify_map_changes / set_dynamic_blockers so the
         # frequent `s == start` override in _recompute_rhs can be dropped.
         self._blocked = bytearray(self._n)
+        self._affected: set[int] = set()
         arr = env._array
         mask = self._block_mask
         blocked = self._blocked
@@ -247,12 +249,14 @@ class DStarLite:
         w = self._w
         h = self._h
         n = self._n
-        recompute = self._recompute_rhs
         blocked = self._blocked
         dyn = self._dynamic_blocked
         mask = self._block_mask
         use_bridges = self._use_bridges
         current_start = self._start
+        affected = self._affected
+        affected.clear()
+        add_affected = self._add_affected_neighbourhood
 
         i = 0
         while i < n:
@@ -269,44 +273,30 @@ class DStarLite:
                 else:
                     blocked[i] = 0
 
-                x = i % w
-                y = i // w
-                # Inlined: for pred in _pred(i): recompute(pred)
-                if y > 0:
-                    recompute(i - w)
-                    if x > 0:
-                        recompute(i - w - 1)
-                    if x < w - 1:
-                        recompute(i - w + 1)
-                if y < h - 1:
-                    recompute(i + w)
-                    if x > 0:
-                        recompute(i + w - 1)
-                    if x < w - 1:
-                        recompute(i + w + 1)
-                if x > 0:
-                    recompute(i - 1)
-                if x < w - 1:
-                    recompute(i + 1)
-
-                recompute(i)
+                add_affected(affected, i)
 
                 if use_bridges:
+                    x = i % w
+                    y = i // w
                     for jdx, jdy in _BRIDGE_JUMPS:
                         px = x - jdx
                         py = y - jdy
                         if 0 <= px < w and 0 <= py < h:
-                            recompute(py * w + px)
+                            affected.add(py * w + px)
 
             i += 1
 
-        self._compute_shortest_path()
+        recompute = self._recompute_rhs
+        for idx in sorted(affected):
+            recompute(idx)
+        affected.clear()
+
         return True
 
     def set_dynamic_blockers(self, blocked_xy: list[tuple[int, int]]) -> bool:
         w = self._w
-        h = self._h
         new_blocked: set[int] = set()
+        h = self._h
         for x, y in blocked_xy:
             if 0 <= x < w and 0 <= y < h:
                 new_blocked.add(y * w + x)
@@ -318,13 +308,17 @@ class DStarLite:
         changed_nodes = old_blocked.symmetric_difference(new_blocked)
         self._dynamic_blocked = new_blocked
 
-        # Refresh combined bitmap + propagate rhs recomputes. Inline _pred —
-        # the generator shows up as measurable overhead at 1400+ calls/turn.
+        # Refresh combined bitmap + propagate rhs recomputes. Adjacent blocker
+        # changes share many predecessors, so deduplicate and sort the fan-out:
+        # fewer RHS recomputes, stable heap insertion order, and less tail noise.
         blocked = self._blocked
         arr = self._env._array
         mask = self._block_mask
         recompute = self._recompute_rhs
         current_start = self._start
+        affected = self._affected
+        affected.clear()
+        add_affected = self._add_affected_neighbourhood
 
         for idx in changed_nodes:
             if idx == current_start:
@@ -336,28 +330,11 @@ class DStarLite:
             else:
                 blocked[idx] = 0
 
-            x = idx % w
-            y = idx // w
-            recompute(idx)
-            if y > 0:
-                recompute(idx - w)
-                if x > 0:
-                    recompute(idx - w - 1)
-                if x < w - 1:
-                    recompute(idx - w + 1)
-            if y < h - 1:
-                recompute(idx + w)
-                if x > 0:
-                    recompute(idx + w - 1)
-                if x < w - 1:
-                    recompute(idx + w + 1)
-            if x > 0:
-                recompute(idx - 1)
-            if x < w - 1:
-                recompute(idx + 1)
+            add_affected(affected, idx)
 
-        if changed_nodes:
-            self._compute_shortest_path()
+        for idx in sorted(affected):
+            recompute(idx)
+        affected.clear()
 
         return True
 
@@ -626,13 +603,151 @@ class DStarLite:
         y = u // w
 
         g = self._g
-        arr = self._env._array
         blocked = self._blocked
         unk_cost = self._unknown_cost
         diag_cost = self._diag_cost
-        diag_unk_cost = diag_cost if self._use_bridges else diag_cost * unk_cost
 
         min_rhs = _INF
+
+        if unk_cost == 1.0:
+            if 0 < x < w - 1 and 0 < y < h - 1:
+                s = u - w  # N
+                if not blocked[s]:
+                    gs = g[s]
+                    v = 1.0 + gs
+                    if v < min_rhs:
+                        min_rhs = v
+                s = u + w  # S
+                if not blocked[s]:
+                    gs = g[s]
+                    v = 1.0 + gs
+                    if v < min_rhs:
+                        min_rhs = v
+                s = u - 1  # W
+                if not blocked[s]:
+                    gs = g[s]
+                    v = 1.0 + gs
+                    if v < min_rhs:
+                        min_rhs = v
+                s = u + 1  # E
+                if not blocked[s]:
+                    gs = g[s]
+                    v = 1.0 + gs
+                    if v < min_rhs:
+                        min_rhs = v
+                s = u - w - 1  # NW
+                if not blocked[s]:
+                    gs = g[s]
+                    v = diag_cost + gs
+                    if v < min_rhs:
+                        min_rhs = v
+                s = u - w + 1  # NE
+                if not blocked[s]:
+                    gs = g[s]
+                    v = diag_cost + gs
+                    if v < min_rhs:
+                        min_rhs = v
+                s = u + w - 1  # SW
+                if not blocked[s]:
+                    gs = g[s]
+                    v = diag_cost + gs
+                    if v < min_rhs:
+                        min_rhs = v
+                s = u + w + 1  # SE
+                if not blocked[s]:
+                    gs = g[s]
+                    v = diag_cost + gs
+                    if v < min_rhs:
+                        min_rhs = v
+            else:
+                if y > 0:
+                    s = u - w  # N
+                    if not blocked[s]:
+                        gs = g[s]
+                        v = 1.0 + gs
+                        if v < min_rhs:
+                            min_rhs = v
+                    if x > 0:
+                        s = u - w - 1  # NW
+                        if not blocked[s]:
+                            gs = g[s]
+                            v = diag_cost + gs
+                            if v < min_rhs:
+                                min_rhs = v
+                    if x < w - 1:
+                        s = u - w + 1  # NE
+                        if not blocked[s]:
+                            gs = g[s]
+                            v = diag_cost + gs
+                            if v < min_rhs:
+                                min_rhs = v
+                if y < h - 1:
+                    s = u + w  # S
+                    if not blocked[s]:
+                        gs = g[s]
+                        v = 1.0 + gs
+                        if v < min_rhs:
+                            min_rhs = v
+                    if x > 0:
+                        s = u + w - 1  # SW
+                        if not blocked[s]:
+                            gs = g[s]
+                            v = diag_cost + gs
+                            if v < min_rhs:
+                                min_rhs = v
+                    if x < w - 1:
+                        s = u + w + 1  # SE
+                        if not blocked[s]:
+                            gs = g[s]
+                            v = diag_cost + gs
+                            if v < min_rhs:
+                                min_rhs = v
+                if x > 0:
+                    s = u - 1  # W
+                    if not blocked[s]:
+                        gs = g[s]
+                        v = 1.0 + gs
+                        if v < min_rhs:
+                            min_rhs = v
+                if x < w - 1:
+                    s = u + 1  # E
+                    if not blocked[s]:
+                        gs = g[s]
+                        v = 1.0 + gs
+                        if v < min_rhs:
+                            min_rhs = v
+
+            if self._use_bridges:
+                for jdx, jdy in _BRIDGE_JUMPS:
+                    jx = x + jdx
+                    jy = y + jdy
+                    if 0 <= jx < w and 0 <= jy < h:
+                        s = jy * w + jx
+                        if not blocked[s]:
+                            v = _BRIDGE_JUMP_COST + g[s]
+                            if v < min_rhs:
+                                min_rhs = v
+
+            self._rhs[u] = min_rhs
+            gu = g[u]
+            if gu != min_rhs:
+                g_rhs = min_rhs if min_rhs < gu else gu
+                dx = self._start_x - x
+                if dx < 0:
+                    dx = -dx
+                dy = self._start_y - y
+                if dy < 0:
+                    dy = -dy
+                m = dx if dx < dy else dy
+                key = (g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km, g_rhs)
+                heapq.heappush(self._open, (key, u))
+                self._in_open[u] = True
+            else:
+                self._in_open[u] = False
+            return
+
+        arr = self._env._array
+        diag_unk_cost = diag_cost if self._use_bridges else diag_cost * unk_cost
 
         # Interior cells (the common case) skip all per-neighbour bounds
         # checks. Early-prune when g[s] >= min_rhs: since cost >= 1.0, we
@@ -796,6 +911,29 @@ class DStarLite:
     def _enqueue(self, u: int) -> None:
         heapq.heappush(self._open, (self._calc_key(u), u))
         self._in_open[u] = True
+
+    def _add_affected_neighbourhood(self, affected: set[int], u: int) -> None:
+        w = self._w
+        x = u % w
+        y = u // w
+        add = affected.add
+        add(u)
+        if y > 0:
+            add(u - w)
+            if x > 0:
+                add(u - w - 1)
+            if x < w - 1:
+                add(u - w + 1)
+        if y < self._h - 1:
+            add(u + w)
+            if x > 0:
+                add(u + w - 1)
+            if x < w - 1:
+                add(u + w + 1)
+        if x > 0:
+            add(u - 1)
+        if x < w - 1:
+            add(u + 1)
 
     def _calc_key(self, u: int) -> tuple[float, float]:
         gu = self._g[u]

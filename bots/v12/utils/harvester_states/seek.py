@@ -17,9 +17,8 @@ if TYPE_CHECKING:
     from builders.harvester import Harvester
 
 _DEGENERATE_ROOM = 3
-_FRONTIER_STRIDE = 1
-_FRONTIER_SCAN_BUDGET = 320
-_LOCAL_FRONTIER_RADIUS = 8
+_EXPLORE_R_MAX = 12
+_EXPLORE_R_MIN = 4
 
 
 def _read_nearby_claims(c: Controller) -> set[tuple[int, int]]:
@@ -56,21 +55,33 @@ def _explore_lane(self: Harvester) -> tuple[str, int]:
     spawn = self.spawn_pos if self.spawn_pos is not None else self.current_pos
     dx = spawn.x - cx
     dy = spawn.y - cy
+    parity = getattr(self, "bot_id", 0) % 2
 
     if x_splittable and y_splittable:
         hbal = min(cx, w - 1 - cx)
         vbal = min(cy, h - 1 - cy)
         axis = "x" if hbal >= vbal else "y"
-        sign = (1 if dx >= 0 else -1) if axis == "x" else (1 if dy >= 0 else -1)
-        return axis, sign
+        offset = dx if axis == "x" else dy
+        if abs(offset) <= 1:
+            # Spawn too close to centre-line — differentiate by bot parity.
+            return axis, 1 if parity == 0 else -1
+        return axis, 1 if offset > 0 else -1
 
     if x_splittable:
-        return "x", 1 if dx >= 0 else -1
+        if abs(dx) <= 1:
+            return "x", 1 if parity == 0 else -1
+        return "x", 1 if dx > 0 else -1
+
     if y_splittable:
-        return "y", 1 if dy >= 0 else -1
-    if abs(dx) >= abs(dy):
-        return "x", 1 if dx >= 0 else -1
-    return "y", 1 if dy >= 0 else -1
+        if abs(dy) <= 1:
+            return "y", 1 if parity == 0 else -1
+        return "y", 1 if dy > 0 else -1
+
+    # Corner core: split axes entirely by bot parity so they never overlap.
+    if parity == 0:
+        return "x", 1 if (w - 1 - cx) >= cx else -1
+    else:
+        return "y", 1 if (h - 1 - cy) >= cy else -1
 
 
 def _seek_dynamic_blockers(self: Harvester, c: Controller) -> list[tuple[int, int]]:
@@ -84,13 +95,6 @@ def _seek_dynamic_blockers(self: Harvester, c: Controller) -> list[tuple[int, in
             continue
         blocked.append((pos.x, pos.y))
     return blocked
-
-
-def _is_memory_passable(self: Harvester, x: int, y: int) -> bool:
-    env = self.environment_map
-    if env is None or not env.in_bounds(x, y):
-        return False
-    return env.is_frontier_passable(x, y)
 
 
 def _best_ore_approach(
@@ -126,158 +130,59 @@ def _best_ore_approach(
     return best_target
 
 
-def _frontier_score(
-    self: Harvester,
-    pos: Position,
-    target: Position,
-    lane_axis: str,
-    lane_sign: int,
-) -> float:
-    env = self.environment_map
-    if env is None:
-        return float("-inf")
-
-    distance = pos.distance_squared(target) or 1
-    preferred_offset = target.x - self.core_pos.x
-    cross_offset = target.y - self.core_pos.y
-    if lane_axis == "y":
-        preferred_offset, cross_offset = cross_offset, preferred_offset
-
-    lane_bonus = 0.0
-    if preferred_offset != 0:
-        lane_strength = max(10, 60 - abs(preferred_offset) * 4)
-        if preferred_offset * lane_sign > 0:
-            lane_bonus += lane_strength
-        else:
-            lane_bonus -= lane_strength * 0.4
-
-    core_dist = max(abs(target.x - self.core_pos.x), abs(target.y - self.core_pos.y))
-    if core_dist <= 5 and abs(cross_offset) <= 1 and preferred_offset * lane_sign <= 0:
-        lane_bonus -= 45
-
-    return lane_bonus - distance
-
-
-def _pick_frontier_target(
-    self: Harvester,
-    pos: Position,
-    lane_axis: str,
-    lane_sign: int,
-    blocked: set[tuple[int, int]],
+def _pick_explore_target(
+    self: Harvester, lane_axis: str, lane_sign: int
 ) -> Position | None:
+    """
+    Ring-based exploration centered on the core.
+    Tries R = R_MAX down to R_MIN; within each ring scores by:
+      - unknown tile / unexplored-border bonus
+      - lane-direction bias (differentiates bots)
+      - proximity to current bot (stay close for defence)
+    """
     env = self.environment_map
     if env is None:
         return None
+    ox, oy = self.core_pos.x, self.core_pos.y
+    bx, by = self.current_pos.x, self.current_pos.y
 
-    best_target = None
-    best_score = float("-inf")
+    for R in range(_EXPLORE_R_MAX, _EXPLORE_R_MIN - 1, -1):
+        best: Position | None = None
+        best_score = float("-inf")
 
-    min_x = max(0, pos.x - _LOCAL_FRONTIER_RADIUS)
-    max_x = min(env.width - 1, pos.x + _LOCAL_FRONTIER_RADIUS)
-    min_y = max(0, pos.y - _LOCAL_FRONTIER_RADIUS)
-    max_y = min(env.height - 1, pos.y + _LOCAL_FRONTIER_RADIUS)
+        for dx in range(-R, R + 1):
+            for dy in ((-R, R) if abs(dx) < R else range(-R, R + 1)):
+                tx, ty = ox + dx, oy + dy
+                if not env.in_bounds(tx, ty):
+                    continue
+                if not env.is_seek_candidate(tx, ty):
+                    continue
 
-    for y in range(min_y, max_y + 1):
-        for x in range(min_x, max_x + 1):
-            if (x, y) not in blocked and _is_memory_passable(self, x, y):
-                target = Position(x, y)
-                for direction in DIRECTIONS_4:
-                    neighbor = target.add(direction)
-                    if env.in_bounds(neighbor.x, neighbor.y) and env.is_unknown(
-                        neighbor.x, neighbor.y
-                    ):
-                        score = _frontier_score(self, pos, target, lane_axis, lane_sign)
-                        if score > best_score:
-                            best_score = score
-                            best_target = target
-                        break
+                # Unknown / underexplored bonus
+                if env.is_unknown(tx, ty):
+                    u_score = 40
+                else:
+                    u_score = 0
+                    for nx, ny in ((tx+1,ty),(tx-1,ty),(tx,ty+1),(tx,ty-1)):
+                        if env.in_bounds(nx, ny) and env.is_unknown(nx, ny):
+                            u_score += 10
 
-    if best_target is not None:
-        return best_target
+                # Lane bias — keeps two bots in different halves of the map
+                along = (dx * lane_sign) if lane_axis == "x" else (dy * lane_sign)
 
-    n = env.width * env.height
-    if n <= 0:
-        return None
+                # Proximity to bot — prefer tiles the bot can reach quickly
+                bot_dist = max(abs(tx - bx), abs(ty - by))
 
-    start = getattr(self, "frontier_scan_index", 0) % n
-    idx = start
-    scanned = 0
+                score = along * 8 + u_score - bot_dist
+                if score > best_score:
+                    best_score = score
+                    best = Position(tx, ty)
 
-    while scanned < _FRONTIER_SCAN_BUDGET and scanned < n:
-        x = idx % env.width
-        y = idx // env.width
-        if (x, y) not in blocked and _is_memory_passable(self, x, y):
-            target = Position(x, y)
-            for direction in DIRECTIONS_4:
-                neighbor = target.add(direction)
-                if env.in_bounds(neighbor.x, neighbor.y) and env.is_unknown(
-                    neighbor.x, neighbor.y
-                ):
-                    score = _frontier_score(self, pos, target, lane_axis, lane_sign)
-                    if score > best_score:
-                        best_score = score
-                        best_target = target
-                    break
-        idx += _FRONTIER_STRIDE
-        if idx >= n:
-            idx = 0
-        scanned += 1
+        if best is not None:
+            return best
+        # No passable tile at this R — reduce and retry (point 5)
 
-    self.frontier_scan_index = idx
-
-    return best_target
-
-
-def _fallback_edge_target(self: Harvester, lane_axis: str, lane_sign: int) -> Position:
-    env = self.environment_map
-    if env is None:
-        return self.current_pos.add(random_direction_4())
-    w, h = env.width, env.height
-    if lane_axis == "x":
-        primary = (
-            [Position(w - 1, h // 2), Position(0, h // 2)]
-            if lane_sign > 0
-            else [Position(0, h // 2), Position(w - 1, h // 2)]
-        )
-        secondary = [Position(w // 2, h - 1), Position(w // 2, 0)]
-    else:
-        primary = (
-            [Position(w // 2, h - 1), Position(w // 2, 0)]
-            if lane_sign > 0
-            else [Position(w // 2, 0), Position(w // 2, h - 1)]
-        )
-        secondary = [Position(w - 1, h // 2), Position(0, h // 2)]
-    targets = primary + secondary
-    for _ in range(len(targets)):
-        target = targets[self.edge_cycle_index % len(targets)]
-        self.edge_cycle_index += 1
-        if (target.x, target.y) not in self.blacklisted_seek_targets:
-            return target
-    return targets[(self.edge_cycle_index - 1) % len(targets)]
-
-
-def _pick_ore_target(
-    self: Harvester,
-    pos: Position,
-    blocked: set[tuple[int, int]],
-    fetch_fn,
-    c: Controller | None = None,
-) -> Position | None:
-    while True:
-        ore = fetch_fn(blocked)
-        if ore is None:
-            return None
-        if c is not None and c.is_in_vision(ore):
-            occupier = c.get_tile_builder_bot_id(ore)
-            if occupier is not None and occupier != c.get_id():
-                key = (ore.x, ore.y)
-                blocked.add(key)
-                continue
-        if _best_ore_approach(self, ore, pos) is not None:
-            return ore
-        key = (ore.x, ore.y)
-        self.blacklisted_ores.add(key)
-        blocked.add(key)
+    return None
 
 
 def _pick_seek_target(
@@ -290,74 +195,17 @@ def _pick_seek_target(
     if env is None:
         return pos.add(random_direction_4()), False
 
-    blocked_ores = set(self.blacklisted_ores)
-    blocked_frontiers = self.blacklisted_seek_targets | claimed
-    lane_axis, lane_sign = _explore_lane(self)
-
-    axionite_unlocked = self._axionite_unlocked(c)
-
-    if not axionite_unlocked:
-        ore = _pick_ore_target(
-            self,
-            pos,
-            blocked_ores,
-            lambda b: env.nearest_known_titanium(pos, b, observed_only=True),
-            c,
-        )
-        if ore is not None:
-            return ore, True
-
-        if env.symmetry is not None:
-            ore = _pick_ore_target(
-                self,
-                pos,
-                blocked_ores,
-                lambda b: env.nearest_predicted_titanium(pos, b),
-                c,
-            )
-            if ore is not None:
-                return ore, True
-
-    if axionite_unlocked:
-        ore = _pick_ore_target(
-            self,
-            pos,
-            blocked_ores,
-            lambda b: env.nearest_known_axionite(pos, b),
-            c,
-        )
-        if ore is not None:
-            return ore, True
-
-    frontier = _pick_frontier_target(self, pos, lane_axis, lane_sign, blocked_frontiers)
-    if frontier is not None:
-        return frontier, False
-
-    return _fallback_edge_target(self, lane_axis, lane_sign), False
-
-
-def _nearby_visible_ore_target(
-    self: Harvester,
-    c: Controller,
-    claimed: set[tuple[int, int]],
-) -> Position | None:
-    env = self.environment_map
-    if env is None:
-        return None
     blocked = set(self.blacklisted_ores) | claimed
-    if not self._axionite_unlocked(c):
-        ore = env.nearest_known_titanium(self.current_pos, blocked, observed_only=True)
+    if self._axionite_unlocked(c):
+        ore = env.nearest_known_axionite(pos, blocked)
     else:
-        ore = env.nearest_known_axionite(self.current_pos, blocked)
-    if ore is None or self.current_pos.distance_squared(ore) > 100:
-        return None
-    if c.is_in_vision(ore):
-        occupier = c.get_tile_builder_bot_id(ore)
-        if occupier is not None and occupier != c.get_id():
-            return None
-    if _best_ore_approach(self, ore, self.current_pos, c) is None:
-        return None
-    return ore
+        ore = env.nearest_known_titanium(pos, blocked)
+    if ore is not None:
+        return ore, True
+
+    lane_axis, lane_sign = _explore_lane(self)
+    explore = _pick_explore_target(self, lane_axis, lane_sign)
+    return (explore, False) if explore is not None else (pos.add(random_direction_4()), False)
 
 
 def _target_still_viable(
@@ -472,12 +320,6 @@ def _seek(self: Harvester, c: Controller):
 
     claimed = _read_nearby_claims(c)
 
-    if not self.seek_target_is_ore:
-        nearby_ore = _nearby_visible_ore_target(self, c, claimed)
-        if nearby_ore is not None:
-            self.target_pos = nearby_ore
-            self.seek_target_is_ore = True
-
     if self.target_pos is None or not _target_still_viable(
         self, self.target_pos, self.seek_target_is_ore, c
     ):
@@ -522,6 +364,15 @@ def _seek(self: Harvester, c: Controller):
 
     move_dir = _seek_direction(self, c, move_target)
     if move_dir is None:
+        key = (self.target_pos.x, self.target_pos.y)
+        if self.seek_target_is_ore:
+            self.blacklisted_ores.add(key)
+        else:
+            self.blacklisted_seek_targets.add(key)
+        self.target_pos = None
+        self.seek_target_is_ore = False
+        self.seek_stall_target = None
+        self.seek_target_turns = 0
         return
 
     if self.seek_target_is_ore:
@@ -530,7 +381,7 @@ def _seek(self: Harvester, c: Controller):
         claim_value = BuilderBotMessages.encode_claim_position(self.target_pos)
     best_claim_tile = None
     best_claim_dist = float("inf")
-    for _mp in c.get_nearby_tiles(2):
+    for _mp in c.get_nearby_tiles():
         if not c.can_place_marker(_mp):
             continue
         d = _chebyshev(_mp, self.target_pos)

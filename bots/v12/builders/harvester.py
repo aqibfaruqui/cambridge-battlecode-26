@@ -98,7 +98,7 @@ class Harvester:
         self.seek_stall_target: Position | None = None
         self.seek_target_turns: int = 0
         self.edge_cycle_index = 0
-        self.frontier_scan_index = 0
+        self.bot_id: int = -1
         self.spawn_pos: Position | None = None
         self.harvester_pos: Position | None = None
         self.just_placed = False
@@ -362,6 +362,8 @@ class Harvester:
             global _PROFILE_CALLS
             _PROFILER.enable()
         self.current_pos = c.get_position()
+        if self.bot_id == -1:
+            self.bot_id = c.get_id()
         if self.spawn_pos is None:
             self.spawn_pos = self.current_pos
         self.ti, self.ax = c.get_global_resources()

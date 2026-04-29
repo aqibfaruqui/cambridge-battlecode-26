@@ -1,6 +1,5 @@
 import math
 import os
-import sys
 import uuid
 from enum import Enum
 
@@ -150,7 +149,6 @@ class Harvester:
             print(
                 f"[foundry_join] id={c.get_id()} r={c.get_current_round()} "
                 f"{reason}{suffix}",
-                file=sys.stderr,
             )
         self.foundry_prev_placed = True
         self.returning_from_axionite = False
@@ -303,6 +301,7 @@ class Harvester:
         if reached_core(self.current_pos, self.core_pos) and self.bridge_jump_target is None:
             if self.harvesters_placed >= 1:
                 tip = self.harvester_pos
+                assert tip is not None
                 mx = (self.core_pos.x + tip.x) // 2
                 my = (self.core_pos.y + tip.y) // 2
                 dx = tip.x - self.core_pos.x

@@ -1,6 +1,6 @@
 import heapq
 import math
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 from cambc import Direction, GameConstants
 
@@ -74,6 +74,10 @@ _BRIDGE_WALK_BLOCK_MASK = (
     | (1 << _ENEMY_CORE)
 )
 
+# Budget polls every N heap pops. Tuned to make time_fn() overhead negligible
+# while still bailing within a small fraction of the budget.
+_BUDGET_CHECK_INTERVAL = 64
+
 
 class DStarLite:
     __slots__ = (
@@ -94,6 +98,9 @@ class DStarLite:
         "_dynamic_blocked",
         "_unknown_cost",
         "_use_bridges",
+        "_cpu_budget_us",
+        "_time_fn",
+        "last_completed",
     )
 
     def __init__(
@@ -105,6 +112,8 @@ class DStarLite:
         block_mask: int = _DEFAULT_BLOCK_MASK,
         unknown_cost: float = 1.0,
         use_bridges: bool = False,
+        cpu_budget_us: int = 5000,
+        time_fn: Callable[[], int] | None = None,
     ):
         self._env = env
         self._w = env._w
@@ -113,6 +122,12 @@ class DStarLite:
         self._block_mask = block_mask
         self._unknown_cost = unknown_cost
         self._use_bridges = use_bridges
+        self._cpu_budget_us = cpu_budget_us
+        self._time_fn = time_fn
+        # True iff the most recent _compute_shortest_path drained to optimality.
+        # False means it bailed on the CPU budget — callers should not interpret
+        # an INF g[start] as "unreachable".
+        self.last_completed = True
 
         self._g = [_INF] * self._n
         self._rhs = [_INF] * self._n
@@ -140,6 +155,8 @@ class DStarLite:
             block_mask=self._block_mask,
             unknown_cost=self._unknown_cost,
             use_bridges=self._use_bridges,
+            cpu_budget_us=self._cpu_budget_us,
+            time_fn=self._time_fn,
         )
 
     def set_position(self, sx: int, sy: int) -> None:
@@ -291,7 +308,22 @@ class DStarLite:
         g = self._g
         rhs = self._rhs
 
+        time_fn = self._time_fn
+        deadline_us = time_fn() + self._cpu_budget_us if time_fn is not None else 0
+        iters_since_check = 0
+
+        # Pessimistic until we cleanly exit. Any early return on budget leaves
+        # this False so callers can tell "ran out of time" from "unreachable".
+        self.last_completed = False
+
         while open_heap:
+            if time_fn is not None:
+                iters_since_check += 1
+                if iters_since_check >= _BUDGET_CHECK_INTERVAL:
+                    iters_since_check = 0
+                    if time_fn() >= deadline_us:
+                        return
+
             k_old, u = heapq.heappop(open_heap)
             if not in_open[u]:
                 continue
@@ -334,6 +366,8 @@ class DStarLite:
             gs = g[start]
             if rhs[start] == gs and (gs + self._km, gs) <= open_heap[0][0]:
                 break
+
+        self.last_completed = True
 
     def _recompute_rhs(self, u: int) -> None:
         if u == self._goal:

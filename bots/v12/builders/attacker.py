@@ -4,7 +4,10 @@ from cambc import Controller, Direction, EntityType, Position
 from utils.attacker_states.replace import replace, target_still_valid
 from utils.attacker_states.scan import scan
 from utils.attacker_states.state import AttackState
-from utils.pathfinding.d_star import DStarLite
+from utils.pathfinding.d_star import (
+    DSTAR_CPU_DEADLINE_US,
+    DStarLite,
+)
 from utils.map.raw_map_representation import CORE_ENEMY, EnvironmentMap, Symmetry, WALL
 from utils.comms.broadcaster import Broadcaster
 from utils.comms.for_builder_bot import BuilderBotMessages
@@ -108,9 +111,15 @@ class Attacker:
                 blockers.extend((p.x + dx, p.y + dy) for dx, dy in product((-1, 0, 1), repeat=2))
 
         self._planner.set_position(pos.x, pos.y)
-        self._planner.set_dynamic_blockers(blockers)
-        self._planner.notify_map_changes()
-        direction = self._planner.step()
+        self._planner.set_dynamic_blockers(
+            blockers, DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed
+        )
+        self._planner.notify_map_changes(
+            DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed
+        )
+        direction = self._planner.step(
+            DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed
+        )
 
         if direction is None or direction == Direction.CENTRE:
             return
@@ -190,16 +199,17 @@ class Attacker:
             self._planner_goal = None
             self.state = AttackState.SCAN
 
-        print(
-            f"[attacker {my_id}] r={c.get_current_round()} "
-            f"pos=({self.current_pos.x},{self.current_pos.y}) "
-            f"state={self.state.value} "
-            f"target={self.target_conveyor} "
-            f"ecore={self.enemy_core_pos} "
-            f"sym={self._env_map.symmetry} "
-            f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
-            f"hp={hp_now}/{c.get_max_hp(my_id)}"
-        )
+        # print(
+        #     f"[attacker {my_id}] r={c.get_current_round()} "
+        #     f"pos=({self.current_pos.x},{self.current_pos.y}) "
+        #     f"state={self.state.value} "
+        #     f"target={self.target_conveyor} "
+        #     f"ecore={self.enemy_core_pos} "
+        #     f"sym={self._env_map.symmetry} "
+        #     f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
+        #     f"hp={hp_now}/{c.get_max_hp(my_id)} "
+        #     f"cpu={c.get_cpu_time_elapsed()}us"
+        # )
 
         # Sequential (not elif) so SCAN→APPROACH and APPROACH→REPLACE can
         # both fire in the same tick.

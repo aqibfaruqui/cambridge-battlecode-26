@@ -1,5 +1,6 @@
 import heapq
 import math
+from collections.abc import Callable
 from typing import List, Tuple
 
 from cambc import Direction, GameConstants
@@ -20,6 +21,7 @@ _BRIDGE_JUMP_COST = 5.0
 _INF = float("inf")
 _SQRT2 = math.sqrt(2)
 _SQRT2_MINUS_2 = _SQRT2 - 2.0  # octile heuristic coefficient; hoisted so hot paths skip the subtraction.
+DSTAR_CPU_DEADLINE_US = 1600
 
 _NEIGHBOURS = (
     (0, -1, 1.0, Direction.NORTH),
@@ -98,6 +100,7 @@ class DStarLite:
         "_unknown_cost",
         "_use_bridges",
         "_diag_cost",
+        "_compute_paused",
     )
 
     def __init__(
@@ -151,6 +154,7 @@ class DStarLite:
         self._unknown_cost = unknown_cost
         self._use_bridges = use_bridges
         self._diag_cost = _BRIDGE_JUMP_COST if use_bridges else _SQRT2
+        self._compute_paused = False
 
     # ---------- Public API ----------
 
@@ -236,7 +240,11 @@ class DStarLite:
             if x < w - 1:
                 recompute(new_start + 1)
 
-    def notify_map_changes(self) -> bool:
+    def notify_map_changes(
+        self,
+        deadline_us: int | None = None,
+        get_time_us: Callable[[], int] | None = None,
+    ) -> bool:
         arr = self._env._array
         snapshot = self._snapshot
 
@@ -300,10 +308,15 @@ class DStarLite:
 
             i += 1
 
-        self._compute_shortest_path()
+        self._compute_shortest_path(deadline_us, get_time_us)
         return True
 
-    def set_dynamic_blockers(self, blocked_xy: list[tuple[int, int]]) -> bool:
+    def set_dynamic_blockers(
+        self,
+        blocked_xy: list[tuple[int, int]],
+        deadline_us: int | None = None,
+        get_time_us: Callable[[], int] | None = None,
+    ) -> bool:
         w = self._w
         h = self._h
         new_blocked: set[int] = set()
@@ -357,15 +370,23 @@ class DStarLite:
                 recompute(idx + 1)
 
         if changed_nodes:
-            self._compute_shortest_path()
+            self._compute_shortest_path(deadline_us, get_time_us)
 
         return True
 
-    def step(self) -> Direction | None:
+    def step(
+        self,
+        deadline_us: int | None = None,
+        get_time_us: Callable[[], int] | None = None,
+    ) -> Direction | None:
         if self._start == self._goal:
             return Direction.CENTRE
 
-        self._compute_shortest_path()
+        if deadline_us is not None and get_time_us is not None and get_time_us() >= deadline_us:
+            return None
+
+        if not self._compute_shortest_path(deadline_us, get_time_us):
+            return None
 
         g = self._g
         start = self._start
@@ -399,13 +420,21 @@ class DStarLite:
 
         return best
 
-    def step_xy(self) -> tuple[int, int] | None:
+    def step_xy(
+        self,
+        deadline_us: int | None = None,
+        get_time_us: Callable[[], int] | None = None,
+    ) -> tuple[int, int] | None:
         """Like step(), but returns (x, y) of the next cell.
         When use_bridges=True this can return a cell at bridge-jump distance."""
         if self._start == self._goal:
             return (self._goal % self._w, self._goal // self._w)
 
-        self._compute_shortest_path()
+        if deadline_us is not None and get_time_us is not None and get_time_us() >= deadline_us:
+            return None
+
+        if not self._compute_shortest_path(deadline_us, get_time_us):
+            return None
 
         g = self._g
         start = self._start
@@ -454,8 +483,15 @@ class DStarLite:
             return None
         return (best_idx % w, best_idx // w)
 
-    def plan(self) -> None:
-        self._compute_shortest_path()
+    def plan(
+        self,
+        deadline_us: int | None = None,
+        get_time_us: Callable[[], int] | None = None,
+    ) -> bool:
+        return self._compute_shortest_path(deadline_us, get_time_us)
+
+    def planning_pending(self) -> bool:
+        return self._compute_paused
 
     def extract_path_lines(self) -> list[tuple[int, int, int, int]]:
         """Return line segments [(x1,y1,x2,y2), ...] for rendering."""
@@ -522,7 +558,11 @@ class DStarLite:
 
     # ---------- Core D* Lite ----------
 
-    def _compute_shortest_path(self) -> None:
+    def _compute_shortest_path(
+        self,
+        deadline_us: int | None = None,
+        get_time_us: Callable[[], int] | None = None,
+    ) -> bool:
         open_heap = self._open
         in_open = self._in_open
         g = self._g
@@ -538,8 +578,15 @@ class DStarLite:
         start_x = self._start_x
         start_y = self._start_y
         km = self._km
+        checks = 0
+        check_budget = deadline_us is not None and get_time_us is not None
 
         while open_heap:
+            if check_budget and (checks & 7) == 0 and get_time_us() >= deadline_us:
+                self._compute_paused = True
+                return False
+            checks += 1
+
             k_old, u = heapq.heappop(open_heap)
 
             if not in_open[u]:
@@ -615,6 +662,9 @@ class DStarLite:
             gs = g[start]
             if rhs[start] == gs and (gs + km, gs) <= open_heap[0][0]:
                 break
+
+        self._compute_paused = False
+        return True
 
     def _recompute_rhs(self, u: int) -> None:
         if u == self._goal:

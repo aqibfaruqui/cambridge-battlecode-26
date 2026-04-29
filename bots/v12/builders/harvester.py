@@ -12,7 +12,6 @@ from utils.harvester_states.return_to_core import (
     _handle_post_bridge_conveyor,
     _reset_return_state,
     _try_chain_shortcut,
-    _update_chain_memory,
 )
 from utils.harvester_states.seek import (
     _seek as _seek_state,
@@ -44,14 +43,15 @@ from utils.healing import try_heal_nearby_bot, try_heal_nearby_building
 # capability-style rather than sniffing env vars (which the sandbox may hide).
 try:
     import cProfile
-    _PROFILER = cProfile.Profile()
-    _PROFILE_DIR = "/tmp/harvester_profiles"
-    _PROFILE_ID = f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
-    _PROFILE_PATH = os.path.join(_PROFILE_DIR, f"harv_{_PROFILE_ID}.pstats")
-    _PROFILE_CALLS = 0
-    _PROFILE_DUMP_EVERY = 100
-    os.makedirs(_PROFILE_DIR, exist_ok=True)
-    _PROFILE_ENABLED = True
+    _PROFILE_ENABLED = os.environ.get("HARVESTER_PROFILE") == "1"
+    if _PROFILE_ENABLED:
+        _PROFILER = cProfile.Profile()
+        _PROFILE_DIR = "/tmp/harvester_profiles"
+        _PROFILE_ID = f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
+        _PROFILE_PATH = os.path.join(_PROFILE_DIR, f"harv_{_PROFILE_ID}.pstats")
+        _PROFILE_CALLS = 0
+        _PROFILE_DUMP_EVERY = 100
+        os.makedirs(_PROFILE_DIR, exist_ok=True)
 except ImportError:
     _PROFILE_ENABLED = False
 
@@ -99,6 +99,7 @@ class Harvester:
         self.seek_stall_target: Position | None = None
         self.seek_target_turns: int = 0
         self.edge_cycle_index = 0
+        self.frontier_scan_index = 0
         self.spawn_pos: Position | None = None
         self.harvester_pos: Position | None = None
         self.just_placed = False
@@ -160,18 +161,24 @@ class Harvester:
                 self.target_pos = None
                 self.seek_target_is_ore = False
 
-    def _check_for_foundry(self, c: Controller):
+    def _check_for_foundry(self, c: Controller, nearby_buildings=None):
         """Identify the one-foundry cap from vision or a single-turn scale jump."""
-        for bid in c.get_nearby_buildings():
-            if c.get_team(bid) == c.get_team() and c.get_entity_type(bid) == EntityType.FOUNDRY:
-                self._mark_foundry_seen(c, "seen_allied_foundry", c.get_position(bid))
-                break
-
         scale = c.get_scale_percent()
         if self._scale_initialized and scale - self.cost_scale >= _FOUNDRY_SCALE_JUMP:
             self._mark_foundry_seen(c, f"scale_jump_{self.cost_scale:.1f}_to_{scale:.1f}")
         self.cost_scale = scale
         self._scale_initialized = True
+
+        if self.foundry_prev_placed:
+            return
+
+        if nearby_buildings is None:
+            nearby_buildings = c.get_nearby_buildings()
+        team = c.get_team()
+        for bid in nearby_buildings:
+            if c.get_team(bid) == team and c.get_entity_type(bid) == EntityType.FOUNDRY:
+                self._mark_foundry_seen(c, "seen_allied_foundry", c.get_position(bid))
+                break
 
     def _axionite_unlocked(self, c: Controller) -> bool:
         if self.foundry_prev_placed:
@@ -363,12 +370,13 @@ class Harvester:
             self.axionite_found = True
         if self.environment_map is None:
             self.environment_map = EnvironmentMap(c.get_map_width(), c.get_map_height())
-        self.environment_map.update(c)
-        _update_chain_memory(self, c)
-        self._check_for_foundry(c)
+        nearby_tiles = c.get_nearby_tiles()
+        nearby_buildings = c.get_nearby_buildings()
+        self.environment_map.update(c, nearby_tiles, nearby_buildings)
+        self._check_for_foundry(c, nearby_buildings)
 
         if not self.environment_map.symmetry_resolved:
-            raw = BuilderBotMessages.read_nearby_symmetry(c)
+            raw = BuilderBotMessages.read_nearby_symmetry(c, nearby_buildings)
             if raw is not None:
                 try:
                     self.environment_map.force_symmetry(Symmetry(raw))
@@ -433,16 +441,17 @@ class Harvester:
             under = f"{et.name}({team_tag})"
             if et in (EntityType.CONVEYOR, EntityType.SPLITTER, EntityType.BRIDGE):
                 under += f",dir={c.get_direction(under_id).name if et != EntityType.BRIDGE else c.get_bridge_target(under_id)}"
-        print(
-            f"[harv {c.get_id()}] r={c.get_current_round()} "
-            f"pos=({self.current_pos.x},{self.current_pos.y}) "
-            f"state={self.state.value} "
-            f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
-            f"under={under} "
-            f"next_dir={self.return_next_dir.name if self.return_next_dir else '-'} "
-            f"bridge_target={(self.bridge_jump_target.x, self.bridge_jump_target.y) if self.bridge_jump_target else '-'} "
-            f"post_bridge={self.post_bridge_conveyor} "
-            f"just_placed={self.just_placed} "
-            f"ax_return={self.returning_from_axionite} "
-            f"foundry_seen={self.foundry_prev_placed}"
-        )
+        # print(
+        #     f"[harv {c.get_id()}] r={c.get_current_round()} "
+        #     f"pos=({self.current_pos.x},{self.current_pos.y}) "
+        #     f"state={self.state.value} "
+        #     f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
+        #     f"under={under} "
+        #     f"next_dir={self.return_next_dir.name if self.return_next_dir else '-'} "
+        #     f"bridge_target={(self.bridge_jump_target.x, self.bridge_jump_target.y) if self.bridge_jump_target else '-'} "
+        #     f"post_bridge={self.post_bridge_conveyor} "
+        #     f"just_placed={self.just_placed} "
+        #     f"ax_return={self.returning_from_axionite} "
+        #     f"foundry_seen={self.foundry_prev_placed} "
+        #     f"cpu={c.get_cpu_time_elapsed()}us"
+        # )

@@ -3,7 +3,11 @@ from typing import TYPE_CHECKING
 
 from cambc import Direction, EntityType, Environment, Position, Controller
 
-from utils.pathfinding.d_star import DStarLite, _SEEK_BLOCK_MASK
+from utils.pathfinding.d_star import (
+    DSTAR_CPU_DEADLINE_US,
+    DStarLite,
+    _SEEK_BLOCK_MASK,
+)
 from utils.map.raw_map_representation import ORE_AXIONITE, ORE_TITANIUM
 from utils.pathfinding.movement import DIRECTIONS_4, _chebyshev, random_direction_4
 from utils.comms.for_builder_bot import BuilderBotMessages, BuilderBotMessageType
@@ -14,15 +18,14 @@ if TYPE_CHECKING:
 
 _DEGENERATE_ROOM = 3
 _FRONTIER_STRIDE = 1
+_FRONTIER_SCAN_BUDGET = 320
+_LOCAL_FRONTIER_RADIUS = 8
 
 
 def _read_nearby_claims(c: Controller) -> set[tuple[int, int]]:
     claimed: set[tuple[int, int]] = set()
     my_team = c.get_team()
-    for pos in c.get_nearby_tiles():
-        mid = c.get_tile_building_id(pos)
-        if mid is None:
-            continue
+    for mid in c.get_nearby_buildings():
         if c.get_entity_type(mid) != EntityType.MARKER:
             continue
         if c.get_team(mid) != my_team:
@@ -169,10 +172,41 @@ def _pick_frontier_target(
     best_target = None
     best_score = float("-inf")
 
-    for y in range(0, env.height, _FRONTIER_STRIDE):
-        for x in range(0, env.width, _FRONTIER_STRIDE):
-            if (x, y) in blocked or not _is_memory_passable(self, x, y):
-                continue
+    min_x = max(0, pos.x - _LOCAL_FRONTIER_RADIUS)
+    max_x = min(env.width - 1, pos.x + _LOCAL_FRONTIER_RADIUS)
+    min_y = max(0, pos.y - _LOCAL_FRONTIER_RADIUS)
+    max_y = min(env.height - 1, pos.y + _LOCAL_FRONTIER_RADIUS)
+
+    for y in range(min_y, max_y + 1):
+        for x in range(min_x, max_x + 1):
+            if (x, y) not in blocked and _is_memory_passable(self, x, y):
+                target = Position(x, y)
+                for direction in DIRECTIONS_4:
+                    neighbor = target.add(direction)
+                    if env.in_bounds(neighbor.x, neighbor.y) and env.is_unknown(
+                        neighbor.x, neighbor.y
+                    ):
+                        score = _frontier_score(self, pos, target, lane_axis, lane_sign)
+                        if score > best_score:
+                            best_score = score
+                            best_target = target
+                        break
+
+    if best_target is not None:
+        return best_target
+
+    n = env.width * env.height
+    if n <= 0:
+        return None
+
+    start = getattr(self, "frontier_scan_index", 0) % n
+    idx = start
+    scanned = 0
+
+    while scanned < _FRONTIER_SCAN_BUDGET and scanned < n:
+        x = idx % env.width
+        y = idx // env.width
+        if (x, y) not in blocked and _is_memory_passable(self, x, y):
             target = Position(x, y)
             for direction in DIRECTIONS_4:
                 neighbor = target.add(direction)
@@ -184,6 +218,12 @@ def _pick_frontier_target(
                         best_score = score
                         best_target = target
                     break
+        idx += _FRONTIER_STRIDE
+        if idx >= n:
+            idx = 0
+        scanned += 1
+
+    self.frontier_scan_index = idx
 
     return best_target
 
@@ -250,7 +290,8 @@ def _pick_seek_target(
     if env is None:
         return pos.add(random_direction_4()), False
 
-    blocked = set(self.blacklisted_ores) | self.blacklisted_seek_targets | claimed
+    blocked_ores = set(self.blacklisted_ores)
+    blocked_frontiers = self.blacklisted_seek_targets | claimed
     lane_axis, lane_sign = _explore_lane(self)
 
     axionite_unlocked = self._axionite_unlocked(c)
@@ -259,7 +300,7 @@ def _pick_seek_target(
         ore = _pick_ore_target(
             self,
             pos,
-            blocked,
+            blocked_ores,
             lambda b: env.nearest_known_titanium(pos, b, observed_only=True),
             c,
         )
@@ -270,7 +311,7 @@ def _pick_seek_target(
             ore = _pick_ore_target(
                 self,
                 pos,
-                blocked,
+                blocked_ores,
                 lambda b: env.nearest_predicted_titanium(pos, b),
                 c,
             )
@@ -281,18 +322,42 @@ def _pick_seek_target(
         ore = _pick_ore_target(
             self,
             pos,
-            blocked,
+            blocked_ores,
             lambda b: env.nearest_known_axionite(pos, b),
             c,
         )
         if ore is not None:
             return ore, True
 
-    frontier = _pick_frontier_target(self, pos, lane_axis, lane_sign, blocked)
+    frontier = _pick_frontier_target(self, pos, lane_axis, lane_sign, blocked_frontiers)
     if frontier is not None:
         return frontier, False
 
     return _fallback_edge_target(self, lane_axis, lane_sign), False
+
+
+def _nearby_visible_ore_target(
+    self: Harvester,
+    c: Controller,
+    claimed: set[tuple[int, int]],
+) -> Position | None:
+    env = self.environment_map
+    if env is None:
+        return None
+    blocked = set(self.blacklisted_ores) | claimed
+    if not self._axionite_unlocked(c):
+        ore = env.nearest_known_titanium(self.current_pos, blocked, observed_only=True)
+    else:
+        ore = env.nearest_known_axionite(self.current_pos, blocked)
+    if ore is None or self.current_pos.distance_squared(ore) > 100:
+        return None
+    if c.is_in_vision(ore):
+        occupier = c.get_tile_builder_bot_id(ore)
+        if occupier is not None and occupier != c.get_id():
+            return None
+    if _best_ore_approach(self, ore, self.current_pos, c) is None:
+        return None
+    return ore
 
 
 def _target_still_viable(
@@ -356,10 +421,18 @@ def _seek_direction(
         self.seek_planner_goal = goal
 
     self.seek_planner.set_position(self.current_pos.x, self.current_pos.y)
-    self.seek_planner.set_dynamic_blockers(_seek_dynamic_blockers(self, c))
-    self.seek_planner.notify_map_changes()
+    self.seek_planner.set_dynamic_blockers(
+        _seek_dynamic_blockers(self, c),
+        DSTAR_CPU_DEADLINE_US,
+        c.get_cpu_time_elapsed,
+    )
+    self.seek_planner.notify_map_changes(
+        DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed
+    )
 
-    move_dir = self.seek_planner.step()
+    move_dir = self.seek_planner.step(
+        DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed
+    )
     if (
         move_dir is not None
         and move_dir != Direction.CENTRE
@@ -398,6 +471,12 @@ def _seek(self: Harvester, c: Controller):
         return
 
     claimed = _read_nearby_claims(c)
+
+    if not self.seek_target_is_ore:
+        nearby_ore = _nearby_visible_ore_target(self, c, claimed)
+        if nearby_ore is not None:
+            self.target_pos = nearby_ore
+            self.seek_target_is_ore = True
 
     if self.target_pos is None or not _target_still_viable(
         self, self.target_pos, self.seek_target_is_ore, c
@@ -451,7 +530,7 @@ def _seek(self: Harvester, c: Controller):
         claim_value = BuilderBotMessages.encode_claim_position(self.target_pos)
     best_claim_tile = None
     best_claim_dist = float("inf")
-    for _mp in c.get_nearby_tiles():
+    for _mp in c.get_nearby_tiles(2):
         if not c.can_place_marker(_mp):
             continue
         d = _chebyshev(_mp, self.target_pos)

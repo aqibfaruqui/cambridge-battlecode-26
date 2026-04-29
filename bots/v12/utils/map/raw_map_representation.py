@@ -85,7 +85,12 @@ class EnvironmentMap:
 
         return True
 
-    def update(self, c: Controller) -> None:
+    def update(
+        self,
+        c: Controller,
+        nearby_tiles=None,
+        nearby_buildings=None,
+    ) -> None:
         arr = self._array
         w = self._w
         wm1 = w - 1
@@ -93,17 +98,29 @@ class EnvironmentMap:
 
         env_map = _ENV_MAP
         get_tile_env = c.get_tile_env
+        if nearby_tiles is None:
+            nearby_tiles = c.get_nearby_tiles()
+        if nearby_buildings is None:
+            nearby_buildings = c.get_nearby_buildings()
 
         cand = self._cand
         resolved = cand in _SINGLE_BIT
         need_elim = not resolved
 
         # Core detection always allowed (no early disable)
-        get_tile_building_id = c.get_tile_building_id
         get_entity_type = c.get_entity_type
         get_team = c.get_team
         my_team = c.get_team()
         entity_type_core = EntityType.CORE
+        core_tiles: dict[int, int] = {}
+        for bid in nearby_buildings:
+            if get_entity_type(bid) is entity_type_core:
+                pos = c.get_position(bid)
+                if my_team == get_team(bid):
+                    core_tiles[pos.y * w + pos.x] = CORE_OWN
+                else:
+                    core_tiles[pos.y * w + pos.x] = CORE_ENEMY
+                    self._enemy_core_found = True
 
         newly_seen_x: list[int] = []
         newly_seen_y: list[int] = []
@@ -115,7 +132,7 @@ class EnvironmentMap:
 
         has_new = False
 
-        for tile in c.get_nearby_tiles():
+        for tile in nearby_tiles:
             x, y = tile
             idx = y * w + x
 
@@ -123,13 +140,9 @@ class EnvironmentMap:
             val = env_map[get_tile_env(tile)]
 
             # Core override
-            bid = get_tile_building_id(tile)
-            if bid is not None and get_entity_type(bid) is entity_type_core:
-                if my_team == get_team(bid):
-                    val = 5
-                else:
-                    val = 6
-                    self._enemy_core_found = True
+            core_val = core_tiles.get(idx)
+            if core_val is not None:
+                val = core_val
 
             if not self._set_tile(x, y, val, observed=True):
                 continue

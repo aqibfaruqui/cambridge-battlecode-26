@@ -2,7 +2,7 @@ from __future__ import annotations
 from itertools import product
 from typing import TYPE_CHECKING
 
-from cambc import Controller, Direction, EntityType, Position, ResourceType
+from cambc import Controller, Direction, EntityType, Position, ResourceType, Environment
 
 from utils.attacker_states.state import AttackState
 from utils.comms.for_builder_bot import BuilderBotMessageType, BuilderBotMessages
@@ -17,10 +17,14 @@ if TYPE_CHECKING:
 _MAX_FRIENDLY_SENTINELS_IN_VISION = 3
 
 # Turns a hard-failed target stays blacklisted before we retry.
-_BLACKLIST_TTL = 10
+_BLACKLIST_TTL = 40
 
 # Give up on an orbit waypoint after this many turns pursuing it.
 _ORBIT_STUCK_TURNS = 30
+
+# After the enemy core has been known this long without entering REPLACE, stop
+# orbiting and actively search the core's nearby ore field.
+_PROACTIVE_AFTER_CORE_KNOWN_TURNS = 200
 
 # Chebyshev-radius ring around the enemy core — keeps us circling belts
 # rather than beelining at the core.
@@ -127,6 +131,62 @@ def _chain_feeds_friendly_turret(
     return hits_turret
 
 
+def _pick_harvester_block_target(
+    self: Attacker,
+    c: Controller,
+    claimed: set[tuple[int, int]],
+) -> Position | None:
+    """Find a tile cardinally adjacent to an enemy harvester that we can drop
+    a gunner on (empty, marker, or our road, and not in a launcher's pickup ring).
+    """
+    my_team = c.get_team()
+    me = self.current_pos
+    my_id = c.get_id()
+    best: Position | None = None
+    best_score = float("inf")
+
+    for bld_id in c.get_nearby_buildings():
+        if c.get_entity_type(bld_id) != EntityType.HARVESTER:
+            continue
+        if c.get_team(bld_id) == my_team:
+            continue
+        h_pos = c.get_position(bld_id)
+        for d in _CARDINAL:
+            adj = h_pos.add(d)
+            if not on_map(c, adj) or not c.is_in_vision(adj) or c.get_tile_env(adj) == Environment.WALL:
+                continue
+            key = (adj.x, adj.y)
+            if key in self.blacklist or key in claimed:
+                continue
+            adj_bid = c.get_tile_building_id(adj)
+            if adj_bid is not None:
+                adj_type = c.get_entity_type(adj_bid)
+                if adj_type != EntityType.MARKER and not (
+                    adj_type == EntityType.ROAD and c.get_team(adj_bid) == my_team
+                ):
+                    continue
+            bb = c.get_tile_builder_bot_id(adj)
+            if bb is not None and bb != my_id:
+                continue
+            if any(
+                on_map(c, np := Position(adj.x + dx, adj.y + dy))
+                and c.is_in_vision(np)
+                and (lid := c.get_tile_building_id(np)) is not None
+                and c.get_entity_type(lid) == EntityType.LAUNCHER
+                and c.get_team(lid) != my_team
+                for dx, dy in product((-1, 0, 1), repeat=2)
+                if dx or dy
+            ):
+                continue
+
+            score = me.distance_squared(adj)
+            if score < best_score:
+                best_score = score
+                best = adj
+
+    return best
+
+
 def _read_claimed_positions(c: Controller) -> set[tuple[int, int]]:
     """Collect positions claimed by other friendly attackers via markers."""
     my_team = c.get_team()
@@ -144,7 +204,7 @@ def _read_claimed_positions(c: Controller) -> set[tuple[int, int]]:
     return claimed
 
 
-def _pick_target(self: Attacker, c: Controller):
+def _pick_target(self: Attacker, c: Controller, claimed: set[tuple[int, int]]):
     """Find the best enemy conveyor/bridge currently carrying titanium."""
     my_team = c.get_team()
     me = self.current_pos
@@ -152,8 +212,6 @@ def _pick_target(self: Attacker, c: Controller):
     best: Position | None = None
     best_score = float("inf")
     friendly_sentinels = 0
-
-    claimed = _read_claimed_positions(c)
 
     for bld_id in c.get_nearby_buildings():
         team = c.get_team(bld_id)
@@ -232,13 +290,31 @@ def scan(self: Attacker, c: Controller) -> None:
     cutoff = c.get_current_round() - _BLACKLIST_TTL
     self.blacklist = {k: r for k, r in self.blacklist.items() if r >= cutoff}
 
-    if (pick := _pick_target(self, c)) is not None:
+    claimed = _read_claimed_positions(c)
+
+    if (block := _pick_harvester_block_target(self, c, claimed)) is not None:
+        self.harvester_block_target = block
+        self._planner_goal = None
+        self.state = AttackState.BLOCK_HARVESTER
+        return
+
+    if (pick := _pick_target(self, c, claimed)) is not None:
         self.target_conveyor = pick
         self._planner_goal = None
         self.state = AttackState.APPROACH
         return
 
     if self.enemy_core_pos is not None:
+        known_since = self.enemy_core_known_since_round
+        if known_since is not None:
+            baseline = max(known_since, self._last_replace_round)
+            if c.get_current_round() - baseline >= _PROACTIVE_AFTER_CORE_KNOWN_TURNS:
+                self.proactive_target = None
+                self.proactive_ore_target = False
+                self._proactive_pursuit_round = c.get_current_round()
+                self.state = AttackState.PROACTIVE
+                return
+
         if self.orbit_points is None:
             self.orbit_points = _build_orbit(self, c)
         # Skip past waypoints we're already close to.

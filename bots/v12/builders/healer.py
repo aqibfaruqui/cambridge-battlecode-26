@@ -16,6 +16,7 @@ class HealState(Enum):
     __slots__ = ()
 
     PATROL = "patrol"
+    FOLLOW = "follow"
 
 
 _RING_DIRECTIONS = [
@@ -41,6 +42,9 @@ class Healer:
         self.ax = 0
 
         self.heal_target: Position | None = None
+        self.state = HealState.PATROL
+        self.follow_enemy_id: int | None = None
+        self.follow_enemy_last_pos: Position | None = None
 
         # D* Lite pathfinding state
         self.environment_map: EnvironmentMap | None = None
@@ -74,6 +78,98 @@ class Healer:
             c.build_road(move_pos)
         if c.can_move(move_dir):
             c.move(move_dir)
+
+    def _enemy_builder_pos(self, c: Controller, enemy_id: int) -> Position | None:
+        for uid in c.get_nearby_units():
+            if uid == enemy_id:
+                return c.get_position(uid)
+        return None
+
+    def _has_adjacent_ally_builder(
+        self, c: Controller, enemy_pos: Position, my_team
+    ) -> bool:
+        for uid in c.get_nearby_units():
+            if c.get_team(uid) != my_team:
+                continue
+            if c.get_entity_type(uid) != EntityType.BUILDER_BOT:
+                continue
+            if enemy_pos.distance_squared(c.get_position(uid)) <= 2:
+                return True
+        return False
+
+    def _pick_unhandled_enemy_builder(self, c: Controller) -> tuple[int, Position] | None:
+        me = self.current_pos
+        my_team = c.get_team()
+        best: tuple[int, Position] | None = None
+        best_d = float("inf")
+        for uid in c.get_nearby_units():
+            if c.get_team(uid) == my_team:
+                continue
+            if c.get_entity_type(uid) != EntityType.BUILDER_BOT:
+                continue
+            pos = c.get_position(uid)
+            if self._has_adjacent_ally_builder(c, pos, my_team):
+                continue
+            d = me.distance_squared(pos)
+            if d < best_d:
+                best = (uid, pos)
+                best_d = d
+        return best
+
+    def _try_enter_follow(self, c: Controller) -> bool:
+        if self.follow_enemy_id is not None:
+            return False
+        target = self._pick_unhandled_enemy_builder(c)
+        if target is None:
+            return False
+        self.follow_enemy_id, self.follow_enemy_last_pos = target
+        self.state = HealState.FOLLOW
+        self.seek_planner = None
+        self.seek_planner_goal = None
+        return True
+
+    def _follow_approach_pos(self, c: Controller, enemy_pos: Position) -> Position:
+        me = self.current_pos
+        best = enemy_pos
+        best_d = me.distance_squared(enemy_pos)
+        w, h = c.get_map_width(), c.get_map_height()
+        for direction in _RING_DIRECTIONS:
+            candidate = enemy_pos.add(direction)
+            if not (0 <= candidate.x < w and 0 <= candidate.y < h):
+                continue
+            if c.is_in_vision(candidate):
+                occupier = c.get_tile_builder_bot_id(candidate)
+                if occupier is not None and occupier != c.get_id():
+                    continue
+                if c.get_tile_env(candidate) != Environment.EMPTY:
+                    continue
+            d = me.distance_squared(candidate)
+            if d < best_d:
+                best = candidate
+                best_d = d
+        return best
+
+    def _follow(self, c: Controller) -> None:
+        enemy_id = self.follow_enemy_id
+        if enemy_id is None:
+            return
+
+        enemy_pos = self._enemy_builder_pos(c, enemy_id)
+        if enemy_pos is not None:
+            self.follow_enemy_last_pos = enemy_pos
+        target = self.follow_enemy_last_pos
+        if target is None or c.get_move_cooldown() > 0:
+            return
+
+        me = self.current_pos
+        if enemy_pos is not None and me.distance_squared(enemy_pos) <= 2:
+            return
+
+        approach = self._follow_approach_pos(c, target)
+        if me.distance_squared(approach) == 0:
+            return
+        move_dir = _seek_direction(self, c, approach)  # type: ignore[arg-type]
+        self._advance(c, move_dir)
 
     def _patrol(self, c: Controller) -> None:
         if c.get_move_cooldown() > 0:
@@ -147,6 +243,14 @@ class Healer:
         # Heal action: bots first (including self), then buildings.
         if not try_heal_nearby_bot(c, me):
             try_heal_nearby_building(c, me)
+
+        if self.state == HealState.PATROL:
+            self._try_enter_follow(c)
+
+        if self.state == HealState.FOLLOW:
+            self._follow(c)
+            self._draw_debug(c)
+            return
 
         # Movement: navigate toward best coverage tile via D* Lite; patrol ring when idle.
         if c.get_move_cooldown() == 0:

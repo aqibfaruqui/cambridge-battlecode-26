@@ -18,7 +18,12 @@ _STEP_OFF = (
 _SENTINEL_ATTACK_RADIUS_SQ = 32
 _GUNNER_ATTACK_RADIUS_SQ = 9
 
-_FRIENDLY_REPLACE_TYPES = frozenset({EntityType.SENTINEL, EntityType.GUNNER, EntityType.ROAD})
+_FRIENDLY_REPLACE_TYPES = frozenset({
+    EntityType.SENTINEL,
+    EntityType.GUNNER,
+    EntityType.ROAD,
+    EntityType.CONVEYOR,
+})
 _HIJACK_TYPES = frozenset({EntityType.CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER})
 
 # Cardinal-reachable predecessors. Bridges are handled separately since they
@@ -174,6 +179,8 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
         return True
 
     match (team, etype):
+        case (_, EntityType.MARKER):
+            replace_surface = etype
         case (t, EntityType.SENTINEL | EntityType.GUNNER) if t == my_team:
             return True
         case (t, _) if t not in (None, my_team):
@@ -195,12 +202,12 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
             elif c.can_move(me.direction_to(target)):
                 c.move(me.direction_to(target))
             return False
-        case (t, EntityType.ROAD) if t == my_team:
-            our_road = True
+        case (t, EntityType.ROAD | EntityType.CONVEYOR) if t == my_team:
+            replace_surface = etype
         case (None, _):
-            our_road = False
+            replace_surface = None
         case _:
-            # Friendly stray (not road, not turret) — tear it down.
+            # Friendly stray (not road/conveyor/turret) — tear it down.
             if c.can_destroy(target):
                 c.destroy(target)
             return False
@@ -235,21 +242,17 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
     )
 
     ti = c.get_global_resources()[0]
-    if our_road:
-        # Upgrade the road to a turret once Ti lands.
-        if ti >= turret_cost and c.can_destroy(target):
-            c.destroy(target)
-            if can_build_turret(target, facing):
-                build_turret(target, facing)
-                return True
+    if ti < turret_cost:
         return False
 
-    # Empty target: turret if affordable, else a 1-Ti road to reserve.
-    if ti >= turret_cost and can_build_turret(target, facing):
+    if replace_surface in (EntityType.ROAD, EntityType.CONVEYOR):
+        if not c.can_destroy(target):
+            return False
+        c.destroy(target)
+
+    if can_build_turret(target, facing):
         build_turret(target, facing)
         return True
-    if c.can_build_road(target):
-        c.build_road(target)
     return False
 
 
@@ -263,6 +266,8 @@ def target_still_valid(self: Attacker, c: Controller) -> bool:
     if bld_id is None:
         return True
     et = c.get_entity_type(bld_id)
+    if et == EntityType.MARKER:
+        return True
     if c.get_team(bld_id) == c.get_team():
         return et in _FRIENDLY_REPLACE_TYPES
     return et in _HIJACK_TYPES

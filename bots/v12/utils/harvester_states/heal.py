@@ -90,7 +90,7 @@ def _approach_tile(c: Controller, me: Position, target: Position) -> Position:
 def _best_coverage_tile(c: Controller, me: Position, damaged: list[Position]) -> Position:
     """Tile adjacent to any damaged building that maximises the count of damaged buildings
     reachable from it within heal range (d² ≤ 2). Tiebreak: closest to bot.
-    Skips the building tile itself and tiles already occupied by other bots."""
+    Skips the building tile itself, occupied tiles, and tiles we cannot stand on."""
     w, h = c.get_map_width(), c.get_map_height()
     my_id = c.get_id()
     best_pos: Position | None = None
@@ -106,6 +106,8 @@ def _best_coverage_tile(c: Controller, me: Position, damaged: list[Position]) ->
                     continue
                 cand = Position(cx, cy)
                 if c.is_in_vision(cand):
+                    if cand != me and not c.is_tile_passable(cand):
+                        continue
                     bot_id = c.get_tile_builder_bot_id(cand)
                     if bot_id is not None and bot_id != my_id:
                         continue
@@ -113,7 +115,7 @@ def _best_coverage_tile(c: Controller, me: Position, damaged: list[Position]) ->
                 dist = me.distance_squared(cand)
                 if score > best_score or (score == best_score and dist < best_dist):
                     best_score, best_pos, best_dist = score, cand, dist
-    return best_pos if best_pos is not None else damaged[0]
+    return best_pos if best_pos is not None else me
 
 
 def _all_allied_buildings(c: Controller) -> list[Position]:

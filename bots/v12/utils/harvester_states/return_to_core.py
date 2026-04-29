@@ -110,10 +110,11 @@ def _enemy_walkable_at(c: Controller, pos: Position) -> bool:
 def _attack_enemy_under_bot(self: Harvester, c: Controller) -> bool:
     if not _enemy_walkable_at(c, self.current_pos):
         return False
-    if c.can_fire(self.current_pos):
-        c.fire(self.current_pos)
-        if c.get_tile_building_id(self.current_pos) is None:
-            self.post_bridge_conveyor = True
+    if not c.can_fire(self.current_pos):
+        return False
+    c.fire(self.current_pos)
+    if c.get_tile_building_id(self.current_pos) is None:
+        self.post_bridge_conveyor = True
     return True
 
 

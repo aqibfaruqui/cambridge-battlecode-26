@@ -19,7 +19,7 @@ _BRIDGE_JUMP_COST = 5.0
 
 _INF = float("inf")
 _SQRT2 = math.sqrt(2)
-_SQRT2_MINUS_2 = _SQRT2 - 2.0  # octile heuristic coefficient; hoisted so hot paths skip the subtraction.
+_OCTILE_DIAG_COEFF = _SQRT2 - 2.0  # h(a,b) = (dx+dy) + (sqrt2-2)*min(dx,dy)
 
 _NEIGHBOURS = (
     (0, -1, 1.0, Direction.NORTH),
@@ -87,17 +87,13 @@ class DStarLite:
         "_in_open",
         "_km",
         "_start",
-        "_start_x",
-        "_start_y",
         "_goal",
         "_last",
         "_snapshot",
         "_block_mask",
         "_dynamic_blocked",
-        "_blocked",
         "_unknown_cost",
         "_use_bridges",
-        "_diag_cost",
     )
 
     def __init__(
@@ -115,19 +111,17 @@ class DStarLite:
         self._h = env._h
         self._n = self._w * self._h
         self._block_mask = block_mask
+        self._unknown_cost = unknown_cost
+        self._use_bridges = use_bridges
 
         self._g = [_INF] * self._n
         self._rhs = [_INF] * self._n
-
         self._open: List[Tuple[Tuple[float, float], int]] = []
         self._in_open = [False] * self._n
-
         self._km = 0.0
 
         self._goal = self._to_idx(goal_x, goal_y)
         self._start = self._goal
-        self._start_x = goal_x
-        self._start_y = goal_y
         self._last = self._start
 
         self._rhs[self._goal] = 0.0
@@ -135,106 +129,36 @@ class DStarLite:
 
         self._snapshot = bytearray(env._array)
         self._dynamic_blocked: set[int] = set()
-        # Combined static-mask + dynamic blocker bitmap. Hot-path membership test
-        # collapses (s not in dyn) and ((mask >> arr[s]) & 1) into one C-level
-        # bytearray index. The invariant blocked[start]=0 is enforced across
-        # set_position / notify_map_changes / set_dynamic_blockers so the
-        # frequent `s == start` override in _recompute_rhs can be dropped.
-        self._blocked = bytearray(self._n)
-        arr = env._array
-        mask = self._block_mask
-        blocked = self._blocked
-        for i in range(self._n):
-            if (mask >> arr[i]) & 1:
-                blocked[i] = 1
-        blocked[self._start] = 0  # force-walkable invariant for current position
-        self._unknown_cost = unknown_cost
-        self._use_bridges = use_bridges
-        self._diag_cost = _BRIDGE_JUMP_COST if use_bridges else _SQRT2
 
     # ---------- Public API ----------
 
     def set_goal(self, gx: int, gy: int) -> None:
-        self.__init__(self._env, gx, gy, block_mask=self._block_mask)
+        self.__init__(
+            self._env,
+            gx,
+            gy,
+            block_mask=self._block_mask,
+            unknown_cost=self._unknown_cost,
+            use_bridges=self._use_bridges,
+        )
 
     def set_position(self, sx: int, sy: int) -> None:
-        w = self._w
-        new_start = sy * w + sx
+        new_start = self._to_idx(sx, sy)
         old_start = self._start
         if new_start == old_start:
             return
 
-        # Heuristic(_last, new_start) inlined using cached coords.
-        dx = self._start_x - sx
-        if dx < 0:
-            dx = -dx
-        dy = self._start_y - sy
-        if dy < 0:
-            dy = -dy
-        self._km += (dx + dy) + _SQRT2_MINUS_2 * (dx if dx < dy else dy)
+        self._km += self._heuristic(self._last, new_start)
         self._last = new_start
         self._start = new_start
-        self._start_x = sx
-        self._start_y = sy
 
-        # Maintain the blocked[start]=0 invariant. For the common case where
-        # both cells are walkable (bot just moved one square), nothing
-        # propagates. Only when the bot stands on a blocked tile (e.g. just
-        # placed a harvester on ore) do we trigger predecessor recomputes.
-        arr = self._env._array
-        mask = self._block_mask
-        blocked = self._blocked
-        dyn = self._dynamic_blocked
-        h = self._h
-
-        # Re-derive old_start's true blocked state (it was forced to 0).
-        true_old = 1 if ((mask >> arr[old_start]) & 1) or (old_start in dyn) else 0
-        if true_old != 0:
-            blocked[old_start] = 1
-            x = old_start % w
-            y = old_start // w
-            recompute = self._recompute_rhs
-            recompute(old_start)
-            if y > 0:
-                recompute(old_start - w)
-                if x > 0:
-                    recompute(old_start - w - 1)
-                if x < w - 1:
-                    recompute(old_start - w + 1)
-            if y < h - 1:
-                recompute(old_start + w)
-                if x > 0:
-                    recompute(old_start + w - 1)
-                if x < w - 1:
-                    recompute(old_start + w + 1)
-            if x > 0:
-                recompute(old_start - 1)
-            if x < w - 1:
-                recompute(old_start + 1)
-
-        # Force new_start unblocked. If it was blocked, propagate.
-        if blocked[new_start]:
-            blocked[new_start] = 0
-            x = sx
-            y = sy
-            recompute = self._recompute_rhs
-            recompute(new_start)
-            if y > 0:
-                recompute(new_start - w)
-                if x > 0:
-                    recompute(new_start - w - 1)
-                if x < w - 1:
-                    recompute(new_start - w + 1)
-            if y < h - 1:
-                recompute(new_start + w)
-                if x > 0:
-                    recompute(new_start + w - 1)
-                if x < w - 1:
-                    recompute(new_start + w + 1)
-            if x > 0:
-                recompute(new_start - 1)
-            if x < w - 1:
-                recompute(new_start + 1)
+        # _is_blocked treats the current start as walkable. When that label
+        # moves, neighbours of the cell that just lost (or just gained) the
+        # override may need to recompute rhs.
+        if self._has_blocking_state(old_start):
+            self._propagate_at(old_start)
+        if self._has_blocking_state(new_start):
+            self._propagate_at(new_start)
 
     def notify_map_changes(self) -> bool:
         arr = self._env._array
@@ -244,61 +168,10 @@ class DStarLite:
         if arr == snapshot:
             return False
 
-        w = self._w
-        h = self._h
-        n = self._n
-        recompute = self._recompute_rhs
-        blocked = self._blocked
-        dyn = self._dynamic_blocked
-        mask = self._block_mask
-        use_bridges = self._use_bridges
-        current_start = self._start
-
-        i = 0
-        while i < n:
+        for i in range(self._n):
             if arr[i] != snapshot[i]:
-                new_val = arr[i]
-                snapshot[i] = new_val
-
-                # Refresh combined blocked bitmap for this cell. Preserve the
-                # blocked[start]=0 invariant.
-                if i == current_start:
-                    blocked[i] = 0
-                elif (mask >> new_val) & 1 or i in dyn:
-                    blocked[i] = 1
-                else:
-                    blocked[i] = 0
-
-                x = i % w
-                y = i // w
-                # Inlined: for pred in _pred(i): recompute(pred)
-                if y > 0:
-                    recompute(i - w)
-                    if x > 0:
-                        recompute(i - w - 1)
-                    if x < w - 1:
-                        recompute(i - w + 1)
-                if y < h - 1:
-                    recompute(i + w)
-                    if x > 0:
-                        recompute(i + w - 1)
-                    if x < w - 1:
-                        recompute(i + w + 1)
-                if x > 0:
-                    recompute(i - 1)
-                if x < w - 1:
-                    recompute(i + 1)
-
-                recompute(i)
-
-                if use_bridges:
-                    for jdx, jdy in _BRIDGE_JUMPS:
-                        px = x - jdx
-                        py = y - jdy
-                        if 0 <= px < w and 0 <= py < h:
-                            recompute(py * w + px)
-
-            i += 1
+                snapshot[i] = arr[i]
+                self._propagate_at(i)
 
         self._compute_shortest_path()
         return True
@@ -306,59 +179,23 @@ class DStarLite:
     def set_dynamic_blockers(self, blocked_xy: list[tuple[int, int]]) -> bool:
         w = self._w
         h = self._h
-        new_blocked: set[int] = set()
-        for x, y in blocked_xy:
-            if 0 <= x < w and 0 <= y < h:
-                new_blocked.add(y * w + x)
+        new_blocked: set[int] = {
+            y * w + x for x, y in blocked_xy if 0 <= x < w and 0 <= y < h
+        }
 
-        old_blocked = self._dynamic_blocked
-        if new_blocked == old_blocked:
+        if new_blocked == self._dynamic_blocked:
             return False
 
-        changed_nodes = old_blocked.symmetric_difference(new_blocked)
+        changed = self._dynamic_blocked.symmetric_difference(new_blocked)
         self._dynamic_blocked = new_blocked
 
-        # Refresh combined bitmap + propagate rhs recomputes. Inline _pred —
-        # the generator shows up as measurable overhead at 1400+ calls/turn.
-        blocked = self._blocked
-        arr = self._env._array
-        mask = self._block_mask
-        recompute = self._recompute_rhs
-        current_start = self._start
+        for idx in changed:
+            self._recompute_rhs(idx)
+            for p in self._pred(idx):
+                self._recompute_rhs(p)
 
-        for idx in changed_nodes:
-            if idx == current_start:
-                blocked[idx] = 0  # preserve start=walkable invariant
-            elif (mask >> arr[idx]) & 1:
-                blocked[idx] = 1  # still statically blocked
-            elif idx in new_blocked:
-                blocked[idx] = 1
-            else:
-                blocked[idx] = 0
-
-            x = idx % w
-            y = idx // w
-            recompute(idx)
-            if y > 0:
-                recompute(idx - w)
-                if x > 0:
-                    recompute(idx - w - 1)
-                if x < w - 1:
-                    recompute(idx - w + 1)
-            if y < h - 1:
-                recompute(idx + w)
-                if x > 0:
-                    recompute(idx + w - 1)
-                if x < w - 1:
-                    recompute(idx + w + 1)
-            if x > 0:
-                recompute(idx - 1)
-            if x < w - 1:
-                recompute(idx + 1)
-
-        if changed_nodes:
+        if changed:
             self._compute_shortest_path()
-
         return True
 
     def step(self) -> Direction | None:
@@ -366,93 +203,46 @@ class DStarLite:
             return Direction.CENTRE
 
         self._compute_shortest_path()
-
-        g = self._g
-        start = self._start
-        if g[start] == _INF:
+        if self._g[self._start] == _INF:
             return None
-
-        w = self._w
-        h = self._h
-        x = start % w
-        y = start // w
-        blocked = self._blocked
 
         best = None
         best_cost = _INF
-        neighbours = _NEIGHBOURS_BRIDGE if self._use_bridges else _NEIGHBOURS
-
-        for dx, dy, cost, d in neighbours:
-            xx = x + dx
-            if xx < 0 or xx >= w:
-                continue
-            yy = y + dy
-            if yy < 0 or yy >= h:
-                continue
-            s = yy * w + xx
-            if blocked[s]:
-                continue
-            v = cost + g[s]
+        for s, cost, d in self._step_candidates(self._start):
+            v = cost + self._g[s]
             if v < best_cost:
                 best_cost = v
                 best = d
-
         return best
 
     def step_xy(self) -> tuple[int, int] | None:
         """Like step(), but returns (x, y) of the next cell.
         When use_bridges=True this can return a cell at bridge-jump distance."""
         if self._start == self._goal:
-            return (self._goal % self._w, self._goal // self._w)
+            return self._to_xy(self._goal)
 
         self._compute_shortest_path()
-
-        g = self._g
-        start = self._start
-        if g[start] == _INF:
+        if self._g[self._start] == _INF:
             return None
-
-        w = self._w
-        h = self._h
-        x = start % w
-        y = start // w
-        blocked = self._blocked
 
         best_idx: int | None = None
         best_cost = _INF
-        neighbours = _NEIGHBOURS_BRIDGE if self._use_bridges else _NEIGHBOURS
-
-        for dx, dy, cost, _ in neighbours:
-            xx = x + dx
-            if xx < 0 or xx >= w:
-                continue
-            yy = y + dy
-            if yy < 0 or yy >= h:
-                continue
-            s = yy * w + xx
-            if blocked[s]:
-                continue
-            v = cost + g[s]
+        for s, cost, _ in self._step_candidates(self._start):
+            v = cost + self._g[s]
             if v < best_cost:
                 best_cost = v
                 best_idx = s
 
         if self._use_bridges:
-            for jdx, jdy in _BRIDGE_JUMPS:
-                jx = x + jdx
-                jy = y + jdy
-                if 0 <= jx < w and 0 <= jy < h:
-                    s = jy * w + jx
-                    if blocked[s]:
-                        continue
-                    v = _BRIDGE_JUMP_COST + g[s]
-                    if v < best_cost:
-                        best_cost = v
-                        best_idx = s
+            for s in self._bridge_succ(self._start):
+                v = _BRIDGE_JUMP_COST + self._g[s]
+                if v < best_cost:
+                    best_cost = v
+                    best_idx = s
 
         if best_idx is None:
             return None
-        return (best_idx % w, best_idx // w)
+        return self._to_xy(best_idx)
 
     def plan(self) -> None:
         self._compute_shortest_path()
@@ -460,64 +250,37 @@ class DStarLite:
     def extract_path_lines(self) -> list[tuple[int, int, int, int]]:
         """Return line segments [(x1,y1,x2,y2), ...] for rendering."""
         pts = self.extract_path()
-        if len(pts) < 2:
-            return []
-
-        lines = []
-        for i in range(len(pts) - 1):
-            x1, y1 = pts[i]
-            x2, y2 = pts[i + 1]
-            lines.append((x1, y1, x2, y2))
-
-        return lines
+        return [
+            (pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1])
+            for i in range(len(pts) - 1)
+        ]
 
     def extract_path(self) -> list[tuple[int, int]]:
         """Return full path from current start to goal as (x,y). Empty if unreachable."""
-        g = self._g
-        start = self._start
-        goal = self._goal
-        if g[start] == _INF:
+        if self._g[self._start] == _INF:
             return []
 
-        w = self._w
-        h = self._h
-        blocked = self._blocked
-
         path: list[tuple[int, int]] = []
-        cur = start
+        visited: set[int] = set()  # safety against rare inconsistency loops
+        cur = self._start
 
-        visited = set()  # safety against rare inconsistency loops
-
-        while cur != goal:
-            x = cur % w
-            y = cur // w
-            path.append((x, y))
+        while cur != self._goal:
+            path.append(self._to_xy(cur))
             visited.add(cur)
 
             best = None
             best_cost = _INF
-
-            for dx, dy, cost, _ in _NEIGHBOURS:
-                xx = x + dx
-                if xx < 0 or xx >= w:
-                    continue
-                yy = y + dy
-                if yy < 0 or yy >= h:
-                    continue
-                nxt = yy * w + xx
-                if blocked[nxt]:
-                    continue
-                v = cost + g[nxt]
+            for nxt, cost, _ in self._step_candidates(cur, use_bridges=False):
+                v = cost + self._g[nxt]
                 if v < best_cost:
                     best_cost = v
                     best = nxt
 
             if best is None or best in visited:
-                return []  # no valid path
-
+                return []
             cur = best
 
-        path.append((goal % w, goal // w))
+        path.append(self._to_xy(self._goal))
         return path
 
     # ---------- Core D* Lite ----------
@@ -527,270 +290,79 @@ class DStarLite:
         in_open = self._in_open
         g = self._g
         rhs = self._rhs
-        w = self._w
-        h_minus_1 = self._h - 1
-        w_minus_1 = w - 1
-        recompute = self._recompute_rhs
-        use_bridges = self._use_bridges
-
-        # Start doesn't move inside this loop; cache once. km is also constant.
-        start = self._start
-        start_x = self._start_x
-        start_y = self._start_y
-        km = self._km
 
         while open_heap:
             k_old, u = heapq.heappop(open_heap)
-
             if not in_open[u]:
                 continue
 
-            gu = g[u]
-            ru = rhs[u]
-
-            # Consistent stale entry: skip without polluting g[u]. Without this
-            # the canonical else-branch below set g[u]=INF for a consistent u,
-            # cascading spurious updates before the next recompute corrected it.
-            if gu == ru:
+            # Consistent stale entry: drop without touching g[u]. The canonical
+            # else-branch below would overwrite a consistent g[u] with INF and
+            # cascade spurious updates.
+            if g[u] == rhs[u]:
                 in_open[u] = False
                 continue
 
-            # Inlined calc_key(u) — this is the hottest call site.
-            g_rhs = ru if ru < gu else gu
-            ux = u % w
-            uy = u // w
-            dx = start_x - ux
-            if dx < 0:
-                dx = -dx
-            dy = start_y - uy
-            if dy < 0:
-                dy = -dy
-            m = dx if dx < dy else dy
-            k_new_primary = g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + km
-            if k_old < (k_new_primary, g_rhs):
-                heapq.heappush(open_heap, ((k_new_primary, g_rhs), u))
+            k_new = self._calc_key(u)
+            if k_old < k_new:
+                heapq.heappush(open_heap, (k_new, u))
                 continue
 
             in_open[u] = False
 
-            if gu > ru:
-                g[u] = ru
+            if g[u] > rhs[u]:
+                g[u] = rhs[u]
                 also_self = False
             else:
                 g[u] = _INF
                 also_self = True
-            # Inlined: for p in _pred(u): _recompute_rhs(p)
-            if uy > 0:
-                recompute(u - w)
-                if ux > 0:
-                    recompute(u - w - 1)
-                if ux < w_minus_1:
-                    recompute(u - w + 1)
-            if uy < h_minus_1:
-                recompute(u + w)
-                if ux > 0:
-                    recompute(u + w - 1)
-                if ux < w_minus_1:
-                    recompute(u + w + 1)
-            if ux > 0:
-                recompute(u - 1)
-            if ux < w_minus_1:
-                recompute(u + 1)
 
+            for p in self._pred(u):
+                self._recompute_rhs(p)
             if also_self:
-                recompute(u)
-
-            if use_bridges:
-                for jdx, jdy in _BRIDGE_JUMPS:
-                    px = ux - jdx
-                    py = uy - jdy
-                    if 0 <= px < w and 0 <= py <= h_minus_1:
-                        recompute(py * w + px)
+                self._recompute_rhs(u)
+            if self._use_bridges:
+                for p in self._bridge_pred(u):
+                    self._recompute_rhs(p)
 
             if not open_heap:
                 break
 
             # h(start, start) = 0, so calc_key(start) simplifies to (gs+km, gs)
             # whenever rhs[start] == g[start] (the termination condition).
+            start = self._start
             gs = g[start]
-            if rhs[start] == gs and (gs + km, gs) <= open_heap[0][0]:
+            if rhs[start] == gs and (gs + self._km, gs) <= open_heap[0][0]:
                 break
 
     def _recompute_rhs(self, u: int) -> None:
         if u == self._goal:
             return
 
-        w = self._w
-        h = self._h
-        x = u % w
-        y = u // w
-
         g = self._g
-        arr = self._env._array
-        blocked = self._blocked
-        unk_cost = self._unknown_cost
-        diag_cost = self._diag_cost
-        diag_unk_cost = diag_cost if self._use_bridges else diag_cost * unk_cost
-
         min_rhs = _INF
 
-        # Interior cells (the common case) skip all per-neighbour bounds
-        # checks. Early-prune when g[s] >= min_rhs: since cost >= 1.0, we
-        # cannot possibly beat min_rhs from such an s.
-        if 0 < x < w - 1 and 0 < y < h - 1:
-            s = u - w  # N
-            if not blocked[s]:
-                gs = g[s]
-                if gs < min_rhs:
-                    v = (unk_cost if arr[s] == 0 else 1.0) + gs
-                    if v < min_rhs:
-                        min_rhs = v
-            s = u + w  # S
-            if not blocked[s]:
-                gs = g[s]
-                if gs < min_rhs:
-                    v = (unk_cost if arr[s] == 0 else 1.0) + gs
-                    if v < min_rhs:
-                        min_rhs = v
-            s = u - 1  # W
-            if not blocked[s]:
-                gs = g[s]
-                if gs < min_rhs:
-                    v = (unk_cost if arr[s] == 0 else 1.0) + gs
-                    if v < min_rhs:
-                        min_rhs = v
-            s = u + 1  # E
-            if not blocked[s]:
-                gs = g[s]
-                if gs < min_rhs:
-                    v = (unk_cost if arr[s] == 0 else 1.0) + gs
-                    if v < min_rhs:
-                        min_rhs = v
-            s = u - w - 1  # NW
-            if not blocked[s]:
-                gs = g[s]
-                if gs < min_rhs:
-                    v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
-                    if v < min_rhs:
-                        min_rhs = v
-            s = u - w + 1  # NE
-            if not blocked[s]:
-                gs = g[s]
-                if gs < min_rhs:
-                    v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
-                    if v < min_rhs:
-                        min_rhs = v
-            s = u + w - 1  # SW
-            if not blocked[s]:
-                gs = g[s]
-                if gs < min_rhs:
-                    v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
-                    if v < min_rhs:
-                        min_rhs = v
-            s = u + w + 1  # SE
-            if not blocked[s]:
-                gs = g[s]
-                if gs < min_rhs:
-                    v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
-                    if v < min_rhs:
-                        min_rhs = v
-        else:
-            # Border: per-direction bounds checks.
-            if y > 0:
-                s = u - w  # N
-                if not blocked[s]:
-                    gs = g[s]
-                    if gs < min_rhs:
-                        v = (unk_cost if arr[s] == 0 else 1.0) + gs
-                        if v < min_rhs:
-                            min_rhs = v
-                if x > 0:
-                    s = u - w - 1  # NW
-                    if not blocked[s]:
-                        gs = g[s]
-                        if gs < min_rhs:
-                            v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
-                            if v < min_rhs:
-                                min_rhs = v
-                if x < w - 1:
-                    s = u - w + 1  # NE
-                    if not blocked[s]:
-                        gs = g[s]
-                        if gs < min_rhs:
-                            v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
-                            if v < min_rhs:
-                                min_rhs = v
-            if y < h - 1:
-                s = u + w  # S
-                if not blocked[s]:
-                    gs = g[s]
-                    if gs < min_rhs:
-                        v = (unk_cost if arr[s] == 0 else 1.0) + gs
-                        if v < min_rhs:
-                            min_rhs = v
-                if x > 0:
-                    s = u + w - 1  # SW
-                    if not blocked[s]:
-                        gs = g[s]
-                        if gs < min_rhs:
-                            v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
-                            if v < min_rhs:
-                                min_rhs = v
-                if x < w - 1:
-                    s = u + w + 1  # SE
-                    if not blocked[s]:
-                        gs = g[s]
-                        if gs < min_rhs:
-                            v = (diag_unk_cost if arr[s] == 0 else diag_cost) + gs
-                            if v < min_rhs:
-                                min_rhs = v
-            if x > 0:
-                s = u - 1  # W
-                if not blocked[s]:
-                    gs = g[s]
-                    if gs < min_rhs:
-                        v = (unk_cost if arr[s] == 0 else 1.0) + gs
-                        if v < min_rhs:
-                            min_rhs = v
-            if x < w - 1:
-                s = u + 1  # E
-                if not blocked[s]:
-                    gs = g[s]
-                    if gs < min_rhs:
-                        v = (unk_cost if arr[s] == 0 else 1.0) + gs
-                        if v < min_rhs:
-                            min_rhs = v
+        for s, cost, _ in self._step_candidates(u):
+            v = cost + g[s]
+            if v < min_rhs:
+                min_rhs = v
 
         if self._use_bridges:
-            for jdx, jdy in _BRIDGE_JUMPS:
-                jx = x + jdx
-                jy = y + jdy
-                if 0 <= jx < w and 0 <= jy < h:
-                    s = jy * w + jx
-                    if not blocked[s]:
-                        v = _BRIDGE_JUMP_COST + g[s]
-                        if v < min_rhs:
-                            min_rhs = v
+            for s in self._bridge_succ(u):
+                v = _BRIDGE_JUMP_COST + g[s]
+                if v < min_rhs:
+                    min_rhs = v
 
         self._rhs[u] = min_rhs
-        # Inlined _maybe_enqueue + _enqueue.
-        gu = g[u]
-        if gu != min_rhs:
-            g_rhs = min_rhs if min_rhs < gu else gu
-            dx = self._start_x - x
-            if dx < 0:
-                dx = -dx
-            dy = self._start_y - y
-            if dy < 0:
-                dy = -dy
-            m = dx if dx < dy else dy
-            key = (g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km, g_rhs)
-            heapq.heappush(self._open, (key, u))
-            self._in_open[u] = True
+        self._maybe_enqueue(u)
+
+    def _maybe_enqueue(self, u: int) -> None:
+        if self._g[u] != self._rhs[u]:
+            self._enqueue(u)
         else:
             # Consistent: invalidate any stale open-heap entry. The entry
-            # remains in the heap (lazy deletion), but in_open[u]=False makes
-            # it skip on pop, avoiding redundant processing.
+            # remains in the heap (lazy deletion); in_open[u]=False makes it
+            # skip on pop, avoiding redundant processing.
             self._in_open[u] = False
 
     def _enqueue(self, u: int) -> None:
@@ -801,29 +373,61 @@ class DStarLite:
         gu = self._g[u]
         ru = self._rhs[u]
         g_rhs = ru if ru < gu else gu
+        return (g_rhs + self._heuristic(u, self._start) + self._km, g_rhs)
 
-        w = self._w
-        ux = u % w
-        uy = u // w
-        dx = self._start_x - ux
-        if dx < 0:
-            dx = -dx
-        dy = self._start_y - uy
-        if dy < 0:
-            dy = -dy
-        m = dx if dx < dy else dy
-        h = (dx + dy) + _SQRT2_MINUS_2 * m
+    # ---------- Neighbour helpers ----------
 
-        return (g_rhs + h + self._km, g_rhs)
+    def _step_candidates(self, u: int, *, use_bridges: bool | None = None):
+        """Yield (successor_idx, step_cost, direction) for the 8 adjacent
+        neighbours of u that aren't blocked. Cost reflects use_bridges and
+        the unknown-cell multiplier."""
+        if use_bridges is None:
+            use_bridges = self._use_bridges
+        x, y = self._to_xy(u)
+        arr = self._env._array
+        unk = self._unknown_cost
+        neighbours = _NEIGHBOURS_BRIDGE if use_bridges else _NEIGHBOURS
 
-    # ---------- Helpers ----------
+        for dx, dy, cost, d in neighbours:
+            xx, yy = x + dx, y + dy
+            if not self._in_bounds(xx, yy):
+                continue
+            s = self._to_idx(xx, yy)
+            if self._is_blocked(s):
+                continue
+            # Unknown cells get the unk_cost multiplier — but only outside
+            # bridge mode, where step costs are fixed.
+            if not use_bridges and arr[s] == 0:
+                yield s, cost * unk, d
+            else:
+                yield s, cost, d
 
-    def _heuristic(self, a: int, b: int) -> float:
-        ax, ay = self._to_xy(a)
-        bx, by = self._to_xy(b)
-        dx = abs(ax - bx)
-        dy = abs(ay - by)
-        return (dx + dy) + _SQRT2_MINUS_2 * min(dx, dy)
+    def _bridge_succ(self, u: int):
+        """Yield successor indices reachable from u via a bridge jump."""
+        x, y = self._to_xy(u)
+        for jdx, jdy in _BRIDGE_JUMPS:
+            jx, jy = x + jdx, y + jdy
+            if self._in_bounds(jx, jy):
+                s = self._to_idx(jx, jy)
+                if not self._is_blocked(s):
+                    yield s
+
+    def _bridge_pred(self, u: int):
+        """Yield predecessor indices that can bridge-jump into u."""
+        x, y = self._to_xy(u)
+        for jdx, jdy in _BRIDGE_JUMPS:
+            px, py = x - jdx, y - jdy
+            if self._in_bounds(px, py):
+                yield self._to_idx(px, py)
+
+    def _propagate_at(self, idx: int) -> None:
+        """Recompute rhs for idx and every predecessor that depends on it."""
+        self._recompute_rhs(idx)
+        for p in self._pred(idx):
+            self._recompute_rhs(p)
+        if self._use_bridges:
+            for p in self._bridge_pred(idx):
+                self._recompute_rhs(p)
 
     def _succ(self, u: int):
         x, y = self._to_xy(u)
@@ -835,10 +439,32 @@ class DStarLite:
     def _pred(self, u: int):
         return (s for s, _ in self._succ(u))
 
-    def _blocked_idx(self, idx: int) -> bool:
+    # ---------- Blocked-state helpers ----------
+
+    def _is_blocked(self, idx: int) -> bool:
+        """The current start is always walkable, even if it sits on an ore
+        tile or a dynamic blocker — the bot has to be able to move from
+        wherever it stands."""
         if idx == self._start:
             return False
-        return bool(self._blocked[idx])
+        if (self._block_mask >> self._env._array[idx]) & 1:
+            return True
+        return idx in self._dynamic_blocked
+
+    def _has_blocking_state(self, idx: int) -> bool:
+        """True if idx would be blocked ignoring the start-is-walkable override."""
+        if (self._block_mask >> self._env._array[idx]) & 1:
+            return True
+        return idx in self._dynamic_blocked
+
+    # ---------- Geometry helpers ----------
+
+    def _heuristic(self, a: int, b: int) -> float:
+        ax, ay = self._to_xy(a)
+        bx, by = self._to_xy(b)
+        dx = abs(ax - bx)
+        dy = abs(ay - by)
+        return (dx + dy) + _OCTILE_DIAG_COEFF * min(dx, dy)
 
     def _to_idx(self, x: int, y: int) -> int:
         return y * self._w + x

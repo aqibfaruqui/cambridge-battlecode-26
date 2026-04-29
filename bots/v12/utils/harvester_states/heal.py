@@ -255,5 +255,4 @@ def _heal(self: Harvester, c: Controller) -> None:
         f"dest={dest_str} "
         f"damaged=[{damaged_str}] "
         f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()}",
-        file=sys.stderr,
     )

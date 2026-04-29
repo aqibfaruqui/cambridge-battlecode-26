@@ -78,10 +78,95 @@ _DEFAULT_EPSILON_DECREMENT = 0.5
 _EPSILON_MIN = 1.0
 
 
+# Per-(w, h, use_bridges) precomputed adjacency. Map shape never changes after
+# planner construction, so iteration tables are reusable across set_goal/init
+# cycles inside a subinterpreter.
+_STEP_TABLE_CACHE: dict[tuple[int, int, bool], tuple] = {}
+_SUCC_TABLE_CACHE: dict[tuple[int, int, bool], tuple] = {}
+_BRIDGE_TABLE_CACHE: dict[tuple[int, int], tuple] = {}
+
+
+def _build_step_table(w: int, h: int, use_bridges: bool) -> tuple:
+    """Per-cell tuple of (idx, cost, direction) for in-bounds 8-neighbours.
+    Cost picks the bridge or non-bridge diagonal weight."""
+    neighbours = _NEIGHBOURS_BRIDGE if use_bridges else _NEIGHBOURS
+    out: list[tuple] = []
+    for y in range(h):
+        for x in range(w):
+            entries = []
+            for dx, dy, cost, direction in neighbours:
+                xx = x + dx
+                yy = y + dy
+                if 0 <= xx < w and 0 <= yy < h:
+                    entries.append((yy * w + xx, cost, direction))
+            out.append(tuple(entries))
+    return tuple(out)
+
+
+def _build_succ_table(w: int, h: int, use_bridges: bool) -> tuple:
+    """Per-cell tuple of (idx, cost) for the 8-neighbour walking edges. Used by
+    _update_state and as the predecessor list (the grid is symmetric)."""
+    neighbours = _NEIGHBOURS_BRIDGE if use_bridges else _NEIGHBOURS
+    out: list[tuple] = []
+    for y in range(h):
+        for x in range(w):
+            entries = []
+            for dx, dy, cost, _ in neighbours:
+                xx = x + dx
+                yy = y + dy
+                if 0 <= xx < w and 0 <= yy < h:
+                    entries.append((yy * w + xx, cost))
+            out.append(tuple(entries))
+    return tuple(out)
+
+
+def _build_bridge_table(w: int, h: int) -> tuple:
+    """Per-cell tuple of in-bounds bridge-reachable indices. _BRIDGE_JUMPS is
+    symmetric, so this serves as both successors and predecessors."""
+    out: list[tuple] = []
+    for y in range(h):
+        for x in range(w):
+            entries = []
+            for jdx, jdy in _BRIDGE_JUMPS:
+                jx = x + jdx
+                jy = y + jdy
+                if 0 <= jx < w and 0 <= jy < h:
+                    entries.append(jy * w + jx)
+            out.append(tuple(entries))
+    return tuple(out)
+
+
+def _get_step_table(w: int, h: int, use_bridges: bool) -> tuple:
+    key = (w, h, use_bridges)
+    t = _STEP_TABLE_CACHE.get(key)
+    if t is None:
+        t = _build_step_table(w, h, use_bridges)
+        _STEP_TABLE_CACHE[key] = t
+    return t
+
+
+def _get_succ_table(w: int, h: int, use_bridges: bool) -> tuple:
+    key = (w, h, use_bridges)
+    t = _SUCC_TABLE_CACHE.get(key)
+    if t is None:
+        t = _build_succ_table(w, h, use_bridges)
+        _SUCC_TABLE_CACHE[key] = t
+    return t
+
+
+def _get_bridge_table(w: int, h: int) -> tuple:
+    key = (w, h)
+    t = _BRIDGE_TABLE_CACHE.get(key)
+    if t is None:
+        t = _build_bridge_table(w, h)
+        _BRIDGE_TABLE_CACHE[key] = t
+    return t
+
+
 class AnytimeDStar:
     """Anytime Dynamic A* (Likhachev et al.).
 
-    Same API surface as DStarLite, plus a CPU-elapsed deadline (default 1000 us)
+    Same API surface as DStarLite, plus a CPU-elapsed deadline (default 1800 us)
     that pauses ComputeOrImprovePath when c.get_cpu_time_elapsed() exceeds it.
     State (OPEN/CLOSED/INCONS, epsilon, g, rhs) persists across calls so the
     next invocation resumes the same iteration.
@@ -121,6 +206,9 @@ class AnytimeDStar:
         "_epsilon",
         "_epsilon_initial",
         "_epsilon_decrement",
+        "_step_table",
+        "_succ_table",
+        "_bridge_table",
     )
 
     def __init__(
@@ -139,27 +227,30 @@ class AnytimeDStar:
     ):
         self._c = c
         self._env = env
-        self._w = env._w
-        self._h = env._h
-        self._n = self._w * self._h
+        w = env._w
+        h = env._h
+        self._w = w
+        self._h = h
+        self._n = w * h
         self._block_mask = block_mask
         self._deadline_us = deadline_us
         self._epsilon_initial = epsilon_initial
         self._epsilon_decrement = epsilon_decrement
         self._epsilon = epsilon_initial
 
-        self._g = [_INF] * self._n
-        self._rhs = [_INF] * self._n
+        n = self._n
+        self._g = [_INF] * n
+        self._rhs = [_INF] * n
 
         self._open: List[Tuple[Tuple[float, float], int]] = []
-        self._in_open = bytearray(self._n)
-        self._closed = bytearray(self._n)
-        self._in_incons = bytearray(self._n)
+        self._in_open = bytearray(n)
+        self._closed = bytearray(n)
+        self._in_incons = bytearray(n)
         self._incons: list[int] = []
 
         self._km = 0.0
 
-        self._goal = goal_y * self._w + goal_x
+        self._goal = goal_y * w + goal_x
         self._start = self._goal
         self._start_x = goal_x
         self._start_y = goal_y
@@ -172,7 +263,7 @@ class AnytimeDStar:
 
         # Combined static-mask + dynamic blocker bitmap with the invariant that
         # the current cell is always walkable.
-        self._blocked = bytearray(self._n)
+        self._blocked = bytearray(n)
         for i, v in enumerate(env._array):
             if (block_mask >> v) & 1:
                 self._blocked[i] = 1
@@ -181,6 +272,14 @@ class AnytimeDStar:
         self._unknown_cost = unknown_cost
         self._use_bridges = use_bridges
         self._diag_cost = _BRIDGE_JUMP_COST if use_bridges else _SQRT2
+
+        self._step_table = _get_step_table(w, h, use_bridges)
+        self._succ_table = _get_succ_table(w, h, use_bridges)
+        # Always a tuple so subscripting is type-safe; the use_bridges guard
+        # keeps non-bridge planners from ever building or touching it.
+        self._bridge_table: tuple = (
+            _get_bridge_table(w, h) if use_bridges else ()
+        )
 
         self._enqueue(self._goal)
 
@@ -266,7 +365,9 @@ class AnytimeDStar:
         if new_blocked == old_blocked:
             return False
 
-        changed = old_blocked.symmetric_difference(new_blocked)
+        # Sort the changed indices so refresh order is deterministic across runs
+        # (set iteration order over ints is stable per-build but not specified).
+        changed = sorted(old_blocked.symmetric_difference(new_blocked))
         self._dynamic_blocked = new_blocked
 
         blocked = self._blocked
@@ -288,17 +389,21 @@ class AnytimeDStar:
         return True
 
     def step(self) -> Direction | None:
-        if self._start == self._goal:
+        start = self._start
+        if start == self._goal:
             return Direction.CENTRE
 
         self._compute_or_improve_path()
         g = self._g
-        if g[self._start] == _INF:
+        if g[start] == _INF:
             return None
 
+        blocked = self._blocked
         best = None
         best_cost = _INF
-        for s, cost, d in self._walk_neighbours(self._start):
+        for s, cost, d in self._step_table[start]:
+            if blocked[s]:
+                continue
             v = cost + g[s]
             if v < best_cost:
                 best_cost = v
@@ -309,24 +414,31 @@ class AnytimeDStar:
         """Like step(), but returns (x, y) of the next cell.
         With use_bridges=True the result may be at bridge-jump distance."""
         w = self._w
-        if self._start == self._goal:
-            return (self._goal % w, self._goal // w)
+        start = self._start
+        goal = self._goal
+        if start == goal:
+            return (goal % w, goal // w)
 
         self._compute_or_improve_path()
         g = self._g
-        if g[self._start] == _INF:
+        if g[start] == _INF:
             return None
 
+        blocked = self._blocked
         best_idx: int | None = None
         best_cost = _INF
-        for s, cost, _ in self._walk_neighbours(self._start):
+        for s, cost, _ in self._step_table[start]:
+            if blocked[s]:
+                continue
             v = cost + g[s]
             if v < best_cost:
                 best_cost = v
                 best_idx = s
 
         if self._use_bridges:
-            for s in self._bridge_neighbours(self._start):
+            for s in self._bridge_table[start]:
+                if blocked[s]:
+                    continue
                 v = _BRIDGE_JUMP_COST + g[s]
                 if v < best_cost:
                     best_cost = v
@@ -356,6 +468,8 @@ class AnytimeDStar:
             return []
 
         w = self._w
+        blocked = self._blocked
+        step_table = self._step_table
         path: list[tuple[int, int]] = []
         cur = start
         visited: set[int] = set()  # safety against rare inconsistency loops
@@ -366,7 +480,9 @@ class AnytimeDStar:
 
             best = None
             best_cost = _INF
-            for s, cost, _ in self._walk_neighbours(cur):
+            for s, cost, _ in step_table[cur]:
+                if blocked[s]:
+                    continue
                 v = cost + g[s]
                 if v < best_cost:
                     best_cost = v
@@ -415,25 +531,54 @@ class AnytimeDStar:
                 return
 
     def _process_iteration(self) -> None:
-        """ComputeOrImprovePath body, paused when the CPU deadline trips."""
+        """ComputeOrImprovePath body, paused when the CPU deadline trips.
+
+        Hot loop: locals avoid attribute lookups; _calc_key is inlined for both
+        the start-key termination check and the stale-key reinsertion test."""
         c = self._c
+        get_cpu = c.get_cpu_time_elapsed
         deadline = self._deadline_us
         open_heap = self._open
         in_open = self._in_open
         g = self._g
         rhs = self._rhs
+        w = self._w
+        km = self._km
+        eps = self._epsilon
+        sx = self._start_x
+        sy = self._start_y
+        start = self._start
+        closed = self._closed
+        succ_table = self._succ_table
+        use_bridges = self._use_bridges
+        bridge_table = self._bridge_table
+        update = self._update_state
+        heappop = heapq.heappop
+        heappush = heapq.heappush
+        s2 = _SQRT2_MINUS_2
+        inf = _INF
 
         while open_heap:
-            if c.get_cpu_time_elapsed() > deadline:
+            if get_cpu() > deadline:
                 return
 
             top_key = open_heap[0][0]
-            start_key = self._calc_key(self._start)
+
+            # Inline _calc_key(start). h(start, start) == 0.
+            g_start = g[start]
+            rhs_start = rhs[start]
+            if g_start > rhs_start:
+                # Underconsistent starts shouldn't happen here, but the formula
+                # collapses to (rhs+km, rhs) regardless when h==0.
+                start_key = (rhs_start + km, rhs_start)
+            else:
+                start_key = (g_start + km, g_start)
+
             # Termination: top OPEN key >= key(start) AND start is consistent.
-            if top_key >= start_key and rhs[self._start] == g[self._start]:
+            if top_key >= start_key and rhs_start == g_start:
                 return
 
-            k_old, u = heapq.heappop(open_heap)
+            k_old, u = heappop(open_heap)
             if not in_open[u]:
                 continue
 
@@ -444,9 +589,21 @@ class AnytimeDStar:
                 in_open[u] = 0
                 continue
 
-            k_new = self._calc_key(u)
+            # Inline _calc_key(u).
+            dx = sx - u % w
+            dy = sy - u // w
+            if dx < 0:
+                dx = -dx
+            if dy < 0:
+                dy = -dy
+            h_u = (dx + dy) + s2 * (dx if dx < dy else dy)
+            if gu > ru:
+                k_new = (ru + eps * h_u + km, ru)
+            else:
+                k_new = (gu + h_u + km, gu)
+
             if k_old < k_new:
-                heapq.heappush(open_heap, (k_new, u))
+                heappush(open_heap, (k_new, u))
                 continue
 
             in_open[u] = 0
@@ -454,195 +611,197 @@ class AnytimeDStar:
             if gu > ru:
                 # Overconsistent: lower g and propagate to predecessors.
                 g[u] = ru
-                self._closed[u] = 1
-                for p in self._predecessors(u):
-                    self._update_state(p)
-                if self._use_bridges:
-                    for p in self._bridge_predecessors(u):
-                        self._update_state(p)
+                closed[u] = 1
+                for s, _ in succ_table[u]:
+                    update(s)
+                if use_bridges:
+                    for s in bridge_table[u]:
+                        update(s)
             else:
                 # Underconsistent: raise g to inf and propagate (including self).
-                g[u] = _INF
-                for p in self._predecessors(u):
-                    self._update_state(p)
-                self._update_state(u)
-                if self._use_bridges:
-                    for p in self._bridge_predecessors(u):
-                        self._update_state(p)
+                g[u] = inf
+                for s, _ in succ_table[u]:
+                    update(s)
+                update(u)
+                if use_bridges:
+                    for s in bridge_table[u]:
+                        update(s)
 
     def _begin_new_iteration(self) -> None:
         """Move INCONS into OPEN, re-key everything with the current epsilon,
-        and clear CLOSED. Called when edges change or epsilon decreases."""
-        live: set[int] = set()
-        in_open = self._in_open
-        for _, u in self._open:
-            if in_open[u]:
-                live.add(u)
+        and clear CLOSED. Called when edges change or epsilon decreases.
 
-        in_incons = self._in_incons
-        for u in self._incons:
-            if in_incons[u]:
-                live.add(u)
-
+        Uses an insertion-order list dedup'd by a bytearray so the reseed order
+        is deterministic across CPython builds (set iteration over ints is
+        stable per-build only)."""
         n = self._n
-        self._open.clear()
+        in_open = self._in_open
+        in_incons = self._in_incons
+        seen = bytearray(n)
+        live: list[int] = []
+
+        for _, u in self._open:
+            if in_open[u] and not seen[u]:
+                seen[u] = 1
+                live.append(u)
+        for u in self._incons:
+            if in_incons[u] and not seen[u]:
+                seen[u] = 1
+                live.append(u)
+
+        self._open = []
         self._in_open = bytearray(n)
         self._in_incons = bytearray(n)
         self._closed = bytearray(n)
         self._incons = []
 
+        # Inline _enqueue across the batch: same key formula as _calc_key.
         g = self._g
         rhs = self._rhs
+        open_heap = self._open
+        new_in_open = self._in_open
+        w = self._w
+        sx = self._start_x
+        sy = self._start_y
+        eps = self._epsilon
+        km = self._km
+        s2 = _SQRT2_MINUS_2
+        heappush = heapq.heappush
+
         for u in live:
-            if g[u] != rhs[u]:
-                self._enqueue(u)
+            gu = g[u]
+            ru = rhs[u]
+            if gu == ru:
+                continue
+            dx = sx - u % w
+            dy = sy - u // w
+            if dx < 0:
+                dx = -dx
+            if dy < 0:
+                dy = -dy
+            h_u = (dx + dy) + s2 * (dx if dx < dy else dy)
+            if gu > ru:
+                key = (ru + eps * h_u + km, ru)
+            else:
+                key = (gu + h_u + km, gu)
+            heappush(open_heap, (key, u))
+            new_in_open[u] = 1
 
     def _update_state(self, u: int) -> None:
+        """Recompute rhs(u) from successors and adjust OPEN/INCONS membership.
+
+        Inlines walkable-neighbour iteration, bridge-neighbour iteration, and
+        _enqueue's _calc_key to avoid generator+method overhead in the hottest
+        loop of the planner."""
+        g = self._g
+        rhs = self._rhs
+
         if u != self._goal:
             arr = self._env._array
-            g = self._g
+            blocked = self._blocked
             unk_cost = self._unknown_cost
             diag_cost = self._diag_cost
-            diag_unk_cost = diag_cost if self._use_bridges else diag_cost * unk_cost
+            use_bridges = self._use_bridges
+            # In bridge mode unknown cells aren't penalised on diagonals: the
+            # bridge cost dominates. Mirrors the original branch.
+            diag_unk_cost = diag_cost if use_bridges else diag_cost * unk_cost
 
             min_rhs = _INF
-            for s, dx, dy in self._walkable_neighbours(u):
-                is_diag = dx and dy
+            for s, cost in self._succ_table[u]:
+                if blocked[s]:
+                    continue
                 if arr[s] == 0:
-                    cost = diag_unk_cost if is_diag else unk_cost
+                    v = (diag_unk_cost if cost > 1.0 else unk_cost) + g[s]
                 else:
-                    cost = diag_cost if is_diag else 1.0
-                v = cost + g[s]
+                    v = cost + g[s]
                 if v < min_rhs:
                     min_rhs = v
 
-            if self._use_bridges:
-                for s in self._bridge_neighbours(u):
-                    v = _BRIDGE_JUMP_COST + g[s]
+            if use_bridges:
+                bjc = _BRIDGE_JUMP_COST
+                for s in self._bridge_table[u]:
+                    if blocked[s]:
+                        continue
+                    v = bjc + g[s]
                     if v < min_rhs:
                         min_rhs = v
 
-            self._rhs[u] = min_rhs
+            rhs[u] = min_rhs
 
         # Mark any live OPEN entry stale; new key (if needed) gets a fresh push.
-        if self._in_open[u]:
-            self._in_open[u] = 0
+        in_open = self._in_open
+        if in_open[u]:
+            in_open[u] = 0
 
-        if self._g[u] != self._rhs[u]:
+        gu = g[u]
+        ru = rhs[u]
+        if gu != ru:
             if not self._closed[u]:
-                self._enqueue(u)
-            elif not self._in_incons[u]:
-                self._in_incons[u] = 1
-                self._incons.append(u)
+                # Inline _enqueue(u) — _calc_key uses current eps/km/start.
+                w = self._w
+                dx = self._start_x - u % w
+                dy = self._start_y - u // w
+                if dx < 0:
+                    dx = -dx
+                if dy < 0:
+                    dy = -dy
+                h_u = (dx + dy) + _SQRT2_MINUS_2 * (dx if dx < dy else dy)
+                km = self._km
+                if gu > ru:
+                    key = (ru + self._epsilon * h_u + km, ru)
+                else:
+                    key = (gu + h_u + km, gu)
+                heapq.heappush(self._open, (key, u))
+                in_open[u] = 1
+            else:
+                in_incons = self._in_incons
+                if not in_incons[u]:
+                    in_incons[u] = 1
+                    self._incons.append(u)
 
     def _refresh_neighbourhood(self, u: int) -> None:
         """Recompute u, its 8 neighbours, and (if enabled) bridge predecessors."""
-        self._update_state(u)
-        for p in self._predecessors(u):
-            self._update_state(p)
+        update = self._update_state
+        update(u)
+        for s, _ in self._succ_table[u]:
+            update(s)
         if self._use_bridges:
-            for p in self._bridge_predecessors(u):
-                self._update_state(p)
+            for s in self._bridge_table[u]:
+                update(s)
 
     def _enqueue(self, u: int) -> None:
-        heapq.heappush(self._open, (self._calc_key(u), u))
-        self._in_open[u] = 1
-
-    def _calc_key(self, u: int) -> tuple[float, float]:
+        """Out-of-band enqueue used during construction. Hot-path enqueues are
+        inlined into _update_state and _begin_new_iteration."""
         gu = self._g[u]
         ru = self._rhs[u]
         w = self._w
-        dx = abs(self._start_x - u % w)
-        dy = abs(self._start_y - u // w)
-        h = (dx + dy) + _SQRT2_MINUS_2 * min(dx, dy)
+        dx = self._start_x - u % w
+        dy = self._start_y - u // w
+        if dx < 0:
+            dx = -dx
+        if dy < 0:
+            dy = -dy
+        h_u = (dx + dy) + _SQRT2_MINUS_2 * (dx if dx < dy else dy)
+        km = self._km
         if gu > ru:
-            # Overconsistent: drives anytime improvement with inflated heuristic.
-            return (ru + self._epsilon * h + self._km, ru)
-        # Consistent or underconsistent: uninflated heuristic so cost increases
-        # propagate correctly (D* Lite-style).
-        return (gu + h + self._km, gu)
+            key = (ru + self._epsilon * h_u + km, ru)
+        else:
+            key = (gu + h_u + km, gu)
+        heapq.heappush(self._open, (key, u))
+        self._in_open[u] = 1
 
     # ---------- Helpers ----------
 
     def _heuristic(self, a: int, b: int) -> float:
         w = self._w
-        dx = abs(a % w - b % w)
-        dy = abs(a // w - b // w)
-        return (dx + dy) + _SQRT2_MINUS_2 * min(dx, dy)
-
-    def _predecessors(self, u: int):
-        """Yield in-bounds neighbour indices of u."""
-        w = self._w
-        h = self._h
-        x = u % w
-        y = u // w
-        for dx, dy, _, _ in _NEIGHBOURS:
-            xx = x + dx
-            yy = y + dy
-            if 0 <= xx < w and 0 <= yy < h:
-                yield yy * w + xx
-
-    def _walkable_neighbours(self, u: int):
-        """Yield (idx, dx, dy) for in-bounds, unblocked neighbours of u."""
-        w = self._w
-        h = self._h
-        blocked = self._blocked
-        x = u % w
-        y = u // w
-        for dx, dy, _, _ in _NEIGHBOURS:
-            xx = x + dx
-            yy = y + dy
-            if not (0 <= xx < w and 0 <= yy < h):
-                continue
-            s = yy * w + xx
-            if blocked[s]:
-                continue
-            yield s, dx, dy
-
-    def _walk_neighbours(self, u: int):
-        """Yield (idx, cost, direction) for unblocked neighbours under the active
-        cost table (bridge or non-bridge)."""
-        w = self._w
-        h = self._h
-        blocked = self._blocked
-        x = u % w
-        y = u // w
-        neighbours = _NEIGHBOURS_BRIDGE if self._use_bridges else _NEIGHBOURS
-        for dx, dy, cost, d in neighbours:
-            xx = x + dx
-            yy = y + dy
-            if not (0 <= xx < w and 0 <= yy < h):
-                continue
-            s = yy * w + xx
-            if blocked[s]:
-                continue
-            yield s, cost, d
-
-    def _bridge_neighbours(self, u: int):
-        """Yield in-bounds, unblocked bridge-reachable cells from u."""
-        w = self._w
-        h = self._h
-        blocked = self._blocked
-        x = u % w
-        y = u // w
-        for jdx, jdy in _BRIDGE_JUMPS:
-            jx = x + jdx
-            jy = y + jdy
-            if not (0 <= jx < w and 0 <= jy < h):
-                continue
-            s = jy * w + jx
-            if blocked[s]:
-                continue
-            yield s
-
-    def _bridge_predecessors(self, u: int):
-        """Yield in-bounds cells from which u is reachable via a bridge jump."""
-        w = self._w
-        h = self._h
-        x = u % w
-        y = u // w
-        for jdx, jdy in _BRIDGE_JUMPS:
-            px = x - jdx
-            py = y - jdy
-            if 0 <= px < w and 0 <= py < h:
-                yield py * w + px
+        ax = a % w
+        ay = a // w
+        bx = b % w
+        by = b // w
+        dx = ax - bx
+        dy = ay - by
+        if dx < 0:
+            dx = -dx
+        if dy < 0:
+            dy = -dy
+        return (dx + dy) + _SQRT2_MINUS_2 * (dx if dx < dy else dy)

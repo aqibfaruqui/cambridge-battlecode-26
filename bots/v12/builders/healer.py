@@ -1,3 +1,4 @@
+import random
 from enum import Enum
 
 from cambc import Controller, Direction, EntityType, Environment, Position
@@ -7,7 +8,11 @@ from utils.harvester_states.heal import (
     _critical_damaged,
 )
 from utils.harvester_states.seek import _seek_direction
-from utils.healing import try_heal_nearby_bot, try_heal_nearby_building
+from utils.healing import (
+    try_heal_adjacent_most_missing,
+    try_heal_nearby_bot,
+    try_heal_nearby_building,
+)
 from utils.map.raw_map_representation import EnvironmentMap
 from utils.pathfinding.d_star import DStarLite
 
@@ -30,6 +35,12 @@ _RING_DIRECTIONS = [
     Direction.NORTHEAST,
 ]
 
+_PATROL_REACHED_DIST_SQ = 8
+_PATROL_MIN_CORE_DIST = 4
+_PATROL_MIN_RADIUS_FRACTION = 2
+_PATROL_STUCK_TURNS = 8
+_PATROL_TARGET_ATTEMPTS = 24
+
 
 class Healer:
     def __init__(self, core_pos: Position):
@@ -45,6 +56,9 @@ class Healer:
         self.state = HealState.PATROL
         self.follow_enemy_id: int | None = None
         self.follow_enemy_last_pos: Position | None = None
+        self.patrol_target: Position | None = None
+        self.patrol_last_pos: Position | None = None
+        self.patrol_stuck_turns = 0
 
         # D* Lite pathfinding state
         self.environment_map: EnvironmentMap | None = None
@@ -53,6 +67,53 @@ class Healer:
 
     def _ring_pos(self, idx: int) -> Position:
         return self.core_pos.add(_RING_DIRECTIONS[idx % len(_RING_DIRECTIONS)])
+
+    def _patrol_radius(self, c: Controller) -> int:
+        return max(1, max(c.get_map_width(), c.get_map_height()) // 2)
+
+    def _is_patrol_candidate(self, c: Controller, pos: Position) -> bool:
+        if not (0 <= pos.x < c.get_map_width() and 0 <= pos.y < c.get_map_height()):
+            return False
+        if self._is_enemy_launcher_danger(c, pos):
+            return False
+        dx = pos.x - self.core_pos.x
+        dy = pos.y - self.core_pos.y
+        if max(abs(dx), abs(dy)) < _PATROL_MIN_CORE_DIST:
+            return False
+        radius = self._patrol_radius(c)
+        dist_sq = dx * dx + dy * dy
+        min_radius = max(_PATROL_MIN_CORE_DIST, radius // _PATROL_MIN_RADIUS_FRACTION)
+        if dist_sq < min_radius * min_radius or dist_sq > radius * radius:
+            return False
+        env = self.environment_map
+        return env is None or env.is_seek_candidate(pos.x, pos.y)
+
+    def _pick_patrol_target(self, c: Controller) -> Position | None:
+        radius = self._patrol_radius(c)
+        for _ in range(_PATROL_TARGET_ATTEMPTS):
+            dx = random.randint(-radius, radius)
+            dy = random.randint(-radius, radius)
+            candidate = Position(self.core_pos.x + dx, self.core_pos.y + dy)
+            if self._is_patrol_candidate(c, candidate):
+                return candidate
+
+        best: Position | None = None
+        best_dist = -1
+        for x in range(c.get_map_width()):
+            for y in range(c.get_map_height()):
+                candidate = Position(x, y)
+                if not self._is_patrol_candidate(c, candidate):
+                    continue
+                dist = self.current_pos.distance_squared(candidate)
+                if dist > best_dist:
+                    best = candidate
+                    best_dist = dist
+        return best
+
+    def _set_patrol_target(self, c: Controller) -> None:
+        self.patrol_target = self._pick_patrol_target(c)
+        self.patrol_last_pos = self.current_pos
+        self.patrol_stuck_turns = 0
 
     def _resolve_core_id(self, c: Controller) -> None:
         bid = c.get_tile_building_id(self.core_pos)
@@ -71,6 +132,8 @@ class Healer:
         if move_dir is None:
             return
         move_pos = self.current_pos.add(move_dir)
+        if self._is_enemy_launcher_danger(c, move_pos):
+            return
         build_id = c.get_tile_building_id(move_pos)
         if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER and c.can_destroy(move_pos):
             c.destroy(move_pos)
@@ -78,6 +141,34 @@ class Healer:
             c.build_road(move_pos)
         if c.can_move(move_dir):
             c.move(move_dir)
+
+    def _is_enemy_launcher_danger(self, c: Controller, pos: Position) -> bool:
+        my_team = c.get_team()
+        for bid in c.get_nearby_buildings():
+            if c.get_team(bid) == my_team:
+                continue
+            if c.get_entity_type(bid) != EntityType.LAUNCHER:
+                continue
+            if pos.distance_squared(c.get_position(bid)) <= 2:
+                return True
+        return False
+
+    def _extra_seek_dynamic_blockers(self, c: Controller) -> list[tuple[int, int]]:
+        blockers: list[tuple[int, int]] = []
+        my_team = c.get_team()
+        w, h = c.get_map_width(), c.get_map_height()
+        for bid in c.get_nearby_buildings():
+            if c.get_team(bid) == my_team:
+                continue
+            if c.get_entity_type(bid) != EntityType.LAUNCHER:
+                continue
+            launcher_pos = c.get_position(bid)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    x, y = launcher_pos.x + dx, launcher_pos.y + dy
+                    if 0 <= x < w and 0 <= y < h:
+                        blockers.append((x, y))
+        return blockers
 
     def _enemy_builder_pos(self, c: Controller, enemy_id: int) -> Position | None:
         for uid in c.get_nearby_units():
@@ -137,6 +228,8 @@ class Healer:
             candidate = enemy_pos.add(direction)
             if not (0 <= candidate.x < w and 0 <= candidate.y < h):
                 continue
+            if self._is_enemy_launcher_danger(c, candidate):
+                continue
             if c.is_in_vision(candidate):
                 occupier = c.get_tile_builder_bot_id(candidate)
                 if occupier is not None and occupier != c.get_id():
@@ -176,32 +269,36 @@ class Healer:
             return
 
         me = c.get_position()
+        target = self.patrol_target
 
-        step1_idx = (self.ring_idx + 1) % len(_RING_DIRECTIONS)
-        step1_pos = self._ring_pos(step1_idx)
+        if target is not None and me.distance_squared(target) <= _PATROL_REACHED_DIST_SQ:
+            target = None
 
-        for step in (1, 2):
-            next_idx = (self.ring_idx + step) % len(_RING_DIRECTIONS)
-            next_pos = self._ring_pos(next_idx)
-            if me.distance_squared(next_pos) > 2:
-                continue
-            direction = me.direction_to(next_pos)
-            if direction == Direction.CENTRE:
-                continue
-            if c.can_move(direction):
-                c.move(direction)
-                self.ring_idx = next_idx
+        if target is not None and not self._is_patrol_candidate(c, target):
+            target = None
+
+        if self.patrol_last_pos == me:
+            self.patrol_stuck_turns += 1
+        else:
+            self.patrol_stuck_turns = 0
+            self.patrol_last_pos = me
+
+        if self.patrol_stuck_turns >= _PATROL_STUCK_TURNS:
+            target = None
+
+        if target is None:
+            self._set_patrol_target(c)
+            target = self.patrol_target
+            if target is None:
                 return
 
-        if c.is_in_vision(step1_pos) and c.get_tile_builder_bot_id(step1_pos) is not None:
-            direction = me.direction_to(self.core_pos)
-            if direction != Direction.CENTRE and c.can_move(direction):
-                c.move(direction)
-                self.ring_idx = step1_idx
-                return
-
-        if c.get_action_cooldown() == 0 and c.can_build_road(step1_pos):
-            c.build_road(step1_pos)
+        move_dir = _seek_direction(self, c, target)  # type: ignore[arg-type]
+        if move_dir is None:
+            self.patrol_stuck_turns += 1
+            if self.patrol_stuck_turns >= _PATROL_STUCK_TURNS:
+                self._set_patrol_target(c)
+            return
+        self._advance(c, move_dir)
 
     def _draw_debug(self, c: Controller) -> None:
         if self.heal_target is not None:
@@ -209,6 +306,20 @@ class Healer:
             c.draw_indicator_line(self.current_pos, self.heal_target, 60, 255, 100)
         else:
             c.draw_indicator_dot(self.current_pos, 0, 200, 255)
+
+    def _log_turn_state(self, c: Controller) -> None:
+        patrol_target = self.patrol_target
+        heal_target = self.heal_target
+        follow_pos = self.follow_enemy_last_pos
+        print(
+            f"[healer {c.get_id()}] r={c.get_current_round()} "
+            f"state={self.state.value} "
+            f"patrol_target={((patrol_target.x, patrol_target.y) if patrol_target else '-')} "
+            f"stuck={self.patrol_stuck_turns} "
+            f"heal_target={((heal_target.x, heal_target.y) if heal_target else '-')} "
+            f"follow_enemy={self.follow_enemy_id if self.follow_enemy_id is not None else '-'} "
+            f"follow_pos={((follow_pos.x, follow_pos.y) if follow_pos else '-')}",
+        )
 
     def run(self, c: Controller):
         if self.core_id is None:
@@ -240,8 +351,8 @@ class Healer:
 
         me = self.current_pos
 
-        # Heal action: bots first (including self), then buildings.
-        if not try_heal_nearby_bot(c, me):
+        # Heal action: adjacent damaged tiles first, then existing bot/building fallbacks.
+        if not try_heal_adjacent_most_missing(c, me) and not try_heal_nearby_bot(c, me):
             try_heal_nearby_building(c, me)
 
         if self.state == HealState.PATROL:
@@ -250,6 +361,7 @@ class Healer:
         if self.state == HealState.FOLLOW:
             self._follow(c)
             self._draw_debug(c)
+            self._log_turn_state(c)
             return
 
         # Movement: navigate toward best coverage tile via D* Lite; patrol ring when idle.
@@ -263,3 +375,4 @@ class Healer:
                 self._patrol(c)
 
         self._draw_debug(c)
+        self._log_turn_state(c)

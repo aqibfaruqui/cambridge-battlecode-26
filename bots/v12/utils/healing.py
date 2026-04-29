@@ -35,6 +35,44 @@ def try_heal_nearby_bot(c: Controller, pos: Position) -> bool:
             return True
     return False
 
+
+def try_heal_adjacent_most_missing(c: Controller, pos: Position) -> bool:
+    """Heal the adjacent friendly tile with the largest total missing HP."""
+    if c.get_action_cooldown() > 0:
+        return False
+    my_team = c.get_team()
+    w, h = c.get_map_width(), c.get_map_height()
+    best: Position | None = None
+    best_missing = 0
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if dx == 0 and dy == 0:
+                continue
+            x, y = pos.x + dx, pos.y + dy
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            p = Position(x, y)
+            if not c.is_in_vision(p):
+                continue
+
+            missing = 0
+            bid = c.get_tile_building_id(p)
+            if bid is not None and c.get_team(bid) == my_team:
+                missing += max(0, c.get_max_hp(bid) - c.get_hp(bid))
+
+            bot_id = c.get_tile_builder_bot_id(p)
+            if bot_id is not None and c.get_team(bot_id) == my_team:
+                missing += max(0, c.get_max_hp(bot_id) - c.get_hp(bot_id))
+
+            if missing > best_missing and c.can_heal(p):
+                best_missing = missing
+                best = p
+
+    if best is None:
+        return False
+    c.heal(best)
+    return True
+
 _HEALABLE_TYPES = frozenset({
     EntityType.CONVEYOR,
     EntityType.BRIDGE,

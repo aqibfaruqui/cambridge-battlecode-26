@@ -94,6 +94,9 @@ def _seek_dynamic_blockers(self: Harvester, c: Controller) -> list[tuple[int, in
         if bot_id is None or bot_id == my_id:
             continue
         blocked.append((pos.x, pos.y))
+    extra_blockers = getattr(self, "_extra_seek_dynamic_blockers", None)
+    if extra_blockers is not None:
+        blocked.extend(extra_blockers(c))
     return blocked
 
 

@@ -1,5 +1,4 @@
 from __future__ import annotations
-import sys
 from typing import TYPE_CHECKING
 
 from cambc import Controller, EntityType, Position
@@ -255,5 +254,4 @@ def _heal(self: Harvester, c: Controller) -> None:
         f"dest={dest_str} "
         f"damaged=[{damaged_str}] "
         f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()}",
-        file=sys.stderr,
     )

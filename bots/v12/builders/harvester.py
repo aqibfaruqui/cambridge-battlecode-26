@@ -1,7 +1,6 @@
 import math
 import os
 import struct
-import sys
 import time
 import uuid
 from enum import Enum
@@ -203,7 +202,6 @@ class Harvester:
             print(
                 f"[foundry_join] id={c.get_id()} r={c.get_current_round()} "
                 f"{reason}{suffix}",
-                file=sys.stderr,
             )
         self.foundry_prev_placed = True
         self.returning_from_axionite = False

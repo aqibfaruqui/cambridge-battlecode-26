@@ -182,6 +182,8 @@ class DStarLite:
         "_rhs",
         "_open",
         "_in_open",
+        "_open_k1",
+        "_open_k2",
         "_km",
         "_start",
         "_start_x",
@@ -219,8 +221,10 @@ class DStarLite:
         self._g = [_INF] * self._n
         self._rhs = [_INF] * self._n
 
-        self._open: List[Tuple[Tuple[float, float], int]] = []
+        self._open: List[Tuple[float, float, int]] = []
         self._in_open = [False] * self._n
+        self._open_k1 = [_INF] * self._n
+        self._open_k2 = [_INF] * self._n
 
         self._km = 0.0
 
@@ -559,6 +563,8 @@ class DStarLite:
     def _compute_shortest_path(self) -> None:
         open_heap = self._open
         in_open = self._in_open
+        open_k1 = self._open_k1
+        open_k2 = self._open_k2
         g = self._g
         rhs = self._rhs
         recompute = self._recompute_rhs
@@ -575,9 +581,9 @@ class DStarLite:
         km = self._km
 
         while open_heap:
-            k_old, u = heappop(open_heap)
+            k1_old, k2_old, u = heappop(open_heap)
 
-            if not in_open[u]:
+            if not in_open[u] or k1_old != open_k1[u] or k2_old != open_k2[u]:
                 continue
 
             gu = g[u]
@@ -588,6 +594,8 @@ class DStarLite:
             # cascading spurious updates before the next recompute corrected it.
             if gu == ru:
                 in_open[u] = False
+                open_k1[u] = _INF
+                open_k2[u] = _INF
                 continue
 
             # Inlined calc_key(u) — this is the hottest call site.
@@ -602,11 +610,15 @@ class DStarLite:
                 dy = -dy
             m = dx if dx < dy else dy
             k_new_primary = g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + km
-            if k_old < (k_new_primary, g_rhs):
-                heappush(open_heap, ((k_new_primary, g_rhs), u))
+            if k1_old < k_new_primary or (k1_old == k_new_primary and k2_old < g_rhs):
+                open_k1[u] = k_new_primary
+                open_k2[u] = g_rhs
+                heappush(open_heap, (k_new_primary, g_rhs, u))
                 continue
 
             in_open[u] = False
+            open_k1[u] = _INF
+            open_k2[u] = _INF
 
             if gu > ru:
                 g[u] = ru
@@ -626,7 +638,8 @@ class DStarLite:
             # h(start, start) = 0, so calc_key(start) simplifies to (gs+km, gs)
             # whenever rhs[start] == g[start] (the termination condition).
             gs = g[start]
-            if rhs[start] == gs and (gs + km, gs) <= open_heap[0][0]:
+            top = open_heap[0]
+            if rhs[start] == gs and (gs + km, gs) <= (top[0], top[1]):
                 break
 
     def _recompute_rhs(self, u: int) -> None:
@@ -639,8 +652,37 @@ class DStarLite:
         y = self._ys[u]
 
         g = self._g
+        in_open = self._in_open
+        open_k1 = self._open_k1
+        open_k2 = self._open_k2
         arr = self._env._array
         blocked = self._blocked
+        if blocked[u]:
+            self._rhs[u] = _INF
+            gu = g[u]
+            if gu != _INF:
+                start_x = self._start_x
+                start_y = self._start_y
+                dx = start_x - x
+                if dx < 0:
+                    dx = -dx
+                dy = start_y - y
+                if dy < 0:
+                    dy = -dy
+                m = dx if dx < dy else dy
+                k1 = gu + (dx + dy) + _SQRT2_MINUS_2 * m + self._km
+                if in_open[u] and open_k1[u] == k1 and open_k2[u] == gu:
+                    return
+                open_k1[u] = k1
+                open_k2[u] = gu
+                _heappush(self._open, (k1, gu, u))
+                in_open[u] = True
+            else:
+                in_open[u] = False
+                open_k1[u] = _INF
+                open_k2[u] = _INF
+            return
+
         unk_cost = self._unknown_cost
         diag_cost = self._diag_cost
         diag_unk_cost = diag_cost if self._use_bridges else diag_cost * unk_cost
@@ -796,17 +838,26 @@ class DStarLite:
             if dy < 0:
                 dy = -dy
             m = dx if dx < dy else dy
-            key = (g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km, g_rhs)
-            _heappush(self._open, (key, u))
-            self._in_open[u] = True
+            k1 = g_rhs + (dx + dy) + _SQRT2_MINUS_2 * m + self._km
+            if in_open[u] and open_k1[u] == k1 and open_k2[u] == g_rhs:
+                return
+            open_k1[u] = k1
+            open_k2[u] = g_rhs
+            _heappush(self._open, (k1, g_rhs, u))
+            in_open[u] = True
         else:
             # Consistent: invalidate any stale open-heap entry. The entry
             # remains in the heap (lazy deletion), but in_open[u]=False makes
             # it skip on pop, avoiding redundant processing.
-            self._in_open[u] = False
+            in_open[u] = False
+            open_k1[u] = _INF
+            open_k2[u] = _INF
 
     def _enqueue(self, u: int) -> None:
-        _heappush(self._open, (self._calc_key(u), u))
+        k1, k2 = self._calc_key(u)
+        self._open_k1[u] = k1
+        self._open_k2[u] = k2
+        _heappush(self._open, (k1, k2, u))
         self._in_open[u] = True
 
     def _calc_key(self, u: int) -> tuple[float, float]:

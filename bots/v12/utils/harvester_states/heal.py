@@ -52,6 +52,8 @@ def _critical_damaged(c: Controller) -> list[Position]:
 
 def _find_attacker(c: Controller, targets: list[Position]) -> Position | None:
     """Enemy unit closest to any position in targets."""
+    if not targets:
+        return None
     my_team = c.get_team()
     best: Position | None = None
     best_d = float("inf")

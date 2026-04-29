@@ -48,7 +48,7 @@ class Builder:
                     self.core_pos = c.get_position(eid)
 
         if self.core_pos is None:
-            raise ValueError("Expected core pos to be non-null")
+            return
 
         if self.role is None:
             my_pos = c.get_position()

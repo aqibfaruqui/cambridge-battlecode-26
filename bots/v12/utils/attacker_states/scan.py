@@ -17,10 +17,14 @@ if TYPE_CHECKING:
 _MAX_FRIENDLY_SENTINELS_IN_VISION = 3
 
 # Turns a hard-failed target stays blacklisted before we retry.
-_BLACKLIST_TTL = 10
+_BLACKLIST_TTL = 40
 
 # Give up on an orbit waypoint after this many turns pursuing it.
 _ORBIT_STUCK_TURNS = 30
+
+# After the enemy core has been known this long without entering REPLACE, stop
+# orbiting and actively search the core's nearby ore field.
+_PROACTIVE_AFTER_CORE_KNOWN_TURNS = 50
 
 # Chebyshev-radius ring around the enemy core — keeps us circling belts
 # rather than beelining at the core.
@@ -239,6 +243,16 @@ def scan(self: Attacker, c: Controller) -> None:
         return
 
     if self.enemy_core_pos is not None:
+        known_since = self.enemy_core_known_since_round
+        if known_since is not None:
+            baseline = max(known_since, self._last_replace_round)
+            if c.get_current_round() - baseline >= _PROACTIVE_AFTER_CORE_KNOWN_TURNS:
+                self.proactive_target = None
+                self.proactive_ore_target = False
+                self._proactive_pursuit_round = c.get_current_round()
+                self.state = AttackState.PROACTIVE
+                return
+
         if self.orbit_points is None:
             self.orbit_points = _build_orbit(self, c)
         # Skip past waypoints we're already close to.

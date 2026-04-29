@@ -1,6 +1,7 @@
 from itertools import product
 
 from cambc import Controller, Direction, EntityType, Position
+from utils.attacker_states.proactive import proactive
 from utils.attacker_states.replace import replace, target_still_valid
 from utils.attacker_states.scan import scan
 from utils.attacker_states.state import AttackState
@@ -28,12 +29,17 @@ class Attacker:
         self.enemy_core_candidates: list[Position] = []
         self.enemy_core_candidate_idx = 0
         self.enemy_core_pos: Position | None = None
+        self.enemy_core_known_since_round: int | None = None
+        self._last_replace_round = -1
 
         # Post-core-found orbit waypoints (built lazily once enemy_core_pos is set).
         self.orbit_points: list[Position] | None = None
         self.orbit_idx = 0
         self._orbit_pursuit_idx: int | None = None
         self._orbit_pursuit_round: int = 0
+        self.proactive_target: Position | None = None
+        self.proactive_ore_target = False
+        self._proactive_pursuit_round = 0
 
         self.target_conveyor: Position | None = None
 
@@ -143,6 +149,8 @@ class Attacker:
     # ---------- main loop ----------
 
     def run(self, c: Controller):
+        round_now = c.get_current_round()
+
         if self._env_map is None:
             self._env_map = EnvironmentMap(c.get_map_width(), c.get_map_height())
         self._env_map.update(c)
@@ -167,9 +175,13 @@ class Attacker:
         )
         if (new_ec := direct_enemy_core or assumed_centre) != self.enemy_core_pos:
             self.enemy_core_pos = new_ec
+            self.enemy_core_known_since_round = round_now if new_ec is not None else None
             self.orbit_points = None
             self.orbit_idx = 0
             self._orbit_pursuit_idx = None
+            self.proactive_target = None
+            self.proactive_ore_target = False
+            self._proactive_pursuit_round = round_now
 
         # Symmetry resolving implies assumed_centre is non-None.
         if self._env_map.symmetry is not None and not self._broadcasted:
@@ -209,17 +221,16 @@ class Attacker:
             self._planner_goal = None
             self.state = AttackState.SCAN
 
-        # print(
-        #     f"[attacker {my_id}] r={c.get_current_round()} "
-        #     f"pos=({self.current_pos.x},{self.current_pos.y}) "
-        #     f"state={self.state.value} "
-        #     f"target={self.target_conveyor} "
-        #     f"ecore={self.enemy_core_pos} "
-        #     f"sym={self._env_map.symmetry} "
-        #     f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
-        #     f"hp={hp_now}/{c.get_max_hp(my_id)} "
-        #     f"cpu={c.get_cpu_time_elapsed()}us"
-        # )
+        print(
+            f"[attacker {my_id}] r={round_now} "
+            f"pos=({self.current_pos.x},{self.current_pos.y}) "
+            f"state={self.state.value} "
+            f"target={self.target_conveyor} "
+            f"ecore={self.enemy_core_pos} "
+            f"sym={self._env_map.symmetry} "
+            f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
+            f"hp={hp_now}/{c.get_max_hp(my_id)}"
+        )
 
         # Sequential (not elif) so SCAN→APPROACH and APPROACH→REPLACE can
         # both fire in the same tick.
@@ -234,7 +245,10 @@ class Attacker:
             else:
                 self._search(c, self.target_conveyor)
         if self.state == AttackState.REPLACE:
+            self._last_replace_round = round_now
             replace(self, c)
+        if self.state == AttackState.PROACTIVE:
+            proactive(self, c)
 
         self._sync_claim_broadcast()
         self.broadcaster.run(c)

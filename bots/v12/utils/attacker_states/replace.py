@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from cambc import Controller, Direction, EntityType, Position, ResourceType
+from cambc import Controller, Direction, EntityType, GameConstants, Position, ResourceType, Team
 
 from utils.attacker_states.state import AttackState
 
@@ -29,6 +29,61 @@ _PREDECESSOR_RELAYS = frozenset({
     EntityType.SPLITTER,
 })
 _CARDINAL = (Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST)
+
+
+def _try_build_adjacent_launcher(c: Controller, me: Position, my_team: Team) -> bool:
+    if c.get_action_cooldown() > 0:
+        return False
+    if c.get_global_resources()[0] < c.get_launcher_cost()[0]:
+        return False
+    if c.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
+        return False
+
+    W, H = c.get_map_width(), c.get_map_height()
+
+    def has_adjacent_launcher(pos: Position) -> bool:
+        for d in _STEP_OFF:
+            adj = pos.add(d)
+            if not (0 <= adj.x < W and 0 <= adj.y < H):
+                continue
+            bid = c.get_tile_building_id(adj)
+            if (
+                bid is not None
+                and c.get_entity_type(bid) == EntityType.LAUNCHER
+                and c.get_team(bid) == my_team
+            ):
+                return True
+        return False
+
+    for d in _STEP_OFF:
+        pos = me.add(d)
+        if not (0 <= pos.x < W and 0 <= pos.y < H):
+            continue
+        if has_adjacent_launcher(pos):
+            continue
+        if c.get_tile_builder_bot_id(pos) is not None:
+            continue
+
+        bid = c.get_tile_building_id(pos)
+        if bid is None:
+            if c.can_build_launcher(pos):
+                c.build_launcher(pos)
+                return True
+            continue
+
+        etype = c.get_entity_type(bid)
+        if etype == EntityType.MARKER:
+            if c.can_build_launcher(pos):
+                c.build_launcher(pos)
+                return True
+            continue
+
+        if etype == EntityType.ROAD and c.get_team(bid) == my_team and c.can_destroy(pos):
+            c.destroy(pos)
+            if c.can_build_launcher(pos):
+                c.build_launcher(pos)
+                return True
+    return False
 
 
 def _flows_into(
@@ -132,6 +187,8 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
                 if self._attack_turns >= 1 and c.get_hp(bld_id) > self._attack_max_hp - 2:
                     self.blacklist[key] = c.get_current_round()
                     return True
+                if _try_build_adjacent_launcher(c, me, my_team):
+                    return False
                 if c.can_fire(me):
                     c.fire(me)
                     self._attack_turns += 1

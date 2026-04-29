@@ -442,17 +442,13 @@ class Harvester:
             under = f"{et.name}({team_tag})"
             if et in (EntityType.CONVEYOR, EntityType.SPLITTER, EntityType.BRIDGE):
                 under += f",dir={c.get_direction(under_id).name if et != EntityType.BRIDGE else c.get_bridge_target(under_id)}"
-        # print(
-        #     f"[harv {c.get_id()}] r={c.get_current_round()} "
-        #     f"pos=({self.current_pos.x},{self.current_pos.y}) "
-        #     f"state={self.state.value} "
-        #     f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
-        #     f"under={under} "
-        #     f"next_dir={self.return_next_dir.name if self.return_next_dir else '-'} "
-        #     f"bridge_target={(self.bridge_jump_target.x, self.bridge_jump_target.y) if self.bridge_jump_target else '-'} "
-        #     f"post_bridge={self.post_bridge_conveyor} "
-        #     f"just_placed={self.just_placed} "
-        #     f"ax_return={self.returning_from_axionite} "
-        #     f"foundry_seen={self.foundry_prev_placed} "
-        #     f"cpu={c.get_cpu_time_elapsed()}us"
-        # )
+        print(
+            f"[harv {c.get_id()}] r={c.get_current_round()} "
+            f"state={self.state.value} "
+            f"next_dir={self.return_next_dir.name if self.return_next_dir else '-'} "
+            f"bridge_target={(self.bridge_jump_target.x, self.bridge_jump_target.y) if self.bridge_jump_target else '-'} "
+            f"post_bridge={self.post_bridge_conveyor} "
+            f"just_placed={self.just_placed} "
+            f"ax_return={self.returning_from_axionite} "
+            f"foundry_seen={self.foundry_prev_placed} "
+        )

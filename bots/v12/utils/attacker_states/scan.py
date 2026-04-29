@@ -131,6 +131,58 @@ def _chain_feeds_friendly_turret(
     return hits_turret
 
 
+def _pick_harvester_block_target(
+    self: Attacker,
+    c: Controller,
+    claimed: set[tuple[int, int]],
+) -> Position | None:
+    """Find a tile cardinally adjacent to an enemy harvester that we can drop
+    a gunner on (empty, or only a marker, and not in a launcher's pickup ring).
+    """
+    my_team = c.get_team()
+    me = self.current_pos
+    my_id = c.get_id()
+    best: Position | None = None
+    best_score = float("inf")
+
+    for bld_id in c.get_nearby_buildings():
+        if c.get_entity_type(bld_id) != EntityType.HARVESTER:
+            continue
+        if c.get_team(bld_id) == my_team:
+            continue
+        h_pos = c.get_position(bld_id)
+        for d in _CARDINAL:
+            adj = h_pos.add(d)
+            if not on_map(c, adj) or not c.is_in_vision(adj):
+                continue
+            key = (adj.x, adj.y)
+            if key in self.blacklist or key in claimed:
+                continue
+            adj_bid = c.get_tile_building_id(adj)
+            if adj_bid is not None and c.get_entity_type(adj_bid) != EntityType.MARKER:
+                continue
+            bb = c.get_tile_builder_bot_id(adj)
+            if bb is not None and bb != my_id:
+                continue
+            if any(
+                on_map(c, np := Position(adj.x + dx, adj.y + dy))
+                and c.is_in_vision(np)
+                and (lid := c.get_tile_building_id(np)) is not None
+                and c.get_entity_type(lid) == EntityType.LAUNCHER
+                and c.get_team(lid) != my_team
+                for dx, dy in product((-1, 0, 1), repeat=2)
+                if dx or dy
+            ):
+                continue
+
+            score = me.distance_squared(adj)
+            if score < best_score:
+                best_score = score
+                best = adj
+
+    return best
+
+
 def _read_claimed_positions(c: Controller) -> set[tuple[int, int]]:
     """Collect positions claimed by other friendly attackers via markers."""
     my_team = c.get_team()
@@ -148,7 +200,7 @@ def _read_claimed_positions(c: Controller) -> set[tuple[int, int]]:
     return claimed
 
 
-def _pick_target(self: Attacker, c: Controller):
+def _pick_target(self: Attacker, c: Controller, claimed: set[tuple[int, int]]):
     """Find the best enemy conveyor/bridge currently carrying titanium."""
     my_team = c.get_team()
     me = self.current_pos
@@ -156,8 +208,6 @@ def _pick_target(self: Attacker, c: Controller):
     best: Position | None = None
     best_score = float("inf")
     friendly_sentinels = 0
-
-    claimed = _read_claimed_positions(c)
 
     for bld_id in c.get_nearby_buildings():
         team = c.get_team(bld_id)
@@ -236,7 +286,15 @@ def scan(self: Attacker, c: Controller) -> None:
     cutoff = c.get_current_round() - _BLACKLIST_TTL
     self.blacklist = {k: r for k, r in self.blacklist.items() if r >= cutoff}
 
-    if (pick := _pick_target(self, c)) is not None:
+    claimed = _read_claimed_positions(c)
+
+    if (block := _pick_harvester_block_target(self, c, claimed)) is not None:
+        self.harvester_block_target = block
+        self._planner_goal = None
+        self.state = AttackState.BLOCK_HARVESTER
+        return
+
+    if (pick := _pick_target(self, c, claimed)) is not None:
         self.target_conveyor = pick
         self._planner_goal = None
         self.state = AttackState.APPROACH

@@ -1,6 +1,7 @@
 from itertools import product
 
 from cambc import Controller, Direction, EntityType, Position
+from utils.attacker_states.block_harvester import block_harvester
 from utils.attacker_states.proactive import proactive
 from utils.attacker_states.replace import replace, target_still_valid
 from utils.attacker_states.scan import scan
@@ -40,8 +41,15 @@ class Attacker:
         self.proactive_target: Position | None = None
         self.proactive_ore_target = False
         self._proactive_pursuit_round = 0
+        self.proactive_placing_ore_pos: Position | None = None
+        self.proactive_placing_exit_pos: Position | None = None
+        self.proactive_placing_sides_pending: list[Direction] = []
+        self.proactive_placing_phase = "step_on"
+        self.proactive_placing_ring_turns = 0
+        self.proactive_turret_pos: Position | None = None
 
         self.target_conveyor: Position | None = None
+        self.harvester_block_target: Position | None = None
 
         # Hard-failed targets: skip for _BLACKLIST_TTL turns then retry.
         self.blacklist: dict[tuple[int, int], int] = {}
@@ -67,18 +75,18 @@ class Attacker:
     # ---------- claim broadcast ----------
 
     def _sync_claim_broadcast(self) -> None:
-        """Keep the broadcaster in sync with the current target_conveyor."""
-        cur = (self.target_conveyor.x, self.target_conveyor.y) if self.target_conveyor else None
+        """Keep the broadcaster in sync with the current claimed target."""
+        claim_pos = self.target_conveyor or self.harvester_block_target
+        cur = (claim_pos.x, claim_pos.y) if claim_pos else None
         if cur == self._broadcasted_claim:
             return
         self._broadcasted_claim = cur
         self.broadcaster.clear_broadcasts()
         for msg in self._permanent_broadcasts:
             self.broadcaster.add_broadcast(msg)
-        if cur is not None:
-            assert self.target_conveyor is not None
+        if claim_pos is not None:
             self.broadcaster.add_broadcast(
-                BuilderBotMessages.encode_claim_position(self.target_conveyor)
+                BuilderBotMessages.encode_claim_position(claim_pos)
             )
 
     # ---------- navigation (shared by SCAN's idle probe and APPROACH) ----------
@@ -182,6 +190,12 @@ class Attacker:
             self.proactive_target = None
             self.proactive_ore_target = False
             self._proactive_pursuit_round = round_now
+            self.proactive_placing_ore_pos = None
+            self.proactive_placing_exit_pos = None
+            self.proactive_placing_sides_pending = []
+            self.proactive_placing_phase = "step_on"
+            self.proactive_placing_ring_turns = 0
+            self.proactive_turret_pos = None
 
         # Symmetry resolving implies assumed_centre is non-None.
         if self._env_map.symmetry is not None and not self._broadcasted:
@@ -236,6 +250,8 @@ class Attacker:
         # both fire in the same tick.
         if self.state == AttackState.SCAN:
             scan(self, c)
+        if self.state == AttackState.BLOCK_HARVESTER:
+            block_harvester(self, c)
         if self.state == AttackState.APPROACH:
             assert self.target_conveyor is not None
             self.target_pos = self.target_conveyor

@@ -131,23 +131,28 @@ class Attacker:
             if bld_id is None:
                 continue
             et = c.get_entity_type(bld_id)
-            if et in {EntityType.HARVESTER, EntityType.BARRIER, EntityType.FOUNDRY}:
+            if et in {
+                EntityType.HARVESTER,
+                EntityType.BARRIER,
+                EntityType.FOUNDRY,
+                EntityType.LAUNCHER,
+                EntityType.GUNNER,
+                EntityType.SENTINEL,
+            }:
                 blockers.append((p.x, p.y))
                 continue
             # Enemy launchers throw adjacent builders — avoid the 3x3 pickup ring.
             if et == EntityType.LAUNCHER and c.get_team(bld_id) != my_team:
-                blockers.extend((p.x + dx, p.y + dy) for dx, dy in product((-1, 0, 1), repeat=2))
+                blockers.extend(
+                    (p.x + dx, p.y + dy) for dx, dy in product((-1, 0, 1), repeat=2)
+                )
 
         self._planner.set_position(pos.x, pos.y)
         self._planner.set_dynamic_blockers(
             blockers, DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed
         )
-        self._planner.notify_map_changes(
-            DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed
-        )
-        direction = self._planner.step(
-            DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed
-        )
+        self._planner.notify_map_changes(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
+        direction = self._planner.step(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
 
         if direction is None or direction == Direction.CENTRE:
             return
@@ -181,13 +186,19 @@ class Attacker:
         # enemy_core_candidates rather than a stale guess.
         my_team = c.get_team()
         direct_enemy_core = next(
-            (c.get_position(eid) for eid in c.get_nearby_buildings()
-             if c.get_entity_type(eid) == EntityType.CORE and c.get_team(eid) != my_team),
+            (
+                c.get_position(eid)
+                for eid in c.get_nearby_buildings()
+                if c.get_entity_type(eid) == EntityType.CORE
+                and c.get_team(eid) != my_team
+            ),
             None,
         )
         if (new_ec := direct_enemy_core or assumed_centre) != self.enemy_core_pos:
             self.enemy_core_pos = new_ec
-            self.enemy_core_known_since_round = round_now if new_ec is not None else None
+            self.enemy_core_known_since_round = (
+                round_now if new_ec is not None else None
+            )
             self.orbit_points = None
             self.orbit_idx = 0
             self._orbit_pursuit_idx = None
@@ -214,11 +225,16 @@ class Attacker:
             self._broadcasted = True
 
         if not self.enemy_core_candidates:
-            W, H, cx, cy = c.get_map_width(), c.get_map_height(), self.core_pos.x, self.core_pos.y
+            W, H, cx, cy = (
+                c.get_map_width(),
+                c.get_map_height(),
+                self.core_pos.x,
+                self.core_pos.y,
+            )
             self.enemy_core_candidates = [
                 Position(W - 1 - cx, H - 1 - cy),  # rotational
-                Position(W - 1 - cx, cy),          # horizontal
-                Position(cx, H - 1 - cy),          # vertical
+                Position(W - 1 - cx, cy),  # horizontal
+                Position(cx, H - 1 - cy),  # vertical
             ]
 
         self.current_pos = c.get_position()
@@ -227,14 +243,18 @@ class Attacker:
         hp_now = c.get_hp(my_id)
 
         if (prev := self._hp_prev) is not None and hp_now < prev:
-            self.blacklist[(self.current_pos.x, self.current_pos.y)] = c.get_current_round()
+            self.blacklist[(self.current_pos.x, self.current_pos.y)] = (
+                c.get_current_round()
+            )
         self._hp_prev = hp_now
 
         try_heal_nearby_bot(c, self.current_pos)
 
         # Drop stale targets before dispatching to a state handler.
         if self.target_conveyor is not None and not target_still_valid(self, c):
-            self.blacklist[(self.target_conveyor.x, self.target_conveyor.y)] = c.get_current_round()
+            self.blacklist[(self.target_conveyor.x, self.target_conveyor.y)] = (
+                c.get_current_round()
+            )
             self.target_conveyor = None
             self._approach_target_key = None
             self._planner_goal = None

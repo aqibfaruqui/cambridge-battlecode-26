@@ -96,12 +96,34 @@ Re-scrape documentation with:
 uv run scripts/scrape_docs.py
 ```
 
-### Profile harvester_revamped
+### Profile a v12 bot
 
-Bots are bytecode-validated by `cambc` (no `try/finally`) and run in sub-interpreters, so `py-spy` can't see bot frames — profiling is done via in-bot `cProfile` instrumentation. `bots/v10/builders/harvester_revamped.py` is pre-instrumented and dumps `.pstats` files to `/tmp/harvester_profiles/`.
+Bots are bytecode-validated by `cambc` (no `try/finally`) and run in sub-interpreters, so `py-spy` can't see bot frames — profiling is done via in-bot `cProfile` instrumentation. Two v12 bots are pre-instrumented and dump `.pstats` files to per-target directories:
+
+| Target      | Source                              | Dump directory             |
+| ----------- | ----------------------------------- | -------------------------- |
+| `harvester` | `bots/v12/builders/harvester.py`    | `/tmp/harvester_profiles/` |
+| `attacker`  | `bots/v12/builders/attacker.py`     | `/tmp/attacker_profiles/`  |
+
+`scripts/profile.py` requires the target as a positional argument — there is no default, you must pick `harvester` or `attacker`.
 
 ```sh
-uv run scripts/profile.py run                       # run match, print top hotspots
-uv run scripts/profile.py report --filter d_star    # re-analyze, filtered
-uv run scripts/profile.py callers _succ             # who calls a hot function
+uv run scripts/profile.py run harvester                       # run match, print top hotspots
+uv run scripts/profile.py run attacker -m default_large1
+uv run scripts/profile.py report harvester --filter d_star    # re-analyze, filtered
+uv run scripts/profile.py callers attacker _succ              # who calls a hot function
 ```
+
+Pass `--profile-dir <path>` to override the per-target directory (useful for side-by-side runs of the same target).
+
+### Spike analysis (p99 / max per turn)
+
+cProfile averages over the whole run; spiky turns get drowned out. The harvester also runs a lightweight per-turn `time.perf_counter_ns()` harness that captures total + per-section wall time for every `run()` call and writes binary traces to `/tmp/harvester_spikes/`. `scripts/spike.py` analyses them:
+
+```sh
+uv run scripts/spike.py report harvester        # mean, p50/p90/p99/p99.9/max + per-section sums
+uv run scripts/spike.py worst harvester --n 15  # 15 slowest turns with full section breakdown
+uv run scripts/spike.py sections harvester      # per-section percentile distribution
+```
+
+Use this when you care about p99/max latency rather than mean — e.g. tracking down which section blows up on a specific turn. The harness is on at all times the bot runs locally; one `profile.py run` populates both `cProfile` pstats and the spike traces. Spike analysis is harvester-side; the attacker has the `cProfile` harness only.

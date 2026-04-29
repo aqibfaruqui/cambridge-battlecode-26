@@ -2,7 +2,7 @@ from __future__ import annotations
 from itertools import product
 from typing import TYPE_CHECKING
 
-from cambc import Controller, Direction, EntityType, Position, ResourceType
+from cambc import Controller, Direction, EntityType, Position, ResourceType, Environment
 
 from utils.attacker_states.state import AttackState
 from utils.comms.for_builder_bot import BuilderBotMessageType, BuilderBotMessages
@@ -153,7 +153,7 @@ def _pick_harvester_block_target(
         h_pos = c.get_position(bld_id)
         for d in _CARDINAL:
             adj = h_pos.add(d)
-            if not on_map(c, adj) or not c.is_in_vision(adj):
+            if not on_map(c, adj) or not c.is_in_vision(adj) or c.get_tile_env(adj) == Environment.WALL:
                 continue
             key = (adj.x, adj.y)
             if key in self.blacklist or key in claimed:

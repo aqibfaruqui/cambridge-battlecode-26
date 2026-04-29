@@ -113,7 +113,7 @@ class Attacker:
             if bld_id is None:
                 continue
             et = c.get_entity_type(bld_id)
-            if et == EntityType.HARVESTER:
+            if et in {EntityType.HARVESTER, EntityType.BARRIER, EntityType.FOUNDRY}:
                 blockers.append((p.x, p.y))
                 continue
             # Enemy launchers throw adjacent builders — avoid the 3x3 pickup ring.

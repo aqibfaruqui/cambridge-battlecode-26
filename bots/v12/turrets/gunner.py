@@ -40,16 +40,17 @@ class Gunner:
         self.empty_rounds = 0
 
     def run(self, c: Controller):
+        my_pos = c.get_position()
+
         if c.get_ammo_amount() == 0:
             self.empty_rounds += 1
-            if self.empty_rounds > 50:
+            if self.empty_rounds > 50 and not self._has_cardinal_adjacent_harvester(c, my_pos):
                 c.self_destruct()
                 return
         else:
             self.empty_rounds = 0
 
         my_team = c.get_team()
-        my_pos = c.get_position()
 
         target = c.get_gunner_target()
         enemy_core = self._enemy_core_in_range(c, my_pos, c.get_direction(), my_team)
@@ -146,6 +147,22 @@ class Gunner:
                 c.rotate(direction)
                 c.draw_indicator_line(my_pos, target_pos, 255, 128, 0)
             return
+
+    def _has_cardinal_adjacent_harvester(self, c: Controller, my_pos: Position) -> bool:
+        for direction in _CARDINAL:
+            pos = my_pos.add(direction)
+            if (
+                pos.x < 0
+                or pos.y < 0
+                or pos.x >= c.get_map_width()
+                or pos.y >= c.get_map_height()
+                or not c.is_in_vision(pos)
+            ):
+                continue
+            bid = c.get_tile_building_id(pos)
+            if bid is not None and c.get_entity_type(bid) == EntityType.HARVESTER:
+                return True
+        return False
 
     def _is_enemy_priority(self, c: Controller, pos: Position, my_team) -> bool:
         eid = c.get_tile_builder_bot_id(pos)

@@ -2,6 +2,10 @@ from cambc import Controller, EntityType, Position
 from builders.builder import BuilderType
 
 
+_CONVERT_TITANIUM_THRESHOLD = 200
+_AXIONITE_TO_TITANIUM_RATE = 4
+
+
 class Core:
     def __init__(self):
         self.builders_spawned = 0
@@ -94,7 +98,23 @@ class Core:
         self.healer_id = new_id
         return True
 
+    def _convert_axionite_if_low_titanium(self, c: Controller) -> None:
+        titanium, axionite = c.get_global_resources()
+        convertible_axionite = axionite - 1
+        if titanium >= _CONVERT_TITANIUM_THRESHOLD or convertible_axionite <= 0:
+            return
+
+        deficit = _CONVERT_TITANIUM_THRESHOLD - titanium
+        amount = min(
+            convertible_axionite,
+            (deficit + _AXIONITE_TO_TITANIUM_RATE - 1) // _AXIONITE_TO_TITANIUM_RATE,
+        )
+        if amount > 0:
+            c.convert(amount)
+
     def run(self, c: Controller):
+        self._convert_axionite_if_low_titanium(c)
+
         if c.get_current_round() in {1000, 1001}:
             self.spawn_plan = self.default_spawn_plan.copy()
 

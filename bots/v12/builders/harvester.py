@@ -434,6 +434,17 @@ class Harvester:
                 _PROFILER.dump_stats(_PROFILE_PATH)
 
     def _log_turn_state(self, c: Controller):
+        def _fmt_pos(pos: Position | None) -> str:
+            return "-" if pos is None else f"({pos.x},{pos.y})"
+
+        def _fmt_symmetry() -> str:
+            env = self.environment_map
+            if env is None:
+                return "-"
+            if env.symmetry is None:
+                return "unresolved"
+            return env.symmetry.name
+
         under_id = c.get_tile_building_id(self.current_pos)
         under = "-"
         if under_id is not None:
@@ -441,18 +452,42 @@ class Harvester:
             team_tag = "us" if c.get_team(under_id) == c.get_team() else "enemy"
             under = f"{et.name}({team_tag})"
             if et in (EntityType.CONVEYOR, EntityType.SPLITTER, EntityType.BRIDGE):
-                under += f",dir={c.get_direction(under_id).name if et != EntityType.BRIDGE else c.get_bridge_target(under_id)}"
-        # print(
-        #     f"[harv {c.get_id()}] r={c.get_current_round()} "
-        #     f"pos=({self.current_pos.x},{self.current_pos.y}) "
-        #     f"state={self.state.value} "
-        #     f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
-        #     f"under={under} "
-        #     f"next_dir={self.return_next_dir.name if self.return_next_dir else '-'} "
-        #     f"bridge_target={(self.bridge_jump_target.x, self.bridge_jump_target.y) if self.bridge_jump_target else '-'} "
-        #     f"post_bridge={self.post_bridge_conveyor} "
-        #     f"just_placed={self.just_placed} "
-        #     f"ax_return={self.returning_from_axionite} "
-        #     f"foundry_seen={self.foundry_prev_placed} "
-        #     f"cpu={c.get_cpu_time_elapsed()}us"
-        # )
+                under_dir = (
+                    c.get_direction(under_id).name
+                    if et != EntityType.BRIDGE
+                    else _fmt_pos(c.get_bridge_target(under_id))
+                )
+                under += f",dir={under_dir}"
+
+        harvester_cost = c.get_harvester_cost()
+        conveyor_cost = c.get_conveyor_cost()
+        bridge_cost = c.get_bridge_cost()
+        hp = f"{c.get_hp(c.get_id())}/{c.get_max_hp(c.get_id())}"
+        target_kind = "ore" if self.seek_target_is_ore else "explore"
+        placing_kind = "ti" if self.placing_is_titanium else "ax"
+        return_mode = "normal"
+        if self.bridge_jump_target is not None:
+            return_mode = "bridge_walk"
+        elif self.post_bridge_conveyor:
+            return_mode = "post_bridge"
+        elif self.return_chain_cursor is not None:
+            return_mode = "remote_chain"
+        print(
+            f"[harv {c.get_id()}] r={c.get_current_round()} "
+            f"state={self.state.value} "
+            f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
+            f"target={_fmt_pos(self.target_pos)} target_kind={target_kind} "
+            f"target_turns={self.seek_target_turns} "
+            f"under={under} "
+            f"harv_pos={_fmt_pos(self.harvester_pos)} "
+            f"return_mode={return_mode} "
+            f"next_dir={self.return_next_dir.name if self.return_next_dir else '-'} "
+            f"bridge_target={_fmt_pos(self.bridge_jump_target)} "
+            f"bridge_fails={len(self.return_bridge_fail_counts)} failed_bridges={len(self.failed_bridge_targets)} "
+            f"just_placed={self.just_placed} "
+            f"ax_return={self.returning_from_axionite} "
+            f"heal_target={_fmt_pos(self.heal_target)} defend_target={_fmt_pos(self.defend_target_tile)} "
+            f"blacklist=ore:{len(self.blacklisted_ores)},seek:{len(self.blacklisted_seek_targets)} "
+            f"foundry_seen={self.foundry_prev_placed} scale={self.cost_scale:.1f} "
+            f"cpu={c.get_cpu_time_elapsed()}us"
+        )

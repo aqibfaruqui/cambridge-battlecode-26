@@ -301,10 +301,12 @@ class Healer:
         return True
 
     def run(self, c: Controller):
+        round_now = c.get_current_round()
         if self.core_id is None:
             self._resolve_core_id(c)
 
         self.current_pos = c.get_position()
+        my_id = c.get_id()
         self.ti, self.ax = c.get_global_resources()
         self._align_ring_idx(c)
 
@@ -316,6 +318,15 @@ class Healer:
         committed = self._refresh_heal_target(c, damaged)
 
         me = self.current_pos
+        print(
+            f"[healer {my_id}] r={round_now} "
+            f"state={self.state.value} "
+            f"target={self.heal_target} "
+            f"follow={self.follow_enemy_id} "
+            f"last_enemy={self.follow_enemy_last_pos} "
+            f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
+            f"hp={c.get_hp(my_id)}/{c.get_max_hp(my_id)}"
+        )
 
         # Heal action: bots first (including self), then buildings in core-first
         # harvester priority order.

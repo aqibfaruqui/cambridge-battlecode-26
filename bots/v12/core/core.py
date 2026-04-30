@@ -100,7 +100,7 @@ class Core:
 
     def _convert_axionite_if_low_titanium(self, c: Controller) -> None:
         titanium, axionite = c.get_global_resources()
-        convertible_axionite = axionite - 1
+        convertible_axionite = axionite - 51
         if titanium >= _CONVERT_TITANIUM_THRESHOLD or convertible_axionite <= 0:
             return
 

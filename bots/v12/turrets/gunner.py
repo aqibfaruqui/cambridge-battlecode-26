@@ -80,11 +80,44 @@ class Gunner:
                 c.draw_indicator_line(my_pos, target, 200, 0, 255)
                 return
 
+        road_blocked = self._road_blocked_priority_on_ray(
+            c, my_pos, c.get_direction(), my_team
+        )
+        if road_blocked is not None:
+            _, priority_pos, road_pos = road_blocked
+            if c.can_fire(road_pos):
+                c.fire(road_pos)
+                c.draw_indicator_dot(my_pos, 80, 160, 255)
+                c.draw_indicator_line(my_pos, priority_pos, 80, 160, 255)
+                return
+
         if target is not None and self._is_friendly_destroyable(c, target, my_team):
             if c.can_fire(target):
                 c.fire(target)
                 c.draw_indicator_dot(my_pos, 100, 100, 100)
                 c.draw_indicator_line(my_pos, target, 100, 100, 100)
+                return
+
+        best_road_blocked: list[tuple[Position, Direction, Position] | None] = [
+            None
+        ] * len(_PRIORITY)
+        for direction in self._directions(c.get_direction()):
+            road_blocked = self._road_blocked_priority_on_ray(
+                c, my_pos, direction, my_team
+            )
+            if road_blocked is None:
+                continue
+            priority, priority_pos, road_pos = road_blocked
+            if best_road_blocked[priority] is None:
+                best_road_blocked[priority] = (priority_pos, direction, road_pos)
+
+        for cur in best_road_blocked:
+            if cur is None:
+                continue
+            priority_pos, priority_dir, _ = cur
+            if c.can_rotate(priority_dir):
+                c.rotate(priority_dir)
+                c.draw_indicator_line(my_pos, priority_pos, 80, 160, 255)
                 return
 
         # No worthwhile target ahead: rotate toward the best-priority enemy
@@ -194,18 +227,18 @@ class Gunner:
         preferred_direction: Direction,
         my_team,
     ) -> tuple[Position, Direction] | None:
-        directions = []
-        if preferred_direction != Direction.CENTRE:
-            directions.append(preferred_direction)
-        for direction in DIRECTIONS_8:
-            if direction != preferred_direction:
-                directions.append(direction)
-
-        for direction in directions:
+        for direction in self._directions(preferred_direction):
             pos = self._enemy_core_on_ray(c, my_pos, direction, my_team)
             if pos is not None:
                 return pos, direction
         return None
+
+    def _directions(self, preferred_direction: Direction):
+        if preferred_direction != Direction.CENTRE:
+            yield preferred_direction
+        for direction in DIRECTIONS_8:
+            if direction != preferred_direction:
+                yield direction
 
     def _enemy_core_on_ray(
         self,
@@ -219,16 +252,7 @@ class Gunner:
 
         pos = my_pos.add(direction)
         while my_pos.distance_squared(pos) <= _GUNNER_RANGE_SQ:
-            if (
-                pos.x < 0
-                or pos.y < 0
-                or pos.x >= c.get_map_width()
-                or pos.y >= c.get_map_height()
-                or not c.is_in_vision(pos)
-            ):
-                return None
-
-            if c.get_tile_env(pos) == Environment.WALL:
+            if self._ray_blocked(c, pos):
                 return None
 
             bid = c.get_tile_building_id(pos)
@@ -242,6 +266,60 @@ class Gunner:
             pos = pos.add(direction)
 
         return None
+
+    def _road_blocked_priority_on_ray(
+        self,
+        c: Controller,
+        my_pos: Position,
+        direction: Direction,
+        my_team,
+    ) -> tuple[int, Position, Position] | None:
+        if direction == Direction.CENTRE:
+            return None
+
+        first_road: Position | None = None
+        pos = my_pos.add(direction)
+        while my_pos.distance_squared(pos) <= _GUNNER_RANGE_SQ:
+            if self._ray_blocked(c, pos):
+                return None
+
+            builder = c.get_tile_builder_bot_id(pos)
+            if builder is not None:
+                etype = c.get_entity_type(builder)
+                if c.get_team(builder) != my_team and etype in _FIRE_TYPES:
+                    if first_road is not None:
+                        return _PRIORITY.index(etype), pos, first_road
+                return None
+
+            bid = c.get_tile_building_id(pos)
+            if bid is not None:
+                etype = c.get_entity_type(bid)
+                if etype == EntityType.ROAD:
+                    if first_road is None:
+                        first_road = pos
+                    pos = pos.add(direction)
+                    continue
+                if etype == EntityType.MARKER:
+                    pos = pos.add(direction)
+                    continue
+                if c.get_team(bid) != my_team and etype in _FIRE_TYPES:
+                    if first_road is not None:
+                        return _PRIORITY.index(etype), pos, first_road
+                return None
+
+            pos = pos.add(direction)
+
+        return None
+
+    def _ray_blocked(self, c: Controller, pos: Position) -> bool:
+        return (
+            pos.x < 0
+            or pos.y < 0
+            or pos.x >= c.get_map_width()
+            or pos.y >= c.get_map_height()
+            or not c.is_in_vision(pos)
+            or c.get_tile_env(pos) == Environment.WALL
+        )
 
     def _is_friendly_titanium_source(
         self,

@@ -131,7 +131,10 @@ def _best_ore_approach(
 
 
 def _pick_explore_target(
-    self: Harvester, lane_axis: str, lane_sign: int
+    self: Harvester,
+    lane_axis: str,
+    lane_sign: int,
+    blocked: set[tuple[int, int]] | None = None,
 ) -> Position | None:
     """
     Ring-based exploration centered on the core.
@@ -145,6 +148,7 @@ def _pick_explore_target(
         return None
     ox, oy = self.core_pos.x, self.core_pos.y
     bx, by = self.current_pos.x, self.current_pos.y
+    blocked = blocked or set()
 
     for R in range(_EXPLORE_R_MAX, _EXPLORE_R_MIN - 1, -1):
         best: Position | None = None
@@ -153,6 +157,8 @@ def _pick_explore_target(
         for dx in range(-R, R + 1):
             for dy in ((-R, R) if abs(dx) < R else range(-R, R + 1)):
                 tx, ty = ox + dx, oy + dy
+                if (tx, ty) == (bx, by) or (tx, ty) in blocked:
+                    continue
                 if not env.in_bounds(tx, ty):
                     continue
                 if not env.is_seek_candidate(tx, ty):
@@ -204,7 +210,12 @@ def _pick_seek_target(
         return ore, True
 
     lane_axis, lane_sign = _explore_lane(self)
-    explore = _pick_explore_target(self, lane_axis, lane_sign)
+    explore = _pick_explore_target(
+        self,
+        lane_axis,
+        lane_sign,
+        self.blacklisted_seek_targets | claimed,
+    )
     return (explore, False) if explore is not None else (pos.add(random_direction_4()), False)
 
 

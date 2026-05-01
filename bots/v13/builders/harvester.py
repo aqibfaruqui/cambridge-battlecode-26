@@ -179,12 +179,7 @@ class Harvester:
                 break
 
     def _axionite_unlocked(self, c: Controller) -> bool:
-        if self.foundry_prev_placed:
-            return False
-        return (
-            self.titanium_harvesters_placed >= _TITANIUM_HARVESTER_TARGET
-            or c.get_current_round() >= _AXIONITE_UNLOCK_ROUND
-        )
+        return False
 
     def _clear_if_road(self, c: Controller, pos: Position):
         """Safely clear road tiles"""

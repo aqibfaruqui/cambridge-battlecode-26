@@ -55,8 +55,8 @@ The on-disk parse cache lives in `scripts/.replay_cache/`; pass `--cache-rebuild
 `cambc` bytecode-validates bots and **disallows `try/finally`** — instrument hot paths with bare `cProfile.enable()` / `disable()` calls. Bots run in per-team sub-interpreters in one process, so `py-spy` can't see bot frames.
 
 ```sh
-uv run scripts/profile.py run                          # v10 vs v10, default_separated, TLE off
-uv run scripts/profile.py run -m default_large1 --bot-b v9
+uv run scripts/profile.py run
+uv run scripts/profile.py run -m default_large1 --bot-a v13 --bot-b v13
 
 # Analyse existing .pstats without rerunning:
 uv run scripts/profile.py report --sort tottime --top 30

@@ -4,6 +4,8 @@ from builders.builder import BuilderType
 
 _CONVERT_TITANIUM_THRESHOLD = 200
 _AXIONITE_TO_TITANIUM_RATE = 4
+_DISABLE_ATTACKERS = True
+_DISABLE_HEALERS = True
 
 
 class Core:
@@ -84,6 +86,13 @@ class Core:
         spawn_pos = builder_type.position_from_core(c.get_position())
         if not c.can_spawn(spawn_pos):
             return None
+        if (
+            builder_type in {BuilderType.ATTACKER, BuilderType.ATTACKER_REVAMPED}
+            and _DISABLE_ATTACKERS
+        ):
+            return 1
+        elif builder_type == BuilderType.HEALER and _DISABLE_HEALERS:
+            return 1
         return c.spawn_builder(spawn_pos)
 
     def _should_spawn_healer(self, c: Controller) -> bool:
@@ -114,7 +123,6 @@ class Core:
         if amount > 0:
             c.convert(amount)
 
-
     def _should_spawn_axioniter(self, c: Controller) -> bool:
         adjacent: set[Position] = set()
         me = c.get_position()
@@ -135,13 +143,14 @@ class Core:
 
             dir_to_core = conveyor.direction_to(me)
             core_centre = conveyor.add(dir_to_core).add(dir_to_core)
-            if core_centre == me and c.get_stored_resource(bid) == ResourceType.TITANIUM:
+            if (
+                core_centre == me
+                and c.get_stored_resource(bid) == ResourceType.TITANIUM
+            ):
                 return True
-            
+
         return False
 
-
-        
     def run(self, c: Controller):
         self._convert_axionite_if_low_titanium(c)
 

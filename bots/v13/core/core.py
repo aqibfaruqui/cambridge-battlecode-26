@@ -1,4 +1,4 @@
-from cambc import Controller, EntityType, Position
+from cambc import Controller, EntityType, Position, ResourceType
 from builders.builder import BuilderType
 
 
@@ -19,6 +19,8 @@ class Core:
         self.spawn_plan = self.default_spawn_plan.copy()
         self.healer_id: int | None = None
         self.last_periodic_attacker_round = 0
+        self.valid_axionite_spawn = 0
+        self.axioniter_spawn_count = 0
 
     def _has_enemy_builder_bot_in_vision_unhandled(self, c: Controller) -> bool:
         my_team = c.get_team()
@@ -112,8 +114,45 @@ class Core:
         if amount > 0:
             c.convert(amount)
 
+
+    def _should_spawn_axioniter(self, c: Controller) -> bool:
+        adjacent: set[Position] = set()
+        me = c.get_position()
+        x, y = me.x, me.y
+        for dx in (-1, 0, 1):
+            adjacent.add(Position(x + dx, y + 2))
+        for dx in (-1, 0, 1):
+            adjacent.add(Position(x + dx, y - 2))
+        for dy in (-1, 0, 1):
+            adjacent.add(Position(x + 2, y + dy))
+        for dy in (-1, 0, 1):
+            adjacent.add(Position(x - 2, y + dy))
+
+        for conveyor in adjacent:
+            bid = c.get_tile_building_id(conveyor)
+            if bid is None or c.get_entity_type(bid) != EntityType.CONVEYOR:
+                continue
+
+            dir_to_core = conveyor.direction_to(me)
+            core_centre = conveyor.add(dir_to_core).add(dir_to_core)
+            if core_centre == me and c.get_stored_resource(bid) == ResourceType.TITANIUM:
+                return True
+            
+        return False
+
+
+        
     def run(self, c: Controller):
         self._convert_axionite_if_low_titanium(c)
+
+        self.valid_axionite_spawn -= 1
+        if self.valid_axionite_spawn <= 0 and self._should_spawn_axioniter(c):
+            self.valid_axionite_spawn = 4
+
+        if self.valid_axionite_spawn > 0 and self.axioniter_spawn_count < 1:
+            if self._try_spawn(c, BuilderType.AXIONITER) is not None:
+                self.axioniter_spawn_count += 1
+                return
 
         if c.get_current_round() in {1000, 1001}:
             self.spawn_plan = self.default_spawn_plan.copy()
@@ -140,8 +179,6 @@ class Core:
             and round_now - self.last_periodic_attacker_round >= 70
             and c.get_scale_percent() < 800
         ):
-            print("Periodic attacker spawn check")
             if self._try_spawn(c, BuilderType.ATTACKER_REVAMPED) is not None:
-                print("Spawned periodic attacker")
                 self.last_periodic_attacker_round = round_now
                 return

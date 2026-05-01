@@ -3,6 +3,7 @@ from cambc import Controller, EntityType, Position
 from builders.harvester import Harvester
 from builders.attacker import Attacker
 from builders.healer import Healer
+from builders.axioniter import Axioniter
 
 
 class BuilderType(IntEnum):
@@ -14,7 +15,7 @@ class BuilderType(IntEnum):
     HEALER = 5           # ( 1,  0)
     HARVESTER_3 = 6     # (-1,  1)
     HARVESTER_2 = 7     # ( 0,  1)
-    EXTRA_ROLE_8 = 8     # ( 1,  1)
+    AXIONITER = 8     # ( 1,  1)
 
     @property
     def offset(self) -> tuple[int, int]:
@@ -65,6 +66,8 @@ class Builder:
                     self.role = Healer(self.core_pos)
                 case BuilderType.ATTACKER_REVAMPED:
                     self.role = Attacker(self.core_pos)
+                case BuilderType.AXIONITER:
+                    self.role = Axioniter(self.core_pos)
                 case _:
                     self.role = Attacker(self.core_pos)
 

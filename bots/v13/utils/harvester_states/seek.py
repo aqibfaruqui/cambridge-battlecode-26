@@ -331,7 +331,15 @@ def _seek(self: Harvester, c: Controller):
 
     claimed = _read_nearby_claims(c)
 
-    if self.target_pos is None or not _target_still_viable(
+    target_reached = (
+        self.target_pos is not None
+        and not self.seek_target_is_ore
+        and self.target_pos == self.current_pos
+    )
+    if target_reached:
+        self.blacklisted_seek_targets.add((self.target_pos.x, self.target_pos.y))
+
+    if self.target_pos is None or target_reached or not _target_still_viable(
         self, self.target_pos, self.seek_target_is_ore, c
     ):
         self.target_pos, self.seek_target_is_ore = _pick_seek_target(

@@ -168,6 +168,25 @@ def _body_dynamic_blockers(self: Harvester, c: Controller) -> list[tuple[int, in
     return blockers
 
 
+def _bridge_walk_dynamic_blockers(self: Harvester, c: Controller) -> list[tuple[int, int]]:
+    blockers: list[tuple[int, int]] = []
+    my_id = c.get_id()
+    for pos in c.get_nearby_tiles():
+        bot_id = c.get_tile_builder_bot_id(pos)
+        if bot_id is not None and bot_id != my_id:
+            blockers.append((pos.x, pos.y))
+            continue
+
+        build_id = c.get_tile_building_id(pos)
+        if build_id is None:
+            continue
+        entity_type = c.get_entity_type(build_id)
+        if entity_type in (EntityType.MARKER, *_BRIDGE_WALKABLE_TYPES):
+            continue
+        blockers.append((pos.x, pos.y))
+    return blockers
+
+
 def _ensure_return_planner(self: Harvester, c: Controller):
     if self.return_planner is None and self.environment_map is not None:
         self.return_planner = DStarLite(
@@ -621,7 +640,7 @@ def _ensure_bridge_target_planner(self: Harvester, c: Controller, target: Positi
     if p is not None:
         p.set_position(self.current_pos.x, self.current_pos.y)
         p.set_dynamic_blockers(
-            _body_dynamic_blockers(self, c),
+            _bridge_walk_dynamic_blockers(self, c),
             DSTAR_CPU_DEADLINE_US,
             c.get_cpu_time_elapsed,
         )

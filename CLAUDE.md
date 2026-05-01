@@ -40,8 +40,6 @@ uv run scripts/rag.py ask -k 10 "What are all the turret types?"
 
 `cambc` bytecode-validates bots before executing them and **disallows `try/finally` blocks** — instrument hot paths with bare `enable()`/`disable()` calls instead. Bots run in per-team sub-interpreters inside a single process, so `py-spy` will not see bot frames; use `cProfile` instrumentation instead.
 
-The harvester is already wired up: `bots/v10/builders/harvester_revamped.py` owns a module-level `cProfile.Profile` that dumps `.pstats` files (one per subinterpreter) to `/tmp/harvester_profiles/` every 100 `run()` calls.
-
 Run a match and print an aggregated report:
 ```sh
 uv run scripts/profile.py run                              # v10 vs v10 on separated, TLE off

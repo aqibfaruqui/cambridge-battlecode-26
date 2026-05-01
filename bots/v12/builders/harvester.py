@@ -459,12 +459,7 @@ class Harvester:
                 )
                 under += f",dir={under_dir}"
 
-        harvester_cost = c.get_harvester_cost()
-        conveyor_cost = c.get_conveyor_cost()
-        bridge_cost = c.get_bridge_cost()
-        hp = f"{c.get_hp(c.get_id())}/{c.get_max_hp(c.get_id())}"
         target_kind = "ore" if self.seek_target_is_ore else "explore"
-        placing_kind = "ti" if self.placing_is_titanium else "ax"
         return_mode = "normal"
         if self.bridge_jump_target is not None:
             return_mode = "bridge_walk"

@@ -27,8 +27,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROFILE_DIR = Path("/tmp/harvester_profiles")
-DEFAULT_MAP = "separated"
-DEFAULT_BOT = "v10"
+DEFAULT_MAP = "labyrinth"
+DEFAULT_BOT = "v12"
 
 
 def _aggregate(profile_dir: Path) -> pstats.Stats:

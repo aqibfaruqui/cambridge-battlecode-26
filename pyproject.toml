@@ -14,3 +14,8 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "voyageai>=0.3.7",
 ]
+
+[dependency-groups]
+dev = [
+    "protobuf>=7.34.1",
+]

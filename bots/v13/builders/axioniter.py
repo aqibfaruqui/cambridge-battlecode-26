@@ -1,35 +1,35 @@
-import math
 import os
 import uuid
 from enum import Enum
 
 from cambc import Controller, Direction, EntityType, Environment, Position
-from utils.map.board import is_ore_axionite, is_ore_titanium
-from utils.harvester_states.return_to_core import (
+from utils.map.board import is_ore_axionite
+from utils.axioniter_states.return_to_core import (
     _attack_enemy_under_bot,
     _build_return_step,
+    _handle_foundry_outbound,
     _handle_post_bridge_conveyor,
     _reset_return_state,
     _try_chain_shortcut,
 )
-from utils.harvester_states.seek import (
+from utils.axioniter_states.seek import (
     _seek as _seek_state,
 )
-from utils.harvester_states.patrol import (
+from utils.axioniter_states.patrol import (
     _patrol as _patrol_state,
 )
-from utils.harvester_states.placing_harvester import (
+from utils.axioniter_states.placing_harvester import (
     STEP_ON as _PLACING_STEP_ON,
     _placing_harvester as _placing_harvester_state,
 )
-from utils.harvester_states.defend import (
+from utils.axioniter_states.defend import (
     _defend as _defend_state,
 )
-from utils.harvester_states.heal import (
+from utils.axioniter_states.heal import (
     _heal as _heal_state,
     _try_enter_heal,
 )
-from utils.pathfinding.movement import DIRECTIONS_4, reached_core
+from utils.pathfinding.movement import DIRECTIONS_4
 from utils.map.raw_map_representation import EnvironmentMap, Symmetry
 from utils.pathfinding.d_star import DStarLite
 from utils.comms.broadcaster import Broadcaster
@@ -54,7 +54,7 @@ try:
 except ImportError:
     _PROFILE_ENABLED = False
 
-class HarvestState(Enum):
+class AxioniterState(Enum):
     __slots__ = ()
 
     SEEK = "seek"
@@ -65,14 +65,12 @@ class HarvestState(Enum):
     HEAL = "heal"
 
 
-_TITANIUM_HARVESTER_TARGET = 3
-_AXIONITE_UNLOCK_ROUND = 200
 _FOUNDRY_SCALE_JUMP = 45.0
 
 
-class Harvester:
+class Axioniter:
     def __init__(self, core_pos: Position):
-        self.state = HarvestState.SEEK
+        self.state = AxioniterState.SEEK
         self.core_pos = core_pos
         self.current_pos = Position(0, 0)
 
@@ -91,6 +89,13 @@ class Harvester:
         self.seek_planner: DStarLite | None = None
         self.seek_planner_goal: tuple[int, int] | None = None
         self.return_planner: DStarLite | None = None
+        self.return_planner_goal: tuple[int, int] | None = None
+        self.return_target_pos: Position | None = None
+        self.return_harvester_pos: Position | None = None
+        self.outbound_foundry_pos: Position | None = None
+        self.outbound_start_pos: Position | None = None
+        self.outbound_started = False
+        self.team_titanium_harvesters: set[tuple[int, int]] = set()
         self.target_pos: Position | None = None
         self.seek_target_is_ore = False
         self.blacklisted_ores: set[tuple[int, int]] = set()
@@ -126,11 +131,15 @@ class Harvester:
         self.placing_ring_turns: int = 0
         self.placing_is_titanium: bool = False
 
-        self.defend_prev_state: HarvestState | None = None
+        self.defend_prev_state: AxioniterState | None = None
         self.defend_target_tile: Position | None = None
         self.defend_cleared_tiles: list[tuple[int, int, Direction]] = []
+        self.defend_enemy_id: int | None = None
+        self.defend_gunner_pos: Position | None = None
+        self.defend_orig_conveyor_dir: Direction | None = None
+        self.enemy_tile_hp: dict[tuple[int, int], int] = {}
 
-        self.heal_prev_state: HarvestState | None = None
+        self.heal_prev_state: AxioniterState | None = None
         self.heal_interrupt_target: Position | None = None
         self.heal_idle_turns: int = 0
 
@@ -179,12 +188,87 @@ class Harvester:
                 break
 
     def _axionite_unlocked(self, c: Controller) -> bool:
-        if self.foundry_prev_placed:
+        return True
+
+    def _record_seen_team_harvesters(self, c: Controller, nearby_buildings=None) -> None:
+        if nearby_buildings is None:
+            nearby_buildings = c.get_nearby_buildings()
+        team = c.get_team()
+        for bid in nearby_buildings:
+            if c.get_team(bid) != team:
+                continue
+            if c.get_entity_type(bid) != EntityType.HARVESTER:
+                continue
+            pos = c.get_position(bid)
+            if c.get_tile_env(pos) == Environment.ORE_TITANIUM:
+                self.team_titanium_harvesters.add((pos.x, pos.y))
+
+    def _valid_return_adjacent(self, c: Controller, pos: Position) -> bool:
+        if not (0 <= pos.x < c.get_map_width() and 0 <= pos.y < c.get_map_height()):
             return False
-        return (
-            self.titanium_harvesters_placed >= _TITANIUM_HARVESTER_TARGET
-            or c.get_current_round() >= _AXIONITE_UNLOCK_ROUND
+
+        if c.is_in_vision(pos):
+            bot_id = c.get_tile_builder_bot_id(pos)
+            if bot_id is not None and bot_id != c.get_id():
+                return False
+            bid = c.get_tile_building_id(pos)
+            if bid is not None:
+                etype = c.get_entity_type(bid)
+                if etype == EntityType.MARKER:
+                    return True
+                if c.get_team(bid) != c.get_team():
+                    return False
+                return etype in {
+                    EntityType.ROAD,
+                    EntityType.CONVEYOR,
+                    EntityType.ARMOURED_CONVEYOR,
+                    EntityType.BRIDGE,
+                    EntityType.SPLITTER,
+                    EntityType.FOUNDRY,
+                }
+            return c.get_tile_env(pos) == Environment.EMPTY
+
+        env = self.environment_map
+        return env is None or env.is_seek_candidate(pos.x, pos.y)
+
+    def _refresh_return_target(self, c: Controller) -> None:
+        if not self.team_titanium_harvesters:
+            self.return_target_pos = None
+            self.return_harvester_pos = None
+            self.return_planner = None
+            self.return_planner_goal = None
+            return
+
+        ordered = sorted(
+            (Position(x, y) for x, y in self.team_titanium_harvesters),
+            key=lambda p: self.current_pos.distance_squared(p),
         )
+        for harvester_pos in ordered:
+            candidates = []
+            for direction in DIRECTIONS_4:
+                adj = harvester_pos.add(direction)
+                if self._valid_return_adjacent(c, adj):
+                    candidates.append(adj)
+            if not candidates:
+                continue
+            candidates.sort(key=lambda p: self.current_pos.distance_squared(p))
+            next_target = candidates[0]
+            old_goal = None if self.return_target_pos is None else (
+                self.return_target_pos.x,
+                self.return_target_pos.y,
+            )
+            new_goal = (next_target.x, next_target.y)
+            self.return_target_pos = next_target
+            self.return_harvester_pos = harvester_pos
+            if old_goal != new_goal:
+                self.return_planner = None
+                self.return_planner_goal = None
+            return
+
+        self.return_target_pos = None
+        self.return_harvester_pos = None
+        self.return_planner = None
+        self.return_planner_goal = None
 
     def _clear_if_road(self, c: Controller, pos: Position):
         """Safely clear road tiles"""
@@ -212,15 +296,6 @@ class Harvester:
         if c.can_move(move_dir):
             c.move(move_dir)
 
-    def _is_valid_titanium_target(self, c: Controller, ore_pos: Position) -> bool:
-        if not is_ore_titanium(c, ore_pos):
-            return False
-
-        build_id = c.get_tile_building_id(ore_pos)
-        if build_id is None:
-            return True
-        return c.get_entity_type(build_id) not in {EntityType.HARVESTER, EntityType.GUNNER}
-
     def _is_valid_axionite_target(self, c: Controller, ore_pos: Position) -> bool:
         if not is_ore_axionite(c, ore_pos):
             return False
@@ -231,8 +306,6 @@ class Harvester:
         return c.get_entity_type(build_id) not in {EntityType.HARVESTER, EntityType.GUNNER}
 
     def _is_valid_ore_target(self, c: Controller, ore_pos: Position) -> bool:
-        if not self._axionite_unlocked(c):
-            return self._is_valid_titanium_target(c, ore_pos)
         return self._is_valid_axionite_target(c, ore_pos)
 
     def _try_build_harvester(self, c: Controller) -> bool:
@@ -247,44 +320,35 @@ class Harvester:
         self.placing_phase = _PLACING_STEP_ON
         self.placing_sides_pending = list(DIRECTIONS_4)
         self.placing_ring_turns = 0
-        self.state = HarvestState.PLACING_HARVESTER
+        self.state = AxioniterState.PLACING_HARVESTER
         # Kick off step_on this turn so we don't lose a tick on the transition.
         _placing_harvester_state(self, c)
         return True
 
     def _pick_adjacent_ore(self, c: Controller) -> tuple[Position | None, bool]:
-        if not self._axionite_unlocked(c):
-            for direction in DIRECTIONS_4:
-                ore_pos = self.current_pos.add(direction)
-                if self._is_valid_titanium_target(c, ore_pos):
-                    return ore_pos, True
-
-        if (
-            self._axionite_unlocked(c)
-        ):
-            for direction in DIRECTIONS_4:
-                ore_pos = self.current_pos.add(direction)
-                if self._is_valid_axionite_target(c, ore_pos):
-                    return ore_pos, False
+        for direction in DIRECTIONS_4:
+            ore_pos = self.current_pos.add(direction)
+            if self._is_valid_axionite_target(c, ore_pos):
+                return ore_pos, False
 
         return None, False
 
     def _draw_debug(self, c: Controller):
         """Draw state-based dot and target line for debugging"""
         state_colors = {
-            HarvestState.SEEK: (0, 0, 255),
-            HarvestState.PLACING_HARVESTER: (200, 0, 200),
-            HarvestState.RETURN: (255, 165, 0),
-            HarvestState.DEFEND: (255, 0, 0),
-            HarvestState.PATROL: (0, 255, 200),
-            HarvestState.HEAL: (0, 255, 80),
+            AxioniterState.SEEK: (0, 0, 255),
+            AxioniterState.PLACING_HARVESTER: (200, 0, 200),
+            AxioniterState.RETURN: (255, 165, 0),
+            AxioniterState.DEFEND: (255, 0, 0),
+            AxioniterState.PATROL: (0, 255, 200),
+            AxioniterState.HEAL: (0, 255, 80),
         }
         r, g, b = state_colors.get(self.state, (255, 255, 255))
         c.draw_indicator_dot(self.current_pos, r, g, b)
 
         if self.target_pos is not None and self.target_pos != self.current_pos:
             c.draw_indicator_line(self.current_pos, self.target_pos, r, g, b)
-        elif self.state == HarvestState.RETURN and self.current_pos != self.core_pos:
+        elif self.state == AxioniterState.RETURN and self.current_pos != self.core_pos:
             c.draw_indicator_line(self.current_pos, self.core_pos, 255, 255, 0)
 
     def _placing_harvester(self, c: Controller):
@@ -303,45 +367,12 @@ class Harvester:
         _patrol_state(self, c)
 
     def _return(self, c: Controller):
-        """Lay conveyors back to the core"""
-        # If we're already on/adjacent to core, RETURN is complete.
-        if reached_core(self.current_pos, self.core_pos) and self.bridge_jump_target is None:
-            if self.harvesters_placed >= 1:
-                tip = self.harvester_pos
-                assert tip is not None
-                mx = (self.core_pos.x + tip.x) // 2
-                my = (self.core_pos.y + tip.y) // 2
-                dx = tip.x - self.core_pos.x
-                dy = tip.y - self.core_pos.y
-                dist = max((dx * dx + dy * dy) ** 0.5, 1.0)
-                # Minimum patrol window that guarantees full chain coverage:
-                # stay near midpoint (max conveyor density) and only extend
-                # outward until vision just reaches each chain endpoint.
-                _VISION_R = math.sqrt(20)
-                half_window = max(1.5, dist / 2 - _VISION_R)
-                scale = half_window / dist
-                w, h = c.get_map_width(), c.get_map_height()
-                self.patrol_tip = Position(
-                    max(0, min(w - 1, round(mx + dx * scale))),
-                    max(0, min(h - 1, round(my + dy * scale))),
-                )
-                self.patrol_inner = Position(
-                    max(0, min(w - 1, round(mx - dx * scale))),
-                    max(0, min(h - 1, round(my - dy * scale))),
-                )
-                self.patrol_turns = 0
-                self.patrol_target = None
-                self.patrol_going_out = True
-                self.state = HarvestState.PATROL
-            else:
-                self.state = HarvestState.SEEK
-            self.target_pos = None
-            self.seek_target_is_ore = False
-            self.blacklisted_ores.clear()
-            self.blacklisted_seek_targets.clear()
-            self.harvester_pos = None
-            self.returning_from_axionite = False
-            _reset_return_state(self)
+        """Lay conveyors back to a tile adjacent to a known titanium harvester."""
+        if _handle_foundry_outbound(self, c):
+            return
+
+        self._refresh_return_target(c)
+        if self.return_target_pos is None:
             return
 
         if _try_chain_shortcut(self, c):
@@ -374,6 +405,7 @@ class Harvester:
         nearby_tiles = c.get_nearby_tiles()
         nearby_buildings = c.get_nearby_buildings()
         self.environment_map.update(c, nearby_tiles, nearby_buildings)
+        self._record_seen_team_harvesters(c, nearby_buildings)
         self._check_for_foundry(c, nearby_buildings)
 
         if not self.environment_map.symmetry_resolved:
@@ -406,21 +438,21 @@ class Harvester:
         try_heal_nearby_bot(c, self.current_pos)
         try_heal_nearby_building(c, self.current_pos)
 
-        if self.state not in (HarvestState.DEFEND, HarvestState.HEAL, HarvestState.PLACING_HARVESTER):
+        if self.state not in (AxioniterState.DEFEND, AxioniterState.HEAL, AxioniterState.PLACING_HARVESTER):
             _try_enter_heal(self, c)
 
         match self.state:
-            case HarvestState.SEEK:
+            case AxioniterState.SEEK:
                 self._seek(c)
-            case HarvestState.PLACING_HARVESTER:
+            case AxioniterState.PLACING_HARVESTER:
                 self._placing_harvester(c)
-            case HarvestState.RETURN:
+            case AxioniterState.RETURN:
                 self._return(c)
-            case HarvestState.DEFEND:
+            case AxioniterState.DEFEND:
                 self._defend(c)
-            case HarvestState.PATROL:
+            case AxioniterState.PATROL:
                 self._patrol(c)
-            case HarvestState.HEAL:
+            case AxioniterState.HEAL:
                 self._heal(c)
 
         self.broadcaster.run(c)
@@ -468,7 +500,7 @@ class Harvester:
         elif self.return_chain_cursor is not None:
             return_mode = "remote_chain"
         print(
-            f"[harv {c.get_id()}] r={c.get_current_round()} "
+            f"[axioniter {c.get_id()}] r={c.get_current_round()} "
             f"state={self.state.value} "
             f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
             f"target={_fmt_pos(self.target_pos)} target_kind={target_kind} "

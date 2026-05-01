@@ -6,6 +6,9 @@ tmp/
 # RAG index cache
 .rag_index/
 
+# Replay CLI cache
+scripts/.replay_cache/
+
 # User environment
 .DS_Store
 .venv

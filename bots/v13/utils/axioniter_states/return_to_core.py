@@ -134,6 +134,18 @@ def _attack_enemy_under_bot(self: Axioniter, c: Controller) -> bool:
     return True
 
 
+def _blocks_foundry_outbound(self: Axioniter, c: Controller, pos: Position, build_id: int, entity_type: EntityType) -> bool:
+    foundry_pos = self.outbound_foundry_pos
+    if foundry_pos is None or entity_type not in _TRANSPORT_TYPES:
+        return False
+    if c.get_team(build_id) != c.get_team():
+        return False
+    out = _transport_output(c, pos, build_id)
+    if out == foundry_pos:
+        return True
+    return c.get_stored_resource(build_id) == ResourceType.RAW_AXIONITE
+
+
 def _return_dynamic_blockers(self: Axioniter, c: Controller) -> list[tuple[int, int]]:
     team = c.get_team()
     blockers: list[tuple[int, int]] = []
@@ -144,7 +156,11 @@ def _return_dynamic_blockers(self: Axioniter, c: Controller) -> list[tuple[int, 
         entity_type = c.get_entity_type(build_id)
         if entity_type == EntityType.MARKER:
             continue
-        if entity_type == EntityType.HARVESTER or c.get_team(build_id) != team:
+        if (
+            entity_type in (EntityType.HARVESTER, EntityType.FOUNDRY)
+            or c.get_team(build_id) != team
+            or _blocks_foundry_outbound(self, c, pos, build_id, entity_type)
+        ):
             blockers.append((pos.x, pos.y))
     return blockers
 

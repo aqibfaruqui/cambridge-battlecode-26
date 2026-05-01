@@ -149,15 +149,31 @@ def _do_step_off(self: Axioniter, c: Controller, ore_pos: Position) -> None:
             and c.get_tile_builder_bot_id(next_pos) is None
         )
 
-    if preferred is not None and c.can_move(preferred) and _tile_is_open(preferred):
-        c.move(preferred)
+    def _is_bridge_exit(move_dir: Direction) -> bool:
+        next_pos = ore_pos.add(move_dir)
+        bid = c.get_tile_building_id(next_pos)
+        return bid is not None and c.get_entity_type(bid) == EntityType.BRIDGE
+
+    exits = []
+    if preferred is not None:
+        exits.append(preferred)
+    for direction in DIRECTIONS_4:
+        if direction != preferred:
+            exits.append(direction)
+
+    bridge_exits = []
+    for direction in exits:
+        if not c.can_move(direction) or not _tile_is_open(direction):
+            continue
+        if _is_bridge_exit(direction):
+            bridge_exits.append(direction)
+            continue
+        c.move(direction)
         return
 
-    for d in DIRECTIONS_4:
-        if d == preferred:
-            continue
-        if c.can_move(d) and _tile_is_open(d):
-            c.move(d)
+    for direction in bridge_exits:
+        if c.can_move(direction) and _tile_is_open(direction):
+            c.move(direction)
             return
 
 

@@ -830,7 +830,12 @@ def _handle_bridge_jump(self: Axioniter, c: Controller, target_pos: Position) ->
         _start_bridge_walk(self, target_pos)
         return _walk_toward_bridge_target(self, c)
 
-    if allied and entity_type in (EntityType.ROAD, EntityType.CONVEYOR, EntityType.BRIDGE):
+    if allied and entity_type == EntityType.BRIDGE:
+        self.failed_bridge_targets.add((target_pos.x, target_pos.y))
+        self.return_planner = None
+        return True
+
+    if allied and entity_type in (EntityType.ROAD, EntityType.CONVEYOR):
         ti, _ = c.get_global_resources()
         bridge_cost_ti, _ = c.get_bridge_cost()
         if ti < bridge_cost_ti or not c.can_destroy(bridge_pos):

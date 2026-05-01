@@ -7,6 +7,7 @@ from utils.map.board import is_ore_axionite
 from utils.axioniter_states.return_to_core import (
     _attack_enemy_under_bot,
     _build_return_step,
+    _handle_foundry_outbound,
     _handle_post_bridge_conveyor,
     _reset_return_state,
     _try_chain_shortcut,
@@ -91,6 +92,9 @@ class Axioniter:
         self.return_planner_goal: tuple[int, int] | None = None
         self.return_target_pos: Position | None = None
         self.return_harvester_pos: Position | None = None
+        self.outbound_foundry_pos: Position | None = None
+        self.outbound_start_pos: Position | None = None
+        self.outbound_started = False
         self.team_titanium_harvesters: set[tuple[int, int]] = set()
         self.target_pos: Position | None = None
         self.seek_target_is_ore = False
@@ -364,6 +368,9 @@ class Axioniter:
 
     def _return(self, c: Controller):
         """Lay conveyors back to a tile adjacent to a known titanium harvester."""
+        if _handle_foundry_outbound(self, c):
+            return
+
         self._refresh_return_target(c)
         if self.return_target_pos is None:
             return

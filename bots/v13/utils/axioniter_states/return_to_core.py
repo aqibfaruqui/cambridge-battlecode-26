@@ -1,6 +1,6 @@
 
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from cambc import Direction, EntityType, Environment, Position, Controller, ResourceType
 
@@ -9,7 +9,12 @@ from utils.pathfinding.movement import (
     DIRECTIONS_4,
     get_direction_4,
     is_diagonal,
+    reached_core,
     split_diagonal,
+)
+from utils.harvester_states.return_to_core import (
+    _build_return_step as _harvester_build_return_step,
+    _handle_post_bridge_conveyor as _harvester_handle_post_bridge_conveyor,
 )
 
 if TYPE_CHECKING:
@@ -444,11 +449,175 @@ def _on_map(c: Controller, pos: Position) -> bool:
     return 0 <= pos.x < c.get_map_width() and 0 <= pos.y < c.get_map_height()
 
 
+def _flows_into(c: Controller, src: Position, src_id: int, etype: EntityType, target: Position) -> bool:
+    facing = c.get_direction(src_id)
+    if facing == Direction.CENTRE:
+        return False
+    if etype == EntityType.SPLITTER:
+        out_dirs = (
+            facing,
+            facing.rotate_left().rotate_left(),
+            facing.rotate_right().rotate_right(),
+        )
+    else:
+        out_dirs = (facing,)
+    for out_dir in out_dirs:
+        out = src.add(out_dir)
+        if out.x == target.x and out.y == target.y:
+            return True
+    return False
+
+
+def _foundry_has_outbound_flow(c: Controller, foundry_pos: Position) -> bool:
+    team = c.get_team()
+    for direction in DIRECTIONS_4:
+        adj = foundry_pos.add(direction)
+        if not _on_map(c, adj) or not c.is_in_vision(adj):
+            continue
+        bid = c.get_tile_building_id(adj)
+        if bid is None or c.get_team(bid) != team:
+            continue
+        etype = c.get_entity_type(bid)
+        if etype not in _TRANSPORT_TYPES:
+            continue
+        if etype == EntityType.BRIDGE:
+            try:
+                target = c.get_bridge_target(bid)
+            except Exception:
+                continue
+            if target is not None and target != foundry_pos:
+                return True
+            continue
+        if not _flows_into(c, adj, bid, etype, foundry_pos):
+            return True
+    return False
+
+
+def _pick_foundry_outbound_start(self: Axioniter, c: Controller, foundry_pos: Position) -> Position | None:
+    candidates: list[Position] = []
+    for direction in DIRECTIONS_4:
+        adj = foundry_pos.add(direction)
+        if not _on_map(c, adj):
+            continue
+        if adj == self.current_pos:
+            continue
+        if c.is_in_vision(adj):
+            bot_id = c.get_tile_builder_bot_id(adj)
+            if bot_id is not None and bot_id != c.get_id():
+                continue
+            bid = c.get_tile_building_id(adj)
+            if bid is not None:
+                etype = c.get_entity_type(bid)
+                if etype == EntityType.MARKER:
+                    candidates.append(adj)
+                    continue
+                if c.get_team(bid) != c.get_team():
+                    continue
+                if etype not in {EntityType.ROAD, EntityType.CONVEYOR}:
+                    continue
+        candidates.append(adj)
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.distance_squared(self.core_pos))
+    return candidates[0]
+
+
+def _move_to_outbound_start(self: Axioniter, c: Controller, target: Position) -> bool:
+    if self.current_pos == target:
+        return True
+    env = self.environment_map
+    if env is None:
+        move_dir = get_direction_4(self.current_pos, target)
+    else:
+        planner = DStarLite(
+            env,
+            target.x,
+            target.y,
+            block_mask=_RETURN_BLOCK_MASK,
+            unknown_cost=3.0,
+        )
+        planner.set_position(self.current_pos.x, self.current_pos.y)
+        planner.set_dynamic_blockers(
+            _body_dynamic_blockers(self, c),
+            DSTAR_CPU_DEADLINE_US,
+            c.get_cpu_time_elapsed,
+        )
+        planner.notify_map_changes(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
+        move_dir = planner.step(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
+        if move_dir is None or move_dir == Direction.CENTRE:
+            move_dir = get_direction_4(self.current_pos, target)
+
+    move_pos = self.current_pos.add(move_dir)
+    bid = c.get_tile_building_id(move_pos)
+    if bid is not None and c.get_entity_type(bid) == EntityType.MARKER and c.can_destroy(move_pos):
+        c.destroy(move_pos)
+        return False
+    if not c.can_move(move_dir) and c.get_tile_env(move_pos) == Environment.EMPTY and c.can_build_road(move_pos):
+        c.build_road(move_pos)
+    if c.can_move(move_dir):
+        c.move(move_dir)
+    return False
+
+
+def _finish_foundry_outbound(self: Axioniter) -> None:
+    self.outbound_foundry_pos = None
+    self.outbound_start_pos = None
+    self.outbound_started = False
+    self.harvester_pos = None
+    self.returning_from_axionite = False
+    self.target_pos = None
+    self.seek_target_is_ore = False
+    self.blacklisted_ores.clear()
+    self.blacklisted_seek_targets.clear()
+    self.state = type(self.state).SEEK
+    _reset_return_state(self)
+
+
+def _handle_foundry_outbound(self: Axioniter, c: Controller) -> bool:
+    foundry_pos = self.outbound_foundry_pos
+    if foundry_pos is None:
+        return False
+
+    if (
+        reached_core(self.current_pos, self.core_pos)
+        and self.bridge_jump_target is None
+        and not self.just_placed
+    ):
+        _finish_foundry_outbound(self)
+        return True
+
+    if self.outbound_start_pos is None:
+        self.outbound_start_pos = _pick_foundry_outbound_start(self, c, foundry_pos)
+        if self.outbound_start_pos is None:
+            return True
+
+    if self.current_pos != self.outbound_start_pos and not self.outbound_started:
+        _move_to_outbound_start(self, c, self.outbound_start_pos)
+        return True
+
+    if not self.outbound_started:
+        self.harvester_pos = foundry_pos
+        self.just_placed = True
+        self.returning_from_axionite = False
+        _reset_return_state(self)
+        self.outbound_started = True
+
+    if _attack_enemy_under_bot(self, c):
+        return True
+    harvester_self = cast(Any, self)
+    if _harvester_handle_post_bridge_conveyor(harvester_self, c):
+        return True
+
+    _harvester_build_return_step(harvester_self, c)
+    return True
+
+
 def _at_return_goal(self: Axioniter, pos: Position) -> bool:
     return self.return_target_pos is not None and pos == self.return_target_pos
 
 
-def _finish_foundry_return(self: Axioniter, c: Controller) -> None:
+def _finish_foundry_return(self: Axioniter, c: Controller, foundry_pos: Position) -> None:
     self.foundry_curr_placed = True
     self.foundry_prev_placed = True
     self.foundry_placed_round = c.get_current_round()
@@ -456,9 +625,19 @@ def _finish_foundry_return(self: Axioniter, c: Controller) -> None:
     self.seek_target_is_ore = False
     self.blacklisted_ores.clear()
     self.blacklisted_seek_targets.clear()
-    self.harvester_pos = None
     self.returning_from_axionite = False
-    self.state = type(self.state).SEEK
+    if _foundry_has_outbound_flow(c, foundry_pos):
+        self.harvester_pos = None
+        self.state = type(self.state).SEEK
+        _reset_return_state(self)
+        return
+
+    self.outbound_foundry_pos = foundry_pos
+    self.outbound_start_pos = None
+    self.outbound_started = False
+    self.harvester_pos = foundry_pos
+    self.just_placed = False
+    self.state = type(self.state).RETURN
     _reset_return_state(self)
 
 
@@ -509,7 +688,7 @@ def _try_place_foundry(self: Axioniter, c: Controller, goal: Position) -> bool:
 
     bid = c.get_tile_building_id(goal)
     if bid is not None and c.get_entity_type(bid) == EntityType.FOUNDRY and c.get_team(bid) == c.get_team():
-        _finish_foundry_return(self, c)
+        _finish_foundry_return(self, c, goal)
         return True
 
     if not _feed_conveyor_ready(self, c, goal):
@@ -525,7 +704,7 @@ def _try_place_foundry(self: Axioniter, c: Controller, goal: Position) -> bool:
         if etype == EntityType.MARKER:
             if c.can_build_foundry(goal):
                 c.build_foundry(goal)
-                _finish_foundry_return(self, c)
+                _finish_foundry_return(self, c, goal)
             return True
         if c.get_team(bid) != c.get_team() or etype not in _FOUNDRY_REPLACEABLE_TYPES:
             return True
@@ -534,14 +713,14 @@ def _try_place_foundry(self: Axioniter, c: Controller, goal: Position) -> bool:
         c.destroy(goal)
         if c.can_build_foundry(goal):
             c.build_foundry(goal)
-            _finish_foundry_return(self, c)
+            _finish_foundry_return(self, c, goal)
         return True
 
     if c.get_tile_env(goal) != Environment.EMPTY:
         return True
     if c.can_build_foundry(goal):
         c.build_foundry(goal)
-        _finish_foundry_return(self, c)
+        _finish_foundry_return(self, c, goal)
     return True
 
 

@@ -9,7 +9,12 @@ from utils.pathfinding.d_star import (
     _SEEK_BLOCK_MASK,
 )
 from utils.map.raw_map_representation import ORE_AXIONITE
-from utils.pathfinding.movement import DIRECTIONS_4, _chebyshev, random_direction_4
+from utils.pathfinding.movement import (
+    DIRECTIONS_4,
+    _chebyshev,
+    bug_nav,
+    random_direction_4,
+)
 from utils.comms.for_builder_bot import BuilderBotMessages, BuilderBotMessageType
 from utils.healing import _find_damaged_conveyor
 
@@ -360,6 +365,19 @@ def _seek_direction(
     self.seek_planner.notify_map_changes(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
 
     move_dir = self.seek_planner.step(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
+    if (
+        move_dir is not None
+        and move_dir != Direction.CENTRE
+        and _can_execute_seek_step(self, c, move_dir)
+    ):
+        self.seek_bug_state = None
+        return move_dir
+    move_dir, self.seek_bug_state = bug_nav(
+        c,
+        self.current_pos,
+        move_target,
+        getattr(self, "seek_bug_state", None),
+    )
     if (
         move_dir is not None
         and move_dir != Direction.CENTRE

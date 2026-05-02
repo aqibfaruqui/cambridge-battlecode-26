@@ -85,6 +85,8 @@ def _finish_foundry_join(self: Harvester, c: Controller, join_pos: Position) -> 
     self.seek_target_is_ore = False
     self.harvester_pos = None
     self.chain_memory.pop((join_pos.x, join_pos.y), None)
+    self.placed_conveyors.pop((join_pos.x, join_pos.y), None)
+    self.placed_bridges.pop((join_pos.x, join_pos.y), None)
     self.bridge_jump_target = None
     self.bridge_target_planner = None
     self.return_next_dir = None
@@ -121,6 +123,7 @@ def try_join_axionite_to_titanium_chain(
         conveyor_cost_ti, _ = c.get_conveyor_cost()
         if self.ti >= conveyor_cost_ti and c.can_build_conveyor(self.current_pos, feed_dir):
             c.build_conveyor(self.current_pos, feed_dir)
+            self._remember_conveyor(self.current_pos, feed_dir)
         return True
 
     feeds_ok = (
@@ -147,5 +150,6 @@ def try_join_axionite_to_titanium_chain(
 
     if c.can_build_conveyor(join_pos, original_dir):
         c.build_conveyor(join_pos, original_dir)
+        self._remember_conveyor(join_pos, original_dir)
     self.returning_from_axionite = False
     return False

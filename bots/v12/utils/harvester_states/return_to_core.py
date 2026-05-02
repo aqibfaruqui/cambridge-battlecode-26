@@ -258,6 +258,7 @@ def _try_satisfy_remote_return_conveyor(self: Harvester, c: Controller, pos: Pos
             return False
     if c.can_build_conveyor(pos, direction):
         c.build_conveyor(pos, direction)
+        self._remember_conveyor(pos, direction)
 
     bid = c.get_tile_building_id(pos)
     return (
@@ -573,6 +574,7 @@ def _handle_post_bridge_conveyor(self: Harvester, c: Controller) -> bool:
         conveyor_cost_ti, _ = c.get_conveyor_cost()
         if tile_empty and ti >= conveyor_cost_ti and c.can_build_conveyor(self.current_pos, conveyor_dir):
             c.build_conveyor(self.current_pos, conveyor_dir)
+            self._remember_conveyor(self.current_pos, conveyor_dir)
 
         bid = c.get_tile_building_id(self.current_pos)
         connected = bid is not None and c.get_team(bid) == c.get_team() and c.get_entity_type(bid) in (
@@ -601,7 +603,12 @@ def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) ->
     entity_type = c.get_entity_type(bid) if bid is not None else None
     allied = bid is not None and c.get_team(bid) == c.get_team()
 
-    if allied and entity_type == EntityType.BRIDGE and _bridge_target_matches(c, bid, target_pos):
+    if (
+        allied
+        and bid is not None
+        and entity_type == EntityType.BRIDGE
+        and _bridge_target_matches(c, bid, target_pos)
+    ):
         _start_bridge_walk(self, target_pos)
         return _walk_toward_bridge_target(self, c)
 
@@ -614,6 +621,7 @@ def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) ->
 
     if c.can_build_bridge(bridge_pos, target_pos):
         c.build_bridge(bridge_pos, target_pos)
+        self._remember_bridge(bridge_pos, target_pos)
         _start_bridge_walk(self, target_pos)
         return True
 
@@ -773,6 +781,7 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
                 return False
         if c.can_build_conveyor(move_pos, step):
             c.build_conveyor(move_pos, step)
+            self._remember_conveyor(move_pos, step)
 
         step_dir = get_direction_4(self.current_pos, move_pos) if self.current_pos != move_pos else None
         if step_dir and not c.can_move(step_dir):
@@ -891,6 +900,7 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
                 return False
         if c.can_build_conveyor(move_pos, next_dir):
             c.build_conveyor(move_pos, next_dir)
+            self._remember_conveyor(move_pos, next_dir)
     elif dest_empty and c.can_build_road(move_pos):
         c.build_road(move_pos)
 

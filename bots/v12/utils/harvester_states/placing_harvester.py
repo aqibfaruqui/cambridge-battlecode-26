@@ -129,6 +129,7 @@ def _do_ring(self: Harvester, c: Controller, ore_pos: Position) -> None:
             c.destroy(side_pos)
         if c.can_build_conveyor(side_pos, flow):
             c.build_conveyor(side_pos, flow)
+            self._remember_conveyor(side_pos, flow)
             built = True
     self.placing_sides_pending = remaining
 

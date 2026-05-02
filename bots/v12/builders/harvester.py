@@ -76,13 +76,17 @@ class Harvester:
         self.cost_scale = 100.0
         self._scale_initialized = False
         self.titanium_found = False
+        self.axionite_found = False
         self.foundry_prev_placed = False
+        self.foundry_curr_placed = False
+        self.foundry_placed_round: int = -1
 
 
         self.environment_map: EnvironmentMap | None = None
         self.seek_planner: DStarLite | None = None
         self.seek_planner_goal: tuple[int, int] | None = None
         self.return_planner: DStarLite | None = None
+        self._return_planner_refreshed_round: int = -1
         self.target_pos: Position | None = None
         self.seek_target_is_ore = False
         self.blacklisted_ores: set[tuple[int, int]] = set()
@@ -104,12 +108,15 @@ class Harvester:
         self.return_bridge_fail_counts = {}
         self.failed_bridge_targets: set[tuple[int, int]] = set()
         self.chain_memory: dict[tuple[int, int], dict] = {}
+        self.placed_conveyors: dict[tuple[int, int], Direction] = {}
+        self.placed_bridges: dict[tuple[int, int], tuple[int, int]] = {}
         self.heal_target: Position | None = None
         self.patrol_turns: int = 0
         self.patrol_target: Position | None = None
         self.patrol_going_out: bool = True
         self.patrol_tip: Position | None = None
         self.patrol_inner: Position | None = None
+        self.patrol_repair_target: tuple[str, int, int] | None = None
 
         self.placing_ore_pos: Position | None = None
         self.placing_exit_pos: Position | None = None
@@ -177,6 +184,16 @@ class Harvester:
     def _advance(self, c: Controller, move_dir):
         """Move toward target and build a road on the tile stepped onto"""
         advance_with_road(c, self.current_pos, move_dir)
+
+    def _remember_conveyor(self, pos: Position, direction: Direction) -> None:
+        key = (pos.x, pos.y)
+        self.placed_conveyors[key] = direction
+        self.placed_bridges.pop(key, None)
+
+    def _remember_bridge(self, pos: Position, target: Position) -> None:
+        key = (pos.x, pos.y)
+        self.placed_bridges[key] = (target.x, target.y)
+        self.placed_conveyors.pop(key, None)
 
     def _is_valid_titanium_target(self, c: Controller, ore_pos: Position) -> bool:
         if not is_ore_titanium(c, ore_pos):

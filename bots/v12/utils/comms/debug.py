@@ -1,4 +1,4 @@
-DEBUG_PRINTS = False
+DEBUG_PRINTS = True
 
 
 def debug_print(*args, **kwargs) -> None:

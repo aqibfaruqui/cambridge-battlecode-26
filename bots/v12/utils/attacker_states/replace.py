@@ -17,6 +17,7 @@ _STEP_OFF = (
 # Only the band _GUNNER < d² <= _SENTINEL needs the pricier sentinel.
 _SENTINEL_ATTACK_RADIUS_SQ = 32
 _GUNNER_ATTACK_RADIUS_SQ = 9
+_NO_TITANIUM_ATTACK_ABORT_TURNS = 6
 
 _FRIENDLY_REPLACE_TYPES = frozenset({
     EntityType.SENTINEL,
@@ -25,6 +26,13 @@ _FRIENDLY_REPLACE_TYPES = frozenset({
     EntityType.CONVEYOR,
 })
 _HIJACK_TYPES = frozenset({EntityType.CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER})
+_DOWNSTREAM_RELAY_TYPES = frozenset({
+    EntityType.CONVEYOR,
+    EntityType.ARMOURED_CONVEYOR,
+    EntityType.BRIDGE,
+    EntityType.SPLITTER,
+})
+_FRIENDLY_TURRET_TYPES = frozenset({EntityType.GUNNER, EntityType.SENTINEL})
 
 # Cardinal-reachable predecessors. Bridges are handled separately since they
 # teleport and therefore aren't adjacent to their exit tile.
@@ -34,6 +42,55 @@ _PREDECESSOR_RELAYS = frozenset({
     EntityType.SPLITTER,
 })
 _CARDINAL = (Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST)
+
+
+def _feeds_visible_friendly_turret(
+    c: Controller,
+    start_pos: Position,
+    my_team: Team,
+) -> bool:
+    """Trace resource flow forward from start_pos to visible allied turrets."""
+    visited: set[tuple[int, int]] = set()
+    stack: list[Position] = [start_pos]
+    W, H = c.get_map_width(), c.get_map_height()
+
+    while stack:
+        pos = stack.pop()
+        key = (pos.x, pos.y)
+        if key in visited:
+            continue
+        visited.add(key)
+
+        if not (0 <= pos.x < W and 0 <= pos.y < H) or not c.is_in_vision(pos):
+            continue
+
+        bld_id = c.get_tile_building_id(pos)
+        if bld_id is None:
+            continue
+
+        etype = c.get_entity_type(bld_id)
+        if c.get_team(bld_id) == my_team and etype in _FRIENDLY_TURRET_TYPES:
+            return True
+
+        if etype not in _DOWNSTREAM_RELAY_TYPES:
+            continue
+
+        if etype == EntityType.BRIDGE:
+            stack.append(c.get_bridge_target(bld_id))
+            continue
+
+        facing = c.get_direction(bld_id)
+        if facing == Direction.CENTRE:
+            continue
+
+        if etype == EntityType.SPLITTER:
+            stack.append(pos.add(facing))
+            stack.append(pos.add(facing.rotate_left().rotate_left()))
+            stack.append(pos.add(facing.rotate_right().rotate_right()))
+        else:
+            stack.append(pos.add(facing))
+
+    return False
 
 
 def _try_build_adjacent_launcher(c: Controller, me: Position, my_team: Team) -> bool:
@@ -179,6 +236,11 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
     if bb is not None and bb != c.get_id():
         # early return when a not-us bb is on the tile and reset state as normal
         return True
+    if etype in _DOWNSTREAM_RELAY_TYPES and _feeds_visible_friendly_turret(
+        c, target, my_team
+    ):
+        self.blacklist[key] = c.get_current_round()
+        return True
 
     match (team, etype):
         case (_, EntityType.MARKER):
@@ -192,7 +254,23 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
                     self._attack_target_key = key
                     self._attack_turns = 0
                     self._attack_max_hp = c.get_max_hp(bld_id)
-                if self._attack_turns >= 1 and c.get_hp(bld_id) > self._attack_max_hp - 2:
+                    self._attack_no_titanium_turns = 0
+                    self._attack_hp_after_fire = None
+                hp_now = c.get_hp(bld_id)
+                if (
+                    self._attack_hp_after_fire is not None
+                    and hp_now > self._attack_hp_after_fire
+                ):
+                    self.blacklist[key] = c.get_current_round()
+                    return True
+                if c.get_stored_resource(bld_id) == ResourceType.TITANIUM:
+                    self._attack_no_titanium_turns = 0
+                else:
+                    self._attack_no_titanium_turns += 1
+                    if self._attack_no_titanium_turns >= _NO_TITANIUM_ATTACK_ABORT_TURNS:
+                        self.blacklist[key] = c.get_current_round()
+                        return True
+                if self._attack_turns >= 1 and hp_now > self._attack_max_hp - 2:
                     self.blacklist[key] = c.get_current_round()
                     return True
                 if _try_build_adjacent_launcher(c, me, my_team):
@@ -201,6 +279,10 @@ def _execute_replacement(self: Attacker, c: Controller) -> bool:
                     c.fire(me)
                     self._replace_commit_key = key
                     self._attack_turns += 1
+                    after_fire_id = c.get_tile_building_id(target)
+                    self._attack_hp_after_fire = (
+                        c.get_hp(after_fire_id) if after_fire_id is not None else None
+                    )
             elif c.can_move(me.direction_to(target)):
                 c.move(me.direction_to(target))
             return False
@@ -271,6 +353,10 @@ def target_still_valid(self: Attacker, c: Controller) -> bool:
     et = c.get_entity_type(bld_id)
     if et == EntityType.MARKER:
         return True
+    if et in _DOWNSTREAM_RELAY_TYPES and _feeds_visible_friendly_turret(
+        c, target, c.get_team()
+    ):
+        return False
     if c.get_team(bld_id) == c.get_team():
         return et in _FRIENDLY_REPLACE_TYPES
     return et in _HIJACK_TYPES
@@ -280,8 +366,5 @@ def replace(self: Attacker, c: Controller) -> None:
     if _execute_replacement(self, c):
         self.target_conveyor = None
         self._planner_goal = None
-        self._replace_commit_key = None
-        self._attack_target_key = None
-        self._attack_turns = 0
-        self._attack_max_hp = 0
+        self._reset_replace_tracking()
         self.state = AttackState.SCAN

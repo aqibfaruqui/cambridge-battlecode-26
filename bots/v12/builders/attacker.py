@@ -62,6 +62,8 @@ class Attacker:
         self._attack_target_key: tuple[int, int] | None = None
         self._attack_turns = 0
         self._attack_max_hp = 0
+        self._attack_no_titanium_turns = 0
+        self._attack_hp_after_fire: int | None = None
         self._replace_commit_key: tuple[int, int] | None = None
 
         self._env_map: EnvironmentMap | None = None
@@ -75,6 +77,14 @@ class Attacker:
         self._broadcasted = False
         self._permanent_broadcasts: list[int] = []
         self._broadcasted_claim: tuple[int, int] | None = None
+
+    def _reset_replace_tracking(self) -> None:
+        self._replace_commit_key = None
+        self._attack_target_key = None
+        self._attack_turns = 0
+        self._attack_max_hp = 0
+        self._attack_no_titanium_turns = 0
+        self._attack_hp_after_fire = None
 
     # ---------- claim broadcast ----------
 
@@ -262,7 +272,7 @@ class Attacker:
             self.target_conveyor = None
             self._approach_target_key = None
             self._planner_goal = None
-            self._replace_commit_key = None
+            self._reset_replace_tracking()
             self.state = AttackState.SCAN
 
         if DEBUG_PRINTS:

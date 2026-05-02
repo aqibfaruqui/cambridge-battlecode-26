@@ -1,5 +1,6 @@
 from cambc import Controller, EntityType, Position, ResourceType
 from builders.builder import BuilderType
+from utils.pathfinding.movement import on_map
 
 
 _CONVERT_TITANIUM_THRESHOLD = 200
@@ -63,6 +64,8 @@ class Core:
                 if dx == 0 and dy == 0:
                     continue
                 p = Position(core_pos.x + dx, core_pos.y + dy)
+                if not on_map(c, p):
+                    continue
                 if c.get_tile_builder_bot_id(p) is not None:
                     count += 1
         return count
@@ -84,6 +87,8 @@ class Core:
 
     def _try_spawn(self, c: Controller, builder_type: BuilderType) -> int | None:
         spawn_pos = builder_type.position_from_core(c.get_position())
+        if not on_map(c, spawn_pos):
+            return None
         if not c.can_spawn(spawn_pos):
             return None
         if (
@@ -137,6 +142,8 @@ class Core:
             adjacent.add(Position(x - 2, y + dy))
 
         for conveyor in adjacent:
+            if not on_map(c, conveyor):
+                continue
             bid = c.get_tile_building_id(conveyor)
             if bid is None or c.get_entity_type(bid) != EntityType.CONVEYOR:
                 continue

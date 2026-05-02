@@ -42,6 +42,26 @@ def _target_still_valid(self: Harvester, c: Controller) -> bool:
     return self._is_valid_axionite_target(c, ore_pos)
 
 
+def _complete_placement(self: Harvester, ore_pos: Position) -> None:
+    self.harvesters_placed += 1
+    if self.placing_is_titanium:
+        self.titanium_harvesters_placed += 1
+        self.titanium_found = True
+        self.returning_from_axionite = False
+    else:
+        self.axionite_harvesters_placed += 1
+        self.axionite_found = True
+        self.returning_from_axionite = True
+    self.blacklisted_ores.discard((ore_pos.x, ore_pos.y))
+    self.target_pos = None
+    self.seek_target_is_ore = False
+    self.harvester_pos = ore_pos
+    self.just_placed = True
+    _reset_return_state(self)
+    _reset_placing_state(self)
+    self.state = type(self.state).RETURN
+
+
 def _finish_build(self: Harvester, c: Controller) -> None:
     ore_pos = self.placing_ore_pos
     if ore_pos is None:
@@ -62,23 +82,26 @@ def _finish_build(self: Harvester, c: Controller) -> None:
         return
 
     c.build_harvester(ore_pos)
-    self.harvesters_placed += 1
-    if self.placing_is_titanium:
-        self.titanium_harvesters_placed += 1
-        self.titanium_found = True
-        self.returning_from_axionite = False
+    _complete_placement(self, ore_pos)
+
+
+def _handle_enemy_building_after_step_off(
+    self: Harvester,
+    c: Controller,
+    ore_pos: Position,
+) -> bool:
+    if self.current_pos == ore_pos or self.placing_phase not in {STEP_OFF, BUILD}:
+        return False
+
+    build_id = c.get_tile_building_id(ore_pos)
+    if build_id is None or c.get_team(build_id) == c.get_team():
+        return False
+
+    if c.get_entity_type(build_id) == EntityType.HARVESTER:
+        _complete_placement(self, ore_pos)
     else:
-        self.axionite_harvesters_placed += 1
-        self.axionite_found = True
-        self.returning_from_axionite = True
-    self.blacklisted_ores.discard((ore_pos.x, ore_pos.y))
-    self.target_pos = None
-    self.seek_target_is_ore = False
-    self.harvester_pos = ore_pos
-    self.just_placed = True
-    _reset_return_state(self)
-    _reset_placing_state(self)
-    self.state = type(self.state).RETURN
+        _abort_to_seek(self)
+    return True
 
 
 def _do_step_on(self: Harvester, c: Controller, ore_pos: Position) -> None:
@@ -177,12 +200,17 @@ def _do_build(self: Harvester, c: Controller, ore_pos: Position) -> None:
 
 
 def _placing_harvester(self: Harvester, c: Controller) -> None:
-    if not _target_still_valid(self, c):
+    ore_pos = self.placing_ore_pos
+    if ore_pos is None:
         _abort_to_seek(self)
         return
 
-    ore_pos = self.placing_ore_pos
-    assert ore_pos is not None
+    if _handle_enemy_building_after_step_off(self, c, ore_pos):
+        return
+
+    if not _target_still_valid(self, c):
+        _abort_to_seek(self)
+        return
 
     # Re-sync phase to current position so we don't rebuild road / re-enter
     # step_on after an earlier turn successfully moved us onto the ore.

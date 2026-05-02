@@ -10,6 +10,7 @@ from utils.pathfinding.d_star import (
     DSTAR_CPU_DEADLINE_US,
     DStarLite,
 )
+from utils.pathfinding.movement import is_builder_dynamic_blocker
 from utils.map.raw_map_representation import CORE_ENEMY, EnvironmentMap, Symmetry, WALL
 from utils.comms.broadcaster import Broadcaster
 from utils.comms.debug import DEBUG_PRINTS, debug_print
@@ -118,7 +119,7 @@ class Attacker:
             self._planner = DStarLite(
                 env_map, target.x, target.y, block_mask=_ATTACK_BLOCK_MASK
             )
-            self._planner_goal = goal
+        self._planner_goal = goal
 
         my_id = c.get_id()
         my_team = c.get_team()
@@ -134,32 +135,21 @@ class Attacker:
                 return
 
         for p in c.get_nearby_tiles():
-            bot_id = c.get_tile_builder_bot_id(p)
-            if bot_id is not None and bot_id != my_id:
-                blockers.append((p.x, p.y))
-                continue
             bld_id = c.get_tile_building_id(p)
-            if bld_id is None:
-                continue
-            et = c.get_entity_type(bld_id)
-            if et == EntityType.LAUNCHER:
+            if (
+                bld_id is not None
+                and c.get_entity_type(bld_id) == EntityType.LAUNCHER
+                and c.get_team(bld_id) != my_team
+            ):
                 blockers.append((p.x, p.y))
-                # Enemy launchers throw adjacent builders — avoid the 3x3 pickup ring.
-                if c.get_team(bld_id) != my_team:
-                    blockers.extend(
-                        (p.x + dx, p.y + dy)
-                        for dx, dy in product((-1, 0, 1), repeat=2)
-                    )
+                # Enemy launchers throw adjacent builders, so avoid the pickup ring.
+                blockers.extend(
+                    (p.x + dx, p.y + dy)
+                    for dx, dy in product((-1, 0, 1), repeat=2)
+                )
                 continue
-            if et in {
-                EntityType.HARVESTER,
-                EntityType.BARRIER,
-                EntityType.FOUNDRY,
-                EntityType.GUNNER,
-                EntityType.SENTINEL,
-            }:
+            if is_builder_dynamic_blocker(c, p, my_id):
                 blockers.append((p.x, p.y))
-                continue
 
         self._planner.set_position(pos.x, pos.y)
         self._planner.set_dynamic_blockers(

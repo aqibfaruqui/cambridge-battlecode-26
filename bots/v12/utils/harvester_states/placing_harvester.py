@@ -142,29 +142,31 @@ def _do_step_off(self: Harvester, c: Controller, ore_pos: Position) -> None:
         _finish_build(self, c)
         return
 
-    exit_pos = self.placing_exit_pos
-    preferred: Direction | None = None
-    if exit_pos is not None:
-        d = ore_pos.direction_to(exit_pos)
-        if d in DIRECTIONS_4:
-            preferred = d
-
-    def _tile_is_open(move_dir: Direction) -> bool:
+    def _try_step_off(move_dir: Direction) -> bool:
         next_pos = ore_pos.add(move_dir)
-        return (
-            c.get_tile_env(next_pos) == Environment.EMPTY
-            and c.get_tile_builder_bot_id(next_pos) is None
-        )
+        if not on_map(c, next_pos):
+            return False
+        if c.get_tile_builder_bot_id(next_pos) is not None:
+            return False
 
-    if preferred is not None and c.can_move(preferred) and _tile_is_open(preferred):
-        c.move(preferred)
-        return
+        bid = c.get_tile_building_id(next_pos)
+        if bid is not None:
+            if c.get_team(bid) != c.get_team():
+                return False
+        else:
+            if c.get_tile_env(next_pos) != Environment.EMPTY:
+                return False
+            if not c.can_build_road(next_pos):
+                return False
+            c.build_road(next_pos)
+
+        if not c.can_move(move_dir):
+            return False
+        c.move(move_dir)
+        return True
 
     for d in DIRECTIONS_4:
-        if d == preferred:
-            continue
-        if c.can_move(d) and _tile_is_open(d):
-            c.move(d)
+        if _try_step_off(d):
             return
 
 

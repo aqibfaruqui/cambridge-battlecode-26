@@ -62,13 +62,10 @@ _RETURN_BLOCK_MASK = (
     | (1 << _ORE_AXIONITE)
     | (1 << _ENEMY_CORE)
 )
-# Like _RETURN_BLOCK_MASK but allows UNKNOWN tiles — lets the seek planner
-# route through unexplored space. Axionite is blocked because builders
-# cannot physically step on ore tiles.
+# Like _RETURN_BLOCK_MASK but allows UNKNOWN and ore tiles. Seek bots can step
+# onto ore so the placement state can ring conveyors, step off, and build.
 _SEEK_BLOCK_MASK = (
     (1 << _WALL)
-    | (1 << _ORE_TITANIUM)
-    | (1 << _ORE_AXIONITE)
     | (1 << _ENEMY_CORE)
 )
 _BRIDGE_WALK_BLOCK_MASK = (

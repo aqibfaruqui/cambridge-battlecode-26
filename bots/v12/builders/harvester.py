@@ -201,9 +201,13 @@ class Harvester:
             return self._is_valid_titanium_target(c, ore_pos)
         return self._is_valid_axionite_target(c, ore_pos)
 
-    def _try_build_harvester(self, c: Controller) -> bool:
+    def _try_build_harvester(
+        self,
+        c: Controller,
+        blocked_ores: set[tuple[int, int]] | None = None,
+    ) -> bool:
         """Detect a valid adjacent ore and enter the placing-harvester sequence."""
-        ore_pos, is_titanium = self._pick_adjacent_ore(c)
+        ore_pos, is_titanium = self._pick_adjacent_ore(c, blocked_ores)
         if ore_pos is None:
             return False
 
@@ -218,13 +222,23 @@ class Harvester:
         _placing_harvester_state(self, c)
         return True
 
-    def _pick_adjacent_ore(self, c: Controller) -> tuple[Position | None, bool]:
+    def _pick_adjacent_ore(
+        self,
+        c: Controller,
+        blocked_ores: set[tuple[int, int]] | None = None,
+    ) -> tuple[Position | None, bool]:
+        blocked = set(self.blacklisted_ores)
+        if blocked_ores is not None:
+            blocked |= blocked_ores
+
         if self._axionite_unlocked(c):
             is_valid, is_titanium = self._is_valid_axionite_target, False
         else:
             is_valid, is_titanium = self._is_valid_titanium_target, True
         for direction in DIRECTIONS_4:
             ore_pos = self.current_pos.add(direction)
+            if (ore_pos.x, ore_pos.y) in blocked:
+                continue
             if is_valid(c, ore_pos):
                 return ore_pos, is_titanium
         return None, False

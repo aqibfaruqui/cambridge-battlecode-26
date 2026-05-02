@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from cambc import Direction, EntityType, Environment, Position, Controller
+from cambc import Direction, EntityType, Position, Controller
 
 from utils.pathfinding.d_star import (
     DSTAR_CPU_DEADLINE_US,
@@ -9,7 +9,12 @@ from utils.pathfinding.d_star import (
     _SEEK_BLOCK_MASK,
 )
 from utils.map.raw_map_representation import ORE_AXIONITE, ORE_TITANIUM
-from utils.pathfinding.movement import DIRECTIONS_4, _chebyshev, random_direction_4
+from utils.pathfinding.movement import (
+    DIRECTIONS_4,
+    _chebyshev,
+    is_builder_dynamic_blocker,
+    random_direction_4,
+)
 from utils.comms.for_builder_bot import BuilderBotMessages, BuilderBotMessageType
 from utils.healing import _find_damaged_conveyor
 
@@ -17,10 +22,23 @@ if TYPE_CHECKING:
     from builders.harvester import Harvester
 
 _DEGENERATE_ROOM = 3
-_EXPLORE_R_MAX = 12
 _EXPLORE_R_MIN = 4
 
 
+def _claimed_ore_footprint(target: Position) -> set[tuple[int, int]]:
+    claimed = {(target.x, target.y)}
+    for direction in DIRECTIONS_4:
+        adjacent = target.add(direction)
+        claimed.add((adjacent.x, adjacent.y))
+    return claimed
+
+
+def _explore_r_max(self: Harvester) -> int:
+    env = self.environment_map
+    if env is None:
+        return _EXPLORE_R_MIN
+    return max(_EXPLORE_R_MIN, (max(env.width, env.height) + 1) // 2)
+    
 def _read_nearby_claims(c: Controller) -> set[tuple[int, int]]:
     claimed: set[tuple[int, int]] = set()
     my_team = c.get_team()
@@ -33,6 +51,8 @@ def _read_nearby_claims(c: Controller) -> set[tuple[int, int]]:
         msg_type = BuilderBotMessages.get_message_type(value)
         if msg_type == BuilderBotMessageType.CLAIM_ORE:
             target = BuilderBotMessages.decode_claim_ore(value)
+            claimed.update(_claimed_ore_footprint(target))
+            continue
         elif msg_type == BuilderBotMessageType.CLAIM_POSITION:
             target = BuilderBotMessages.decode_claim_position(value)
         else:
@@ -90,44 +110,9 @@ def _seek_dynamic_blockers(self: Harvester, c: Controller) -> list[tuple[int, in
     for pos in c.get_nearby_tiles():
         if pos == self.current_pos:
             continue
-        bot_id = c.get_tile_builder_bot_id(pos)
-        if bot_id is None or bot_id == my_id:
-            continue
-        blocked.append((pos.x, pos.y))
+        if is_builder_dynamic_blocker(c, pos, my_id):
+            blocked.append((pos.x, pos.y))
     return blocked
-
-
-def _best_ore_approach(
-    self: Harvester,
-    ore_pos: Position,
-    origin: Position | None = None,
-    c: Controller | None = None,
-) -> Position | None:
-    if origin is None:
-        origin = self.current_pos
-    env = self.environment_map
-    if env is None:
-        return None
-
-    best_target = None
-    best_dist = float("inf")
-    for direction in DIRECTIONS_4:
-        candidate = ore_pos.add(direction)
-        if candidate == origin:
-            return candidate
-        if not env.in_bounds(candidate.x, candidate.y):
-            continue
-        if not env.is_seek_candidate(candidate.x, candidate.y):
-            continue
-        if c is not None and c.is_in_vision(candidate):
-            occupier = c.get_tile_builder_bot_id(candidate)
-            if occupier is not None and occupier != c.get_id():
-                continue
-        dist = _chebyshev(origin, candidate)
-        if dist < best_dist:
-            best_dist = dist
-            best_target = candidate
-    return best_target
 
 
 def _pick_explore_target(
@@ -145,8 +130,9 @@ def _pick_explore_target(
         return None
     ox, oy = self.core_pos.x, self.core_pos.y
     bx, by = self.current_pos.x, self.current_pos.y
+    explore_r_max = _explore_r_max(self)
 
-    for R in range(_EXPLORE_R_MAX, _EXPLORE_R_MIN - 1, -1):
+    for R in range(explore_r_max, _EXPLORE_R_MIN - 1, -1):
         best: Position | None = None
         best_score = float("-inf")
 
@@ -229,6 +215,19 @@ def _target_still_viable(
     return target != self.current_pos
 
 
+def _start_placing_current_ore(self: Harvester) -> None:
+    self.placing_ore_pos = self.current_pos
+    self.placing_exit_pos = None
+    self.placing_is_titanium = (
+        self.environment_map is not None
+        and self.environment_map.tile(self.current_pos.x, self.current_pos.y) == ORE_TITANIUM
+    )
+    self.placing_sides_pending = list(DIRECTIONS_4)
+    self.placing_ring_turns = 0
+    self.placing_phase = "step_on"
+    self.state = type(self.state).PLACING_HARVESTER
+
+
 def _can_execute_seek_step(self: Harvester, c: Controller, move_dir: Direction) -> bool:
     next_pos = self.current_pos.add(move_dir)
     if c.can_move(move_dir):
@@ -237,10 +236,12 @@ def _can_execute_seek_step(self: Harvester, c: Controller, move_dir: Direction) 
         0 <= next_pos.x < c.get_map_width() and 0 <= next_pos.y < c.get_map_height()
     ):
         return False
-    if c.get_tile_env(next_pos) != Environment.EMPTY:
-        return False
     build_id = c.get_tile_building_id(next_pos)
-    if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER:
+    if (
+        build_id is not None
+        and c.get_entity_type(build_id) == EntityType.MARKER
+        and c.can_destroy(next_pos)
+    ):
         return True
     return c.can_build_road(next_pos)
 
@@ -291,7 +292,9 @@ def _seek_direction(
 
 
 def _seek(self: Harvester, c: Controller):
-    if self._try_build_harvester(c):
+    claimed = _read_nearby_claims(c)
+
+    if self._try_build_harvester(c, claimed):
         return
 
     if self.heal_target is not None:
@@ -317,8 +320,6 @@ def _seek(self: Harvester, c: Controller):
         else:
             self._advance(c, _seek_direction(self, c, self.heal_target))
         return
-
-    claimed = _read_nearby_claims(c)
 
     if self.target_pos is None or not _target_still_viable(
         self, self.target_pos, self.seek_target_is_ore, c
@@ -346,7 +347,6 @@ def _seek(self: Harvester, c: Controller):
         self.seek_target_turns = 0
         return
 
-    move_target = self.target_pos
     if self.seek_target_is_ore:
         if c.is_in_vision(self.target_pos) and not self._is_valid_ore_target(
             c, self.target_pos
@@ -355,14 +355,11 @@ def _seek(self: Harvester, c: Controller):
             self.target_pos = None
             self.seek_target_is_ore = False
             return
-        move_target = _best_ore_approach(self, self.target_pos, c=c)
-        if move_target is None:
-            self.blacklisted_ores.add((self.target_pos.x, self.target_pos.y))
-            self.target_pos = None
-            self.seek_target_is_ore = False
+        if self.current_pos == self.target_pos:
+            _start_placing_current_ore(self)
             return
 
-    move_dir = _seek_direction(self, c, move_target)
+    move_dir = _seek_direction(self, c, self.target_pos)
     if move_dir is None:
         key = (self.target_pos.x, self.target_pos.y)
         if self.seek_target_is_ore:

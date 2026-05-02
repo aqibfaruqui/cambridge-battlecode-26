@@ -24,6 +24,41 @@ def on_map(c: Controller, pos: Position):
     return 0 <= pos.x < c.get_map_width() and 0 <= pos.y < c.get_map_height()
 
 
+_BUILDER_WALKABLE_BUILDINGS = frozenset(
+    {
+        EntityType.CONVEYOR,
+        EntityType.SPLITTER,
+        EntityType.ARMOURED_CONVEYOR,
+        EntityType.BRIDGE,
+        EntityType.ROAD,
+    }
+)
+_ROAD_REPLACEABLE_BUILDINGS = frozenset({EntityType.ROAD, EntityType.MARKER})
+_ROAD_PLACEABLE_ENV = frozenset(
+    {Environment.EMPTY, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE}
+)
+
+
+def is_builder_dynamic_blocker(c: Controller, pos: Position, my_id: int | None = None) -> bool:
+    if my_id is not None:
+        bot_id = c.get_tile_builder_bot_id(pos)
+        if bot_id is not None and bot_id != my_id:
+            return True
+
+    building_id = c.get_tile_building_id(pos)
+    if building_id is None:
+        return c.get_tile_env(pos) not in _ROAD_PLACEABLE_ENV
+
+    entity_type = c.get_entity_type(building_id)
+    if entity_type in _BUILDER_WALKABLE_BUILDINGS:
+        return False
+    if entity_type == EntityType.CORE and c.get_team(building_id) == c.get_team():
+        return False
+    if entity_type in _ROAD_REPLACEABLE_BUILDINGS:
+        return False
+    return True
+
+
 def _manhattan(a: Position, b: Position):
     return abs(a.x - b.x) + abs(a.y - b.y)
 
@@ -63,7 +98,7 @@ def advance_with_road(
     current_pos: Position,
     move_dir: Direction | None,
 ) -> None:
-    """Clear a marker, pave the next empty tile, then move onto it."""
+    """Clear a marker, pave the next tile when legal, then move onto it."""
     if move_dir is None:
         return
 
@@ -76,7 +111,7 @@ def advance_with_road(
     ):
         c.destroy(move_pos)
 
-    if c.get_tile_env(move_pos) == Environment.EMPTY and c.can_build_road(move_pos):
+    if c.can_build_road(move_pos):
         c.build_road(move_pos)
 
     if c.can_move(move_dir):

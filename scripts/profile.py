@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import pstats
 import shutil
 import subprocess
@@ -59,7 +60,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.seed is not None:
         cmd += ["--seed", str(args.seed)]
     print("$ " + " ".join(cmd) + "\n")
-    result = subprocess.run(cmd, cwd=ROOT)
+    env = os.environ.copy()
+    env.setdefault("HARVESTER_PROFILE", "1")
+    result = subprocess.run(cmd, cwd=ROOT, env=env)
     if result.returncode != 0:
         return result.returncode
 

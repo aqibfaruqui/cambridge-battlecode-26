@@ -17,6 +17,7 @@ _PRIORITY = (
     EntityType.BRIDGE,
     EntityType.SPLITTER,
 )
+_PRIORITY_INDEX = {etype: priority for priority, etype in enumerate(_PRIORITY)}
 _FIRE_TYPES = frozenset(_PRIORITY)
 _RELAY_TYPES = frozenset(
     {
@@ -146,7 +147,7 @@ class Gunner:
                 if builder is not None and c.get_team(builder) != my_team:
                     etype = c.get_entity_type(builder)
                     if etype in _FIRE_TYPES:
-                        priority = _PRIORITY.index(etype)
+                        priority = _PRIORITY_INDEX[etype]
                         best[priority] = (target, dist)
                     break
                 elif builder is not None:
@@ -155,19 +156,19 @@ class Gunner:
                 if bid is not None and c.get_team(bid) == my_team:
                     etype = c.get_entity_type(bid)
                     if etype == EntityType.MARKER:
-                        best[_PRIORITY.index(EntityType.MARKER)] = (target, dist)
+                        best[_PRIORITY_INDEX[EntityType.MARKER]] = (target, dist)
                     elif etype in _RELAY_TYPES:
                         if not feeds_friendly_turret(c, target, my_team):
-                            best[_PRIORITY.index(etype)] = (target, dist)
+                            best[_PRIORITY_INDEX[etype]] = (target, dist)
                     break
                 elif bid is not None:
                     etype = c.get_entity_type(bid)
                     if etype in _RELAY_TYPES:
                         if not feeds_friendly_turret(c, target, my_team):
-                            priority = _PRIORITY.index(etype)
+                            priority = _PRIORITY_INDEX[etype]
                             best[priority] = (target, dist)
                     elif etype in _FIRE_TYPES:
-                        priority = _PRIORITY.index(etype)
+                        priority = _PRIORITY_INDEX[etype]
                         best[priority] = (target, dist)
                     break
 
@@ -288,7 +289,7 @@ class Gunner:
                 etype = c.get_entity_type(builder)
                 if c.get_team(builder) != my_team and etype in _FIRE_TYPES:
                     if first_road is not None:
-                        return _PRIORITY.index(etype), pos, first_road
+                        return _PRIORITY_INDEX[etype], pos, first_road
                 return None
 
             bid = c.get_tile_building_id(pos)
@@ -304,7 +305,7 @@ class Gunner:
                     continue
                 if c.get_team(bid) != my_team and etype in _FIRE_TYPES:
                     if first_road is not None:
-                        return _PRIORITY.index(etype), pos, first_road
+                        return _PRIORITY_INDEX[etype], pos, first_road
                 return None
 
             pos = pos.add(direction)

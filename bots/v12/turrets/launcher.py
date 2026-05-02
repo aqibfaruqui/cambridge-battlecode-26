@@ -1,4 +1,5 @@
 from cambc import Position, Controller, EntityType
+from utils.comms.debug import debug_print
 
 
 _THROW_RANGE_SQ = 26
@@ -85,7 +86,7 @@ class Launcher:
                 dest = min(tiles, key=lambda p: p.distance_squared(enemy_core))
                 c.launch(enemy_pos, dest)
                 self.idle_rounds = 0
-                print(
+                debug_print(
                     f"Launched bot at {enemy_pos} toward enemy core {enemy_core} via {dest}"
                 )
                 return
@@ -95,7 +96,7 @@ class Launcher:
         if target is not None and c.can_launch(enemy_pos, target):
             c.launch(enemy_pos, target)
             self.idle_rounds = 0
-            print(f"Launched bot at {enemy_pos} at {target}")
+            debug_print(f"Launched bot at {enemy_pos} at {target}")
             return
 
         # Priority 3: no road target — throw as far as possible from our builders.
@@ -111,11 +112,11 @@ class Launcher:
                 dest = tiles[0]
             c.launch(enemy_pos, dest)
             self.idle_rounds = 0
-            print(f"Launched bot at {enemy_pos} away from builders via {dest}")
+            debug_print(f"Launched bot at {enemy_pos} away from builders via {dest}")
             return
 
         if target is None:
-            print(f"Couldn't find a target for enemy at {enemy_pos}")
+            debug_print(f"Couldn't find a target for enemy at {enemy_pos}")
             self.idle_rounds += 1
             if self.idle_rounds > 400:
                 c.self_destruct()

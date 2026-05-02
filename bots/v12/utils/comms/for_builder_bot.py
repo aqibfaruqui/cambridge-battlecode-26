@@ -26,19 +26,7 @@ class BuilderBotMessages(IntEnum):
         decrypted = Encryption.decrypt(data)
         if (decrypted >> 28) != cls.FOR_BUILDER_BOT:
             return None
-        match BuilderBotMessageType((decrypted >> 24) & 0xF):
-            case BuilderBotMessageType.CLAIM_ORE:
-                return BuilderBotMessageType.CLAIM_ORE
-            case BuilderBotMessageType.CORE_POSITION:
-                return BuilderBotMessageType.CORE_POSITION
-            case BuilderBotMessageType.ENEMY_CORE_POSITION:
-                return BuilderBotMessageType.ENEMY_CORE_POSITION
-            case BuilderBotMessageType.CLAIM_POSITION:
-                return BuilderBotMessageType.CLAIM_POSITION
-            case BuilderBotMessageType.SYMMETRY:
-                return BuilderBotMessageType.SYMMETRY
-            case _:
-                return None
+        return BuilderBotMessageType._value2member_map_.get((decrypted >> 24) & 0xF)
 
     @classmethod
     def encode_claim_ore(cls, position: Position) -> int:

@@ -1,5 +1,5 @@
 import random
-from cambc import Controller, Direction, Position
+from cambc import Controller, Direction, EntityType, Environment, Position
 
 DIRECTIONS_4 = [
     Direction.NORTH,
@@ -78,6 +78,31 @@ def random_direction_4():
 
 def random_direction_8():
     return random.choice(DIRECTIONS_8)
+
+
+def advance_with_road(
+    c: Controller,
+    current_pos: Position,
+    move_dir: Direction | None,
+) -> None:
+    """Clear a marker, pave the next empty tile, then move onto it."""
+    if move_dir is None:
+        return
+
+    move_pos = current_pos.add(move_dir)
+    build_id = c.get_tile_building_id(move_pos)
+    if (
+        build_id is not None
+        and c.get_entity_type(build_id) == EntityType.MARKER
+        and c.can_destroy(move_pos)
+    ):
+        c.destroy(move_pos)
+
+    if c.get_tile_env(move_pos) == Environment.EMPTY and c.can_build_road(move_pos):
+        c.build_road(move_pos)
+
+    if c.can_move(move_dir):
+        c.move(move_dir)
 
 
 def reached_core(current_pos: Position, core_pos: Position):

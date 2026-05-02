@@ -162,23 +162,55 @@ def _ensure_return_planner(self: Harvester, c: Controller):
             unknown_cost=3.0,
             use_bridges=True,
         )
-    p = self.return_planner
+        self._return_planner_refreshed_round = -1
+    return self.return_planner
+
+
+def _refresh_return_planner(
+    self: Harvester,
+    c: Controller,
+    p: DStarLite,
+    pos: Position,
+    *,
+    force: bool = False,
+) -> None:
+    p.set_position(pos.x, pos.y)
+    current_round = c.get_current_round()
+    if not force and getattr(self, "_return_planner_refreshed_round", -1) == current_round:
+        return
+    p.set_dynamic_blockers(
+        _return_dynamic_blockers(self, c),
+        DSTAR_CPU_DEADLINE_US,
+        c.get_cpu_time_elapsed,
+    )
+    p.notify_map_changes(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
+    self._return_planner_refreshed_round = current_round
+
+
+def _return_planner_at(
+    self: Harvester,
+    c: Controller,
+    pos: Position,
+    *,
+    force_refresh: bool = False,
+) -> DStarLite | None:
+    p = _ensure_return_planner(self, c)
     if p is not None:
-        p.set_dynamic_blockers(
-            _return_dynamic_blockers(self, c),
-            DSTAR_CPU_DEADLINE_US,
-            c.get_cpu_time_elapsed,
-        )
-        p.notify_map_changes(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
+        _refresh_return_planner(self, c, p, pos, force=force_refresh)
     return p
 
 
-def _planner_step_at(self: Harvester, c: Controller, pos: Position) -> Direction | None:
-    p = _ensure_return_planner(self, c)
+def _planner_step_at(
+    self: Harvester,
+    c: Controller,
+    pos: Position,
+    *,
+    force_refresh: bool = False,
+) -> Direction | None:
+    p = _return_planner_at(self, c, pos, force_refresh=force_refresh)
     if p is None:
         return None
-    p.set_position(pos.x, pos.y)
-    step = p.step()
+    step = p.step(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
     return None if step == Direction.CENTRE else step
 
 
@@ -751,17 +783,15 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
             c.move(step_dir)
         return True
 
-    planner = _ensure_return_planner(self, c)
+    planner = _return_planner_at(self, c, self.current_pos)
     planner_step: Direction | None = None
     if planner is not None:
-        planner.set_position(self.current_pos.x, self.current_pos.y)
-
         step_xy = planner.step_xy(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
         if step_xy is not None:
             cx, cy = self.current_pos.x, self.current_pos.y
             tx, ty = step_xy
             dsq = (tx - cx) * (tx - cx) + (ty - cy) * (ty - cy)
-            if dsq > 1:
+            if dsq > 2:
                 if (tx, ty) in self.failed_bridge_targets:
                     self.return_planner = None
                 else:

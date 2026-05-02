@@ -3,7 +3,7 @@ import os
 import uuid
 from enum import Enum
 
-from cambc import Controller, Direction, EntityType, Environment, Position
+from cambc import Controller, Direction, EntityType, Position
 from utils.map.board import is_ore_axionite, is_ore_titanium
 from utils.harvester_states.return_to_core import (
     _attack_enemy_under_bot,
@@ -29,10 +29,11 @@ from utils.harvester_states.heal import (
     _heal as _heal_state,
     _try_enter_heal,
 )
-from utils.pathfinding.movement import DIRECTIONS_4, reached_core
+from utils.pathfinding.movement import DIRECTIONS_4, advance_with_road, reached_core
 from utils.map.raw_map_representation import EnvironmentMap, Symmetry
 from utils.pathfinding.d_star import DStarLite
 from utils.comms.broadcaster import Broadcaster
+from utils.comms.debug import DEBUG_PRINTS, debug_print
 from utils.comms.for_builder_bot import BuilderBotMessages
 from utils.healing import try_heal_nearby_bot, try_heal_nearby_building
 
@@ -198,19 +199,7 @@ class Harvester:
 
     def _advance(self, c: Controller, move_dir):
         """Move toward target and build a road on the tile stepped onto"""
-        if move_dir is None:
-            return
-
-        move_pos = self.current_pos.add(move_dir)
-        build_id = c.get_tile_building_id(move_pos)
-        if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER and c.can_destroy(move_pos):
-            c.destroy(move_pos)
-
-        if c.get_tile_env(move_pos) == Environment.EMPTY and c.can_build_road(move_pos):
-            c.build_road(move_pos)
-
-        if c.can_move(move_dir):
-            c.move(move_dir)
+        advance_with_road(c, self.current_pos, move_dir)
 
     def _is_valid_titanium_target(self, c: Controller, ore_pos: Position) -> bool:
         if not is_ore_titanium(c, ore_pos):
@@ -271,6 +260,9 @@ class Harvester:
 
     def _draw_debug(self, c: Controller):
         """Draw state-based dot and target line for debugging"""
+        if not DEBUG_PRINTS:
+            return
+
         state_colors = {
             HarvestState.SEEK: (0, 0, 255),
             HarvestState.PLACING_HARVESTER: (200, 0, 200),
@@ -434,6 +426,9 @@ class Harvester:
                 _PROFILER.dump_stats(_PROFILE_PATH)
 
     def _log_turn_state(self, c: Controller):
+        if not DEBUG_PRINTS:
+            return
+
         def _fmt_pos(pos: Position | None) -> str:
             return "-" if pos is None else f"({pos.x},{pos.y})"
 
@@ -467,7 +462,7 @@ class Harvester:
             return_mode = "post_bridge"
         elif self.return_chain_cursor is not None:
             return_mode = "remote_chain"
-        print(
+        debug_print(
             f"[harv {c.get_id()}] r={c.get_current_round()} "
             f"state={self.state.value} "
             f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "

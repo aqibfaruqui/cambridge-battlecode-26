@@ -1,10 +1,13 @@
-
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from cambc import Direction, EntityType, Environment, Position, Controller, ResourceType
 
-from utils.pathfinding.d_star import DSTAR_CPU_DEADLINE_US, DStarLite, _RETURN_BLOCK_MASK
+from utils.pathfinding.d_star import (
+    DSTAR_CPU_DEADLINE_US,
+    DStarLite,
+    _RETURN_BLOCK_MASK,
+)
 from utils.pathfinding.movement import (
     DIRECTIONS_4,
     get_direction_4,
@@ -62,7 +65,6 @@ _FEED_REPLACEABLE_TYPES = {
 }
 
 
-
 def _reset_return_state(self: Axioniter):
     self.bridge_jump_target = None
     self.bridge_target_planner = None
@@ -74,7 +76,13 @@ def _reset_return_state(self: Axioniter):
     self.failed_bridge_targets.clear()
 
 
-def _clear_bridge_walk_state(self: Axioniter, *, reset_return_planner: bool = False) -> None:
+def _same_pos(a: Position | None, b: Position | None) -> bool:
+    return a is not None and b is not None and a.x == b.x and a.y == b.y
+
+
+def _clear_bridge_walk_state(
+    self: Axioniter, *, reset_return_planner: bool = False
+) -> None:
     self.bridge_jump_target = None
     self.bridge_target_planner = None
     if reset_return_planner:
@@ -88,7 +96,7 @@ def _start_bridge_walk(self: Axioniter, target: Position) -> None:
 
 def _bridge_target_matches(c: Controller, bridge_id: int, target: Position) -> bool:
     try:
-        return c.get_bridge_target(bridge_id) == target
+        return _same_pos(c.get_bridge_target(bridge_id), target)
     except Exception:
         return True
 
@@ -98,7 +106,9 @@ def _bridge_fail(self: Axioniter, key) -> None:
     self.return_bridge_fail_counts[key] = fails
     if fails >= _MAX_BRIDGE_FAILS:
         if self.bridge_jump_target is not None:
-            self.failed_bridge_targets.add((self.bridge_jump_target.x, self.bridge_jump_target.y))
+            self.failed_bridge_targets.add(
+                (self.bridge_jump_target.x, self.bridge_jump_target.y)
+            )
         _clear_bridge_walk_state(self, reset_return_planner=True)
         self.return_bridge_fail_counts.pop(key, None)
 
@@ -134,16 +144,56 @@ def _attack_enemy_under_bot(self: Axioniter, c: Controller) -> bool:
     return True
 
 
-def _blocks_foundry_outbound(self: Axioniter, c: Controller, pos: Position, build_id: int, entity_type: EntityType) -> bool:
+def _blocks_foundry_outbound(
+    self: Axioniter,
+    c: Controller,
+    pos: Position,
+    build_id: int,
+    entity_type: EntityType,
+) -> bool:
     foundry_pos = self.outbound_foundry_pos
     if foundry_pos is None or entity_type not in _TRANSPORT_TYPES:
         return False
     if c.get_team(build_id) != c.get_team():
         return False
     out = _transport_output(c, pos, build_id)
-    if out == foundry_pos:
+    if _same_pos(out, foundry_pos):
         return True
     return c.get_stored_resource(build_id) == ResourceType.RAW_AXIONITE
+
+
+def _chain_reaches_allied_foundry(c: Controller, pos: Position) -> bool:
+    current = pos
+    seen: set[tuple[int, int]] = set()
+    max_hops = min(16, c.get_map_width() + c.get_map_height())
+    for _ in range(max_hops):
+        key = (current.x, current.y)
+        if key in seen or not _on_map(c, current) or not c.is_in_vision(current):
+            return False
+        seen.add(key)
+        bid = c.get_tile_building_id(current)
+        if bid is None or c.get_team(bid) != c.get_team():
+            return False
+        etype = c.get_entity_type(bid)
+        if etype == EntityType.FOUNDRY:
+            return True
+        if etype == EntityType.CORE:
+            return False
+        if etype not in _TRANSPORT_TYPES:
+            return False
+        out = _transport_output(c, current, bid)
+        if out is None:
+            return False
+        current = out
+    return False
+
+
+def _is_foundry_chain_blocker(
+    c: Controller, pos: Position, build_id: int, entity_type: EntityType
+) -> bool:
+    if entity_type not in _TRANSPORT_TYPES or c.get_team(build_id) != c.get_team():
+        return False
+    return _chain_reaches_allied_foundry(c, pos)
 
 
 def _return_dynamic_blockers(self: Axioniter, c: Controller) -> list[tuple[int, int]]:
@@ -173,6 +223,162 @@ def _body_dynamic_blockers(self: Axioniter, c: Controller) -> list[tuple[int, in
         if bot_id is not None and bot_id != my_id:
             blockers.append((pos.x, pos.y))
     return blockers
+
+
+def _escape_foundry_input_chain(self: Axioniter, c: Controller) -> bool:
+    build_id = c.get_tile_building_id(self.current_pos)
+    if build_id is None:
+        return False
+    entity_type = c.get_entity_type(build_id)
+    if not _is_foundry_chain_blocker(c, self.current_pos, build_id, entity_type):
+        return False
+
+    goal = self.return_target_pos or self.core_pos
+    candidates: list[Direction] = []
+    for direction in DIRECTIONS_4:
+        pos = self.current_pos.add(direction)
+        if not _on_map(c, pos) or not c.is_in_vision(pos):
+            continue
+        bid = c.get_tile_building_id(pos)
+        if bid is not None:
+            etype = c.get_entity_type(bid)
+            if c.get_team(bid) != c.get_team() or etype in (
+                EntityType.HARVESTER,
+                EntityType.FOUNDRY,
+            ):
+                continue
+            if _is_foundry_chain_blocker(c, pos, bid, etype):
+                continue
+        if c.can_move(direction):
+            candidates.append(direction)
+    candidates.sort(key=lambda d: self.current_pos.add(d).distance_squared(goal))
+    if candidates:
+        c.move(candidates[0])
+        self.return_planner = None
+        self.return_next_dir = None
+        return True
+    self.harvester_pos = None
+    self.returning_from_axionite = False
+    self.state = type(self.state).SEEK
+    _reset_return_state(self)
+    return True
+
+
+def _chain_reaches_return_goal(self: Axioniter, c: Controller, pos: Position) -> bool:
+    goal = self.return_target_pos
+    if goal is None:
+        return False
+    current = pos
+    seen: set[tuple[int, int]] = set()
+    max_hops = min(16, c.get_map_width() + c.get_map_height())
+    for _ in range(max_hops):
+        if _same_pos(current, goal) or _at_return_goal(self, current):
+            return True
+        key = (current.x, current.y)
+        if key in seen or not _on_map(c, current) or not c.is_in_vision(current):
+            return False
+        seen.add(key)
+        bid = c.get_tile_building_id(current)
+        if bid is None or c.get_team(bid) != c.get_team():
+            return False
+        etype = c.get_entity_type(bid)
+        if etype not in _TRANSPORT_TYPES:
+            return False
+        out = _transport_output(c, current, bid)
+        if out is None:
+            return False
+        current = out
+    return False
+
+
+def _escape_unproductive_transport_chain(self: Axioniter, c: Controller) -> bool:
+    build_id = c.get_tile_building_id(self.current_pos)
+    if build_id is None or c.get_team(build_id) != c.get_team():
+        return False
+    entity_type = c.get_entity_type(build_id)
+    if entity_type not in _TRANSPORT_TYPES:
+        return False
+    if _chain_reaches_return_goal(self, c, self.current_pos):
+        return False
+
+    goal = self.return_target_pos or self.core_pos
+    candidates: list[Direction] = []
+    for direction in DIRECTIONS_4:
+        pos = self.current_pos.add(direction)
+        if not _on_map(c, pos) or not c.is_in_vision(pos):
+            continue
+        bid = c.get_tile_building_id(pos)
+        if bid is not None:
+            etype = c.get_entity_type(bid)
+            if c.get_team(bid) != c.get_team() or etype in (
+                EntityType.HARVESTER,
+                EntityType.FOUNDRY,
+            ):
+                continue
+            if etype in _TRANSPORT_TYPES and not _chain_reaches_return_goal(
+                self, c, pos
+            ):
+                continue
+        if c.can_move(direction):
+            candidates.append(direction)
+    candidates.sort(key=lambda d: self.current_pos.add(d).distance_squared(goal))
+    if not candidates:
+        return False
+    c.move(candidates[0])
+    self.return_chain_cursor = None
+    self.return_planner = None
+    self.return_next_dir = None
+    return True
+
+
+def _escape_dead_end_transport_tile(self: Axioniter, c: Controller) -> bool:
+    build_id = c.get_tile_building_id(self.current_pos)
+    if build_id is None or c.get_team(build_id) != c.get_team():
+        return False
+    entity_type = c.get_entity_type(build_id)
+    if entity_type not in _TRANSPORT_TYPES:
+        return False
+    out = _transport_output(c, self.current_pos, build_id)
+    if out is not None and _on_map(c, out) and c.is_in_vision(out):
+        out_bid = c.get_tile_building_id(out)
+        if _at_return_goal(self, out):
+            return False
+        if (
+            out_bid is not None
+            and c.get_team(out_bid) == c.get_team()
+            and c.get_entity_type(out_bid)
+            in _TRANSPORT_TYPES
+            | {EntityType.CORE, EntityType.FOUNDRY, EntityType.HARVESTER}
+        ):
+            return False
+
+    goal = self.return_target_pos or self.core_pos
+    candidates: list[Direction] = []
+    for direction in DIRECTIONS_4:
+        pos = self.current_pos.add(direction)
+        if not _on_map(c, pos) or not c.is_in_vision(pos):
+            continue
+        bid = c.get_tile_building_id(pos)
+        if bid is not None:
+            etype = c.get_entity_type(bid)
+            if c.get_team(bid) != c.get_team() or etype in (
+                EntityType.HARVESTER,
+                EntityType.FOUNDRY,
+            ):
+                continue
+            if etype in _TRANSPORT_TYPES:
+                out2 = _transport_output(c, pos, bid)
+                if out2 is None or not _on_map(c, out2):
+                    continue
+        if c.can_move(direction):
+            candidates.append(direction)
+    candidates.sort(key=lambda d: self.current_pos.add(d).distance_squared(goal))
+    if not candidates:
+        return False
+    c.move(candidates[0])
+    self.return_planner = None
+    self.return_next_dir = None
+    return True
 
 
 def _ensure_return_planner(self: Axioniter, c: Controller):
@@ -229,7 +435,9 @@ def _clear_return_tile(_: Axioniter, c: Controller, pos: Position) -> bool:
     return entity_type in (EntityType.CONVEYOR, EntityType.SPLITTER, EntityType.BRIDGE)
 
 
-def _try_satisfy_remote_return_conveyor(self: Axioniter, c: Controller, pos: Position, direction: Direction | None) -> bool:
+def _try_satisfy_remote_return_conveyor(
+    self: Axioniter, c: Controller, pos: Position, direction: Direction | None
+) -> bool:
     if direction is None or direction not in DIRECTIONS_4:
         return False
     if self.current_pos.distance_squared(pos) > 2:
@@ -239,7 +447,11 @@ def _try_satisfy_remote_return_conveyor(self: Axioniter, c: Controller, pos: Pos
     if bid is not None:
         etype = c.get_entity_type(bid)
         allied = c.get_team(bid) == c.get_team()
-        if allied and etype == EntityType.CONVEYOR and c.get_direction(bid) == direction:
+        if (
+            allied
+            and etype == EntityType.CONVEYOR
+            and c.get_direction(bid) == direction
+        ):
             return True
         if etype == EntityType.MARKER and c.can_destroy(pos):
             c.destroy(pos)
@@ -266,7 +478,9 @@ def _try_satisfy_remote_return_conveyor(self: Axioniter, c: Controller, pos: Pos
     )
 
 
-def _remote_build_spots(self: Axioniter, c: Controller, target: Position) -> list[Position]:
+def _remote_build_spots(
+    self: Axioniter, c: Controller, target: Position
+) -> list[Position]:
     env = self.environment_map
     if env is None:
         return []
@@ -295,7 +509,9 @@ def _remote_build_spots(self: Axioniter, c: Controller, target: Position) -> lis
         spots.append(pos)
 
     goal = self.return_target_pos or self.current_pos
-    spots.sort(key=lambda p: (self.current_pos.distance_squared(p), p.distance_squared(goal)))
+    spots.sort(
+        key=lambda p: (self.current_pos.distance_squared(p), p.distance_squared(goal))
+    )
     return spots
 
 
@@ -314,7 +530,7 @@ def _move_toward_remote_build_spot(
 
     blockers = _body_dynamic_blockers(self, c)
     for goal in _remote_build_spots(self, c, target):
-        if goal == self.current_pos:
+        if _same_pos(goal, self.current_pos):
             return True
         planner = DStarLite(
             env,
@@ -337,12 +553,20 @@ def _move_toward_remote_build_spot(
             continue
 
         build_id = c.get_tile_building_id(move_pos)
-        if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER and c.can_destroy(move_pos):
+        if (
+            build_id is not None
+            and c.get_entity_type(build_id) == EntityType.MARKER
+            and c.can_destroy(move_pos)
+        ):
             c.destroy(move_pos)
             return True
 
         if not c.can_move(move_dir):
-            if not allow_build_road or c.get_tile_env(move_pos) != Environment.EMPTY or not c.can_build_road(move_pos):
+            if (
+                not allow_build_road
+                or c.get_tile_env(move_pos) != Environment.EMPTY
+                or not c.can_build_road(move_pos)
+            ):
                 continue
             c.build_road(move_pos)
 
@@ -353,11 +577,13 @@ def _move_toward_remote_build_spot(
     return False
 
 
-def _chain_step_from(self: Axioniter, c: Controller, cursor: Position) -> Direction | None:
+def _chain_step_from(
+    self: Axioniter, c: Controller, cursor: Position
+) -> Direction | None:
     goal = self.return_target_pos
     if goal is None:
         return None
-    if cursor == goal:
+    if _same_pos(cursor, goal):
         return None
     step = _planner_step_at(self, c, cursor) or cursor.direction_to(goal)
     if step is None or step == Direction.CENTRE:
@@ -390,12 +616,13 @@ def _handle_remote_return_chain(self: Axioniter, c: Controller) -> bool:
         if _try_satisfy_remote_return_conveyor(self, c, target, next_dir):
             self.return_chain_cursor = target
             if next_dir is not None:
-                _move_toward_remote_build_spot(self, c, target.add(next_dir), allow_build_road=False)
+                _move_toward_remote_build_spot(
+                    self, c, target.add(next_dir), allow_build_road=False
+                )
         return True
 
     _move_toward_remote_build_spot(self, c, target, allow_build_road=True)
     return True
-
 
 
 def _allied_transport_at(c: Controller, pos: Position) -> int | None:
@@ -455,7 +682,9 @@ def _update_chain_memory(self: Axioniter, c: Controller) -> None:
                 ),
                 "resource": stored,
                 "resource_id": c.get_stored_resource_id(bid),
-                "dist_core": max(abs(pos.x - self.core_pos.x), abs(pos.y - self.core_pos.y)),
+                "dist_core": max(
+                    abs(pos.x - self.core_pos.x), abs(pos.y - self.core_pos.y)
+                ),
             }
         )
         self.chain_memory[(pos.x, pos.y)] = entry
@@ -465,7 +694,9 @@ def _on_map(c: Controller, pos: Position) -> bool:
     return 0 <= pos.x < c.get_map_width() and 0 <= pos.y < c.get_map_height()
 
 
-def _flows_into(c: Controller, src: Position, src_id: int, etype: EntityType, target: Position) -> bool:
+def _flows_into(
+    c: Controller, src: Position, src_id: int, etype: EntityType, target: Position
+) -> bool:
     facing = c.get_direction(src_id)
     if facing == Direction.CENTRE:
         return False
@@ -509,7 +740,9 @@ def _foundry_has_outbound_flow(c: Controller, foundry_pos: Position) -> bool:
     return False
 
 
-def _pick_foundry_outbound_start(self: Axioniter, c: Controller, foundry_pos: Position) -> Position | None:
+def _pick_foundry_outbound_start(
+    self: Axioniter, c: Controller, foundry_pos: Position
+) -> Position | None:
     candidates: list[Position] = []
     for direction in DIRECTIONS_4:
         adj = foundry_pos.add(direction)
@@ -540,7 +773,7 @@ def _pick_foundry_outbound_start(self: Axioniter, c: Controller, foundry_pos: Po
 
 
 def _move_to_outbound_start(self: Axioniter, c: Controller, target: Position) -> bool:
-    if self.current_pos == target:
+    if _same_pos(self.current_pos, target):
         return True
     env = self.environment_map
     if env is None:
@@ -566,10 +799,18 @@ def _move_to_outbound_start(self: Axioniter, c: Controller, target: Position) ->
 
     move_pos = self.current_pos.add(move_dir)
     bid = c.get_tile_building_id(move_pos)
-    if bid is not None and c.get_entity_type(bid) == EntityType.MARKER and c.can_destroy(move_pos):
+    if (
+        bid is not None
+        and c.get_entity_type(bid) == EntityType.MARKER
+        and c.can_destroy(move_pos)
+    ):
         c.destroy(move_pos)
         return False
-    if not c.can_move(move_dir) and c.get_tile_env(move_pos) == Environment.EMPTY and c.can_build_road(move_pos):
+    if (
+        not c.can_move(move_dir)
+        and c.get_tile_env(move_pos) == Environment.EMPTY
+        and c.can_build_road(move_pos)
+    ):
         c.build_road(move_pos)
     if c.can_move(move_dir):
         c.move(move_dir)
@@ -608,7 +849,10 @@ def _handle_foundry_outbound(self: Axioniter, c: Controller) -> bool:
         if self.outbound_start_pos is None:
             return True
 
-    if self.current_pos != self.outbound_start_pos and not self.outbound_started:
+    if (
+        not _same_pos(self.current_pos, self.outbound_start_pos)
+        and not self.outbound_started
+    ):
         _move_to_outbound_start(self, c, self.outbound_start_pos)
         return True
 
@@ -630,10 +874,12 @@ def _handle_foundry_outbound(self: Axioniter, c: Controller) -> bool:
 
 
 def _at_return_goal(self: Axioniter, pos: Position) -> bool:
-    return self.return_target_pos is not None and pos == self.return_target_pos
+    return _same_pos(pos, self.return_target_pos)
 
 
-def _finish_foundry_return(self: Axioniter, c: Controller, foundry_pos: Position) -> None:
+def _finish_foundry_return(
+    self: Axioniter, c: Controller, foundry_pos: Position
+) -> None:
     self.foundry_curr_placed = True
     self.foundry_prev_placed = True
     self.foundry_placed_round = c.get_current_round()
@@ -658,7 +904,7 @@ def _finish_foundry_return(self: Axioniter, c: Controller, foundry_pos: Position
 
 
 def _feed_conveyor_ready(self: Axioniter, c: Controller, goal: Position) -> bool:
-    if self.current_pos == goal:
+    if _same_pos(self.current_pos, goal):
         return False
 
     feed_dir = self.current_pos.direction_to(goal)
@@ -703,7 +949,11 @@ def _try_place_foundry(self: Axioniter, c: Controller, goal: Position) -> bool:
         return False
 
     bid = c.get_tile_building_id(goal)
-    if bid is not None and c.get_entity_type(bid) == EntityType.FOUNDRY and c.get_team(bid) == c.get_team():
+    if (
+        bid is not None
+        and c.get_entity_type(bid) == EntityType.FOUNDRY
+        and c.get_team(bid) == c.get_team()
+    ):
         _finish_foundry_return(self, c, goal)
         return True
 
@@ -751,9 +1001,9 @@ def _try_chain_shortcut(self: Axioniter, c: Controller) -> bool:
     return False
 
 
-
-
-def _next_dir_after_move(self: Axioniter, c: Controller, move_dir: Direction) -> Direction | None:
+def _next_dir_after_move(
+    self: Axioniter, c: Controller, move_dir: Direction
+) -> Direction | None:
     """Conveyor direction to place on the tile we're about to step onto."""
     move_pos = self.current_pos.add(move_dir)
     if _at_return_goal(self, move_pos):
@@ -801,7 +1051,9 @@ def _handle_post_bridge_conveyor(self: Axioniter, c: Controller) -> bool:
                 c.destroy(self.current_pos)
             return True
         if etype == EntityType.ROAD:
-            if c.get_tile_env(self.current_pos) == Environment.EMPTY and c.can_destroy(self.current_pos):
+            if c.get_tile_env(self.current_pos) == Environment.EMPTY and c.can_destroy(
+                self.current_pos
+            ):
                 c.destroy(self.current_pos)
             else:
                 self.return_next_dir = conveyor_dir
@@ -812,14 +1064,23 @@ def _handle_post_bridge_conveyor(self: Axioniter, c: Controller) -> bool:
         tile_empty = c.get_tile_env(self.current_pos) == Environment.EMPTY
         ti, _ = c.get_global_resources()
         conveyor_cost_ti, _ = c.get_conveyor_cost()
-        if tile_empty and ti >= conveyor_cost_ti and c.can_build_conveyor(self.current_pos, conveyor_dir):
+        if (
+            tile_empty
+            and ti >= conveyor_cost_ti
+            and c.can_build_conveyor(self.current_pos, conveyor_dir)
+        ):
             c.build_conveyor(self.current_pos, conveyor_dir)
 
         bid = c.get_tile_building_id(self.current_pos)
-        connected = bid is not None and c.get_team(bid) == c.get_team() and c.get_entity_type(bid) in (
-            EntityType.CONVEYOR,
-            EntityType.SPLITTER,
-            EntityType.BRIDGE,
+        connected = (
+            bid is not None
+            and c.get_team(bid) == c.get_team()
+            and c.get_entity_type(bid)
+            in (
+                EntityType.CONVEYOR,
+                EntityType.SPLITTER,
+                EntityType.BRIDGE,
+            )
         )
         if connected:
             self.return_next_dir = conveyor_dir
@@ -836,13 +1097,25 @@ def _handle_bridge_jump(self: Axioniter, c: Controller, target_pos: Position) ->
     bridge_pos = self.current_pos
 
     if self.bridge_jump_target is not None:
+        if self.current_pos.distance_squared(self.bridge_jump_target) == 0:
+            if _at_return_goal(self, self.current_pos):
+                _complete_return(self, c)
+            else:
+                _clear_bridge_walk_state(self)
+                self.post_bridge_conveyor = True
+            return True
         return _walk_toward_bridge_target(self, c)
 
     bid = c.get_tile_building_id(bridge_pos)
     entity_type = c.get_entity_type(bid) if bid is not None else None
     allied = bid is not None and c.get_team(bid) == c.get_team()
 
-    if bid is not None and allied and entity_type == EntityType.BRIDGE and _bridge_target_matches(c, bid, target_pos):
+    if (
+        bid is not None
+        and allied
+        and entity_type == EntityType.BRIDGE
+        and _bridge_target_matches(c, bid, target_pos)
+    ):
         _start_bridge_walk(self, target_pos)
         return _walk_toward_bridge_target(self, c)
 
@@ -871,7 +1144,9 @@ def _handle_bridge_jump(self: Axioniter, c: Controller, target_pos: Position) ->
     return True
 
 
-def _ensure_bridge_target_planner(self: Axioniter, c: Controller, target: Position) -> DStarLite | None:
+def _ensure_bridge_target_planner(
+    self: Axioniter, c: Controller, target: Position
+) -> DStarLite | None:
     if self.bridge_target_planner is None and self.environment_map is not None:
         self.bridge_target_planner = DStarLite(
             self.environment_map,
@@ -917,6 +1192,7 @@ def _can_execute_bridge_walk_step(c: Controller, move_dir: Direction) -> bool:
         return True
     return c.can_build_road(move_pos)
 
+
 def _walk_toward_bridge_target(self: Axioniter, c: Controller) -> bool:
     target = self.bridge_jump_target
     if target is None:
@@ -927,7 +1203,7 @@ def _walk_toward_bridge_target(self: Axioniter, c: Controller) -> bool:
             _complete_return(self, c)
             return True
 
-    if self.current_pos == target:
+    if _same_pos(self.current_pos, target):
         if _at_return_goal(self, target):
             _complete_return(self, c)
             return True
@@ -937,19 +1213,29 @@ def _walk_toward_bridge_target(self: Axioniter, c: Controller) -> bool:
 
     p = _ensure_bridge_target_planner(self, c, target)
     move_dir = (
-        p.step(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
-        if p is not None
-        else None
+        p.step(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed) if p is not None else None
     )
     if move_dir is None or move_dir == Direction.CENTRE:
         if p is not None and p.planning_pending():
             return True
-        key = ("bridge_walk", self.current_pos.x, self.current_pos.y, target.x, target.y)
+        key = (
+            "bridge_walk",
+            self.current_pos.x,
+            self.current_pos.y,
+            target.x,
+            target.y,
+        )
         _bridge_fail(self, key)
         return True
 
     if not _can_execute_bridge_walk_step(c, move_dir):
-        key = ("bridge_walk", self.current_pos.x, self.current_pos.y, target.x, target.y)
+        key = (
+            "bridge_walk",
+            self.current_pos.x,
+            self.current_pos.y,
+            target.x,
+            target.y,
+        )
         _bridge_fail(self, key)
         return True
 
@@ -959,7 +1245,11 @@ def _walk_toward_bridge_target(self: Axioniter, c: Controller) -> bool:
         return True
 
     build_id = c.get_tile_building_id(move_pos)
-    if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER and c.can_destroy(move_pos):
+    if (
+        build_id is not None
+        and c.get_entity_type(build_id) == EntityType.MARKER
+        and c.can_destroy(move_pos)
+    ):
         c.destroy(move_pos)
         return True
 
@@ -980,9 +1270,21 @@ def _build_return_step(self: Axioniter, c: Controller) -> bool:
         return True
 
     if self.bridge_jump_target is not None:
+        if self.current_pos.distance_squared(self.bridge_jump_target) == 0:
+            if _at_return_goal(self, self.current_pos):
+                _complete_return(self, c)
+            else:
+                _clear_bridge_walk_state(self)
+                self.post_bridge_conveyor = True
+            return True
         return _walk_toward_bridge_target(self, c)
 
+    if _escape_foundry_input_chain(self, c):
+        return True
+
     if self.return_chain_cursor is not None:
+        if _escape_unproductive_transport_chain(self, c):
+            return True
         return _handle_remote_return_chain(self, c)
 
     if self.just_placed:
@@ -994,14 +1296,20 @@ def _build_return_step(self: Axioniter, c: Controller) -> bool:
             ns, ew = split_diagonal(self.current_pos, self.harvester_pos)
             m1 = self.current_pos.add(ns)  # type: ignore
             m2 = self.current_pos.add(ew)  # type: ignore
-            move_pos = m1 if m1.distance_squared(goal) < m2.distance_squared(goal) else m2
+            move_pos = (
+                m1 if m1.distance_squared(goal) < m2.distance_squared(goal) else m2
+            )
 
         if _at_return_goal(self, move_pos):
             _complete_return(self, c)
             return True
 
         build_id = c.get_tile_building_id(move_pos)
-        if build_id is not None and c.get_entity_type(build_id) in {EntityType.ROAD, EntityType.CONVEYOR} and c.can_destroy(move_pos):
+        if (
+            build_id is not None
+            and c.get_entity_type(build_id) in {EntityType.ROAD, EntityType.CONVEYOR}
+            and c.can_destroy(move_pos)
+        ):
             c.destroy(move_pos)
 
         step = _planner_step_at(self, c, move_pos) or move_pos.direction_to(goal)
@@ -1019,7 +1327,11 @@ def _build_return_step(self: Axioniter, c: Controller) -> bool:
         if c.can_build_conveyor(move_pos, step):
             c.build_conveyor(move_pos, step)
 
-        step_dir = get_direction_4(self.current_pos, move_pos) if self.current_pos != move_pos else None
+        step_dir = (
+            get_direction_4(self.current_pos, move_pos)
+            if self.current_pos != move_pos
+            else None
+        )
         if step_dir and not c.can_move(step_dir):
             return False
         self.just_placed = False
@@ -1059,10 +1371,27 @@ def _build_return_step(self: Axioniter, c: Controller) -> bool:
             move_dir = self.current_pos.direction_to(goal)
         if move_dir is None or move_dir == Direction.CENTRE:
             return False
+        if move_dir not in DIRECTIONS_4:
+            goal = self.return_target_pos
+            if goal is None:
+                return False
+            move_dir = get_direction_4(self.current_pos, goal)
+            if move_dir is None:
+                return False
 
     next_dir = _next_dir_after_move(self, c, move_dir)
 
     move_pos = self.current_pos.add(move_dir)
+    if not c.can_move(move_dir) and c.get_tile_env(move_pos) != Environment.EMPTY:
+        goal = self.return_target_pos
+        direct_dir = (
+            get_direction_4(self.current_pos, goal) if goal is not None else None
+        )
+        if direct_dir is not None and direct_dir != move_dir and c.can_move(direct_dir):
+            self.return_planner = None
+            move_dir = direct_dir
+            next_dir = _next_dir_after_move(self, c, move_dir)
+            move_pos = self.current_pos.add(move_dir)
 
     if _at_return_goal(self, move_pos):
         _complete_return(self, c)
@@ -1091,13 +1420,30 @@ def _build_return_step(self: Axioniter, c: Controller) -> bool:
         c.move(move_dir)
         return True
 
+    move_bid = c.get_tile_building_id(move_pos)
+    if (
+        not c.can_move(move_dir)
+        and move_bid is not None
+        and c.get_team(move_bid) == c.get_team()
+        and c.get_entity_type(move_bid) in _TRANSPORT_TYPES
+    ):
+        self.return_chain_cursor = move_pos
+        self.return_next_dir = None
+        if next_dir is not None:
+            _move_toward_remote_build_spot(
+                self, c, move_pos.add(next_dir), allow_build_road=False
+            )
+        return True
+
     bot_id = c.get_tile_builder_bot_id(move_pos)
     if bot_id is not None and bot_id != c.get_id():
         if _try_satisfy_remote_return_conveyor(self, c, move_pos, next_dir):
             self.return_chain_cursor = move_pos
             self.return_next_dir = None
             if next_dir is not None:
-                _move_toward_remote_build_spot(self, c, move_pos.add(next_dir), allow_build_road=False)
+                _move_toward_remote_build_spot(
+                    self, c, move_pos.add(next_dir), allow_build_road=False
+                )
         return True
 
     if not c.can_move(move_dir):

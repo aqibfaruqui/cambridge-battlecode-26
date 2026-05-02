@@ -7,6 +7,7 @@ from utils.map.board import is_ore_axionite
 from utils.axioniter_states.return_to_core import (
     _attack_enemy_under_bot,
     _build_return_step,
+    _clear_bridge_walk_state,
     _handle_foundry_outbound,
     _handle_post_bridge_conveyor,
     _reset_return_state,
@@ -42,6 +43,7 @@ from utils.healing import try_heal_nearby_bot, try_heal_nearby_building
 # capability-style rather than sniffing env vars (which the sandbox may hide).
 try:
     import cProfile
+
     _PROFILE_ENABLED = os.environ.get("HARVESTER_PROFILE") == "1"
     if _PROFILE_ENABLED:
         _PROFILER = cProfile.Profile()
@@ -53,6 +55,7 @@ try:
         os.makedirs(_PROFILE_DIR, exist_ok=True)
 except ImportError:
     _PROFILE_ENABLED = False
+
 
 class AxioniterState(Enum):
     __slots__ = ()
@@ -84,7 +87,7 @@ class Axioniter:
         self.foundry_curr_placed = False
         self.splitter_for_foundry = False
         self.foundry_placed_round: int = -1
-        
+
         self.environment_map: EnvironmentMap | None = None
         self.seek_planner: DStarLite | None = None
         self.seek_planner_goal: tuple[int, int] | None = None
@@ -153,7 +156,9 @@ class Axioniter:
         self._core_broadcasted = False
         self._enemy_core_broadcasted = False
 
-    def _mark_foundry_seen(self, c: Controller, reason: str, pos: Position | None = None) -> None:
+    def _mark_foundry_seen(
+        self, c: Controller, reason: str, pos: Position | None = None
+    ) -> None:
         if not self.foundry_prev_placed:
             suffix = "" if pos is None else f" pos=({pos.x},{pos.y})"
             print(
@@ -162,7 +167,11 @@ class Axioniter:
             )
         self.foundry_prev_placed = True
         self.returning_from_axionite = False
-        if self.target_pos is not None and self.seek_target_is_ore and c.is_in_vision(self.target_pos):
+        if (
+            self.target_pos is not None
+            and self.seek_target_is_ore
+            and c.is_in_vision(self.target_pos)
+        ):
             if is_ore_axionite(c, self.target_pos):
                 self.blacklisted_ores.discard((self.target_pos.x, self.target_pos.y))
                 self.target_pos = None
@@ -172,7 +181,9 @@ class Axioniter:
         """Identify the one-foundry cap from vision or a single-turn scale jump."""
         scale = c.get_scale_percent()
         if self._scale_initialized and scale - self.cost_scale >= _FOUNDRY_SCALE_JUMP:
-            self._mark_foundry_seen(c, f"scale_jump_{self.cost_scale:.1f}_to_{scale:.1f}")
+            self._mark_foundry_seen(
+                c, f"scale_jump_{self.cost_scale:.1f}_to_{scale:.1f}"
+            )
         self.cost_scale = scale
         self._scale_initialized = True
 
@@ -190,7 +201,9 @@ class Axioniter:
     def _axionite_unlocked(self, c: Controller) -> bool:
         return True
 
-    def _record_seen_team_harvesters(self, c: Controller, nearby_buildings=None) -> None:
+    def _record_seen_team_harvesters(
+        self, c: Controller, nearby_buildings=None
+    ) -> None:
         if nearby_buildings is None:
             nearby_buildings = c.get_nearby_buildings()
         team = c.get_team()
@@ -253,9 +266,13 @@ class Axioniter:
                 continue
             candidates.sort(key=lambda p: self.current_pos.distance_squared(p))
             next_target = candidates[0]
-            old_goal = None if self.return_target_pos is None else (
-                self.return_target_pos.x,
-                self.return_target_pos.y,
+            old_goal = (
+                None
+                if self.return_target_pos is None
+                else (
+                    self.return_target_pos.x,
+                    self.return_target_pos.y,
+                )
             )
             new_goal = (next_target.x, next_target.y)
             self.return_target_pos = next_target
@@ -287,7 +304,11 @@ class Axioniter:
 
         move_pos = self.current_pos.add(move_dir)
         build_id = c.get_tile_building_id(move_pos)
-        if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER and c.can_destroy(move_pos):
+        if (
+            build_id is not None
+            and c.get_entity_type(build_id) == EntityType.MARKER
+            and c.can_destroy(move_pos)
+        ):
             c.destroy(move_pos)
 
         if c.get_tile_env(move_pos) == Environment.EMPTY and c.can_build_road(move_pos):
@@ -303,7 +324,10 @@ class Axioniter:
         build_id = c.get_tile_building_id(ore_pos)
         if build_id is None:
             return True
-        return c.get_entity_type(build_id) not in {EntityType.HARVESTER, EntityType.GUNNER}
+        return c.get_entity_type(build_id) not in {
+            EntityType.HARVESTER,
+            EntityType.GUNNER,
+        }
 
     def _is_valid_ore_target(self, c: Controller, ore_pos: Position) -> bool:
         return self._is_valid_axionite_target(c, ore_pos)
@@ -373,7 +397,20 @@ class Axioniter:
 
         self._refresh_return_target(c)
         if self.return_target_pos is None:
+            self.returning_from_axionite = False
+            self.harvester_pos = None
+            self.target_pos = None
+            self.seek_target_is_ore = False
+            self.state = AxioniterState.SEEK
+            _reset_return_state(self)
             return
+
+        if (
+            self.bridge_jump_target is not None
+            and self.current_pos.distance_squared(self.bridge_jump_target) == 0
+        ):
+            _clear_bridge_walk_state(self)
+            self.post_bridge_conveyor = True
 
         if _try_chain_shortcut(self, c):
             return
@@ -419,7 +456,9 @@ class Axioniter:
         if self.environment_map.symmetry is not None:
             if not self._symmetry_broadcasted:
                 self.broadcaster.add_broadcast(
-                    BuilderBotMessages.encode_symmetry(self.environment_map.symmetry.value)
+                    BuilderBotMessages.encode_symmetry(
+                        self.environment_map.symmetry.value
+                    )
                 )
                 self._symmetry_broadcasted = True
             if not self._core_broadcasted:
@@ -438,7 +477,11 @@ class Axioniter:
         try_heal_nearby_bot(c, self.current_pos)
         try_heal_nearby_building(c, self.current_pos)
 
-        if self.state not in (AxioniterState.DEFEND, AxioniterState.HEAL, AxioniterState.PLACING_HARVESTER):
+        if self.state not in (
+            AxioniterState.DEFEND,
+            AxioniterState.HEAL,
+            AxioniterState.PLACING_HARVESTER,
+        ):
             _try_enter_heal(self, c)
 
         match self.state:

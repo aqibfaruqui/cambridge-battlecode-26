@@ -1,10 +1,10 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from cambc import Controller, Direction, EntityType, Environment, Position
+from cambc import Controller, Direction, EntityType, Position
 
 from utils.healing import try_heal_nearby_conveyor
-from utils.axioniter_states.seek import _seek_direction
+from utils.axioniter_states.seek import _idle_rejoin_direction, _seek_direction
 from utils.pathfinding.movement import DIRECTIONS_4
 
 if TYPE_CHECKING:
@@ -15,8 +15,8 @@ _PATROL_MAX_TURNS = 80
 _OPPOSITE: dict[Direction, Direction] = {
     Direction.NORTH: Direction.SOUTH,
     Direction.SOUTH: Direction.NORTH,
-    Direction.EAST:  Direction.WEST,
-    Direction.WEST:  Direction.EAST,
+    Direction.EAST: Direction.WEST,
+    Direction.WEST: Direction.EAST,
 }
 
 
@@ -56,7 +56,7 @@ def _patrol_step(self: Axioniter, c: Controller, going_out: bool) -> Direction |
         waypoint = _passable_near(self, raw) if raw is not None else self.core_pos
     else:
         waypoint = self.patrol_inner if self.patrol_inner is not None else self.core_pos
-    return _seek_direction(self, c, waypoint)
+    return _seek_direction(self, c, waypoint) or _idle_rejoin_direction(self, c)
 
 
 def _patrol(self: Axioniter, c: Controller) -> None:

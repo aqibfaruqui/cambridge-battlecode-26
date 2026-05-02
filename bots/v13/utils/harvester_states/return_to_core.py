@@ -1,10 +1,13 @@
-
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from cambc import Direction, EntityType, Environment, Position, Controller, ResourceType
 
-from utils.pathfinding.d_star import DSTAR_CPU_DEADLINE_US, DStarLite, _RETURN_BLOCK_MASK
+from utils.pathfinding.d_star import (
+    DSTAR_CPU_DEADLINE_US,
+    DStarLite,
+    _RETURN_BLOCK_MASK,
+)
 from utils.pathfinding.movement import (
     DIRECTIONS_4,
     get_direction_4,
@@ -46,7 +49,6 @@ _ACTION_RADIUS_OFFSETS = (
 )
 
 
-
 def _reset_return_state(self: Harvester):
     self.bridge_jump_target = None
     self.bridge_target_planner = None
@@ -58,7 +60,13 @@ def _reset_return_state(self: Harvester):
     self.failed_bridge_targets.clear()
 
 
-def _clear_bridge_walk_state(self: Harvester, *, reset_return_planner: bool = False) -> None:
+def _same_pos(a: Position | None, b: Position | None) -> bool:
+    return a is not None and b is not None and a.x == b.x and a.y == b.y
+
+
+def _clear_bridge_walk_state(
+    self: Harvester, *, reset_return_planner: bool = False
+) -> None:
     self.bridge_jump_target = None
     self.bridge_target_planner = None
     if reset_return_planner:
@@ -72,7 +80,7 @@ def _start_bridge_walk(self: Harvester, target: Position) -> None:
 
 def _bridge_target_matches(c: Controller, bridge_id: int, target: Position) -> bool:
     try:
-        return c.get_bridge_target(bridge_id) == target
+        return _same_pos(c.get_bridge_target(bridge_id), target)
     except Exception:
         return True
 
@@ -82,7 +90,9 @@ def _bridge_fail(self: Harvester, key) -> None:
     self.return_bridge_fail_counts[key] = fails
     if fails >= _MAX_BRIDGE_FAILS:
         if self.bridge_jump_target is not None:
-            self.failed_bridge_targets.add((self.bridge_jump_target.x, self.bridge_jump_target.y))
+            self.failed_bridge_targets.add(
+                (self.bridge_jump_target.x, self.bridge_jump_target.y)
+            )
         _clear_bridge_walk_state(self, reset_return_planner=True)
         self.return_bridge_fail_counts.pop(key, None)
 
@@ -118,16 +128,56 @@ def _attack_enemy_under_bot(self: Harvester, c: Controller) -> bool:
     return True
 
 
-def _blocks_foundry_outbound(self: Harvester, c: Controller, pos: Position, build_id: int, entity_type: EntityType) -> bool:
+def _blocks_foundry_outbound(
+    self: Harvester,
+    c: Controller,
+    pos: Position,
+    build_id: int,
+    entity_type: EntityType,
+) -> bool:
     foundry_pos = getattr(self, "outbound_foundry_pos", None)
     if foundry_pos is None or entity_type not in _TRANSPORT_TYPES:
         return False
     if c.get_team(build_id) != c.get_team():
         return False
     out = _transport_output(c, pos, build_id)
-    if out == foundry_pos:
+    if _same_pos(out, foundry_pos):
         return True
     return c.get_stored_resource(build_id) == ResourceType.RAW_AXIONITE
+
+
+def _chain_reaches_allied_foundry(c: Controller, pos: Position) -> bool:
+    current = pos
+    seen: set[tuple[int, int]] = set()
+    max_hops = min(16, c.get_map_width() + c.get_map_height())
+    for _ in range(max_hops):
+        key = (current.x, current.y)
+        if key in seen or not _on_map(c, current) or not c.is_in_vision(current):
+            return False
+        seen.add(key)
+        bid = c.get_tile_building_id(current)
+        if bid is None or c.get_team(bid) != c.get_team():
+            return False
+        etype = c.get_entity_type(bid)
+        if etype == EntityType.FOUNDRY:
+            return True
+        if etype == EntityType.CORE:
+            return False
+        if etype not in _TRANSPORT_TYPES:
+            return False
+        out = _transport_output(c, current, bid)
+        if out is None:
+            return False
+        current = out
+    return False
+
+
+def _is_foundry_chain_blocker(
+    c: Controller, pos: Position, build_id: int, entity_type: EntityType
+) -> bool:
+    if entity_type not in _TRANSPORT_TYPES or c.get_team(build_id) != c.get_team():
+        return False
+    return _chain_reaches_allied_foundry(c, pos)
 
 
 def _return_dynamic_blockers(self: Harvester, c: Controller) -> list[tuple[int, int]]:
@@ -149,7 +199,14 @@ def _return_dynamic_blockers(self: Harvester, c: Controller) -> list[tuple[int, 
             blockers.append((pos.x, pos.y))
             # Block tiles adjacent to allied Ti harvesters so Ax chains route away from Ti chains.
             # Only in axionite return during the normal walk (not bridge walk/post-bridge).
-            if self.returning_from_axionite and self.bridge_jump_target is None and not self.post_bridge_conveyor and entity_type == EntityType.HARVESTER and c.get_team(build_id) == team and c.get_tile_env(pos) == Environment.ORE_TITANIUM:
+            if (
+                self.returning_from_axionite
+                and self.bridge_jump_target is None
+                and not self.post_bridge_conveyor
+                and entity_type == EntityType.HARVESTER
+                and c.get_team(build_id) == team
+                and c.get_tile_env(pos) == Environment.ORE_TITANIUM
+            ):
                 for d in DIRECTIONS_4:
                     adj = pos.add(d)
                     if _on_map(c, adj) and c.is_in_vision(adj):
@@ -166,6 +223,110 @@ def _body_dynamic_blockers(self: Harvester, c: Controller) -> list[tuple[int, in
         if bot_id is not None and bot_id != my_id:
             blockers.append((pos.x, pos.y))
     return blockers
+
+
+def _escape_foundry_input_chain(self: Harvester, c: Controller) -> bool:
+    build_id = c.get_tile_building_id(self.current_pos)
+    if build_id is None:
+        return False
+    entity_type = c.get_entity_type(build_id)
+    if not _is_foundry_chain_blocker(c, self.current_pos, build_id, entity_type):
+        return False
+
+    _complete_return_from_bridge(self, c)
+    return True
+
+
+def _escape_unproductive_transport_chain(self: Harvester, c: Controller) -> bool:
+    build_id = c.get_tile_building_id(self.current_pos)
+    if build_id is None or c.get_team(build_id) != c.get_team():
+        return False
+    entity_type = c.get_entity_type(build_id)
+    if entity_type not in _TRANSPORT_TYPES:
+        return False
+    if _chain_reaches_core(c, self.current_pos, self.core_pos):
+        return False
+
+    candidates: list[Direction] = []
+    for direction in DIRECTIONS_4:
+        pos = self.current_pos.add(direction)
+        if not _on_map(c, pos) or not c.is_in_vision(pos):
+            continue
+        bid = c.get_tile_building_id(pos)
+        if bid is not None:
+            etype = c.get_entity_type(bid)
+            if c.get_team(bid) != c.get_team() or etype in (
+                EntityType.HARVESTER,
+                EntityType.FOUNDRY,
+            ):
+                continue
+            if etype in _TRANSPORT_TYPES and not _chain_reaches_core(
+                c, pos, self.core_pos
+            ):
+                continue
+        if c.can_move(direction):
+            candidates.append(direction)
+    candidates.sort(
+        key=lambda d: self.current_pos.add(d).distance_squared(self.core_pos)
+    )
+    if not candidates:
+        return False
+    c.move(candidates[0])
+    self.return_chain_cursor = None
+    self.return_planner = None
+    self.return_next_dir = None
+    return True
+
+
+def _escape_dead_end_transport_tile(self: Harvester, c: Controller) -> bool:
+    build_id = c.get_tile_building_id(self.current_pos)
+    if build_id is None or c.get_team(build_id) != c.get_team():
+        return False
+    entity_type = c.get_entity_type(build_id)
+    if entity_type not in _TRANSPORT_TYPES:
+        return False
+    out = _transport_output(c, self.current_pos, build_id)
+    if out is not None and _on_map(c, out) and c.is_in_vision(out):
+        out_bid = c.get_tile_building_id(out)
+        if out.distance_squared(self.core_pos) <= 2:
+            return False
+        if (
+            out_bid is not None
+            and c.get_team(out_bid) == c.get_team()
+            and c.get_entity_type(out_bid)
+            in _TRANSPORT_TYPES
+            | {EntityType.CORE, EntityType.FOUNDRY, EntityType.HARVESTER}
+        ):
+            return False
+
+    candidates: list[Direction] = []
+    for direction in DIRECTIONS_4:
+        pos = self.current_pos.add(direction)
+        if not _on_map(c, pos) or not c.is_in_vision(pos):
+            continue
+        bid = c.get_tile_building_id(pos)
+        if bid is not None:
+            etype = c.get_entity_type(bid)
+            if c.get_team(bid) != c.get_team() or etype in (
+                EntityType.HARVESTER,
+                EntityType.FOUNDRY,
+            ):
+                continue
+            if etype in _TRANSPORT_TYPES:
+                out2 = _transport_output(c, pos, bid)
+                if out2 is None or not _on_map(c, out2):
+                    continue
+        if c.can_move(direction):
+            candidates.append(direction)
+    candidates.sort(
+        key=lambda d: self.current_pos.add(d).distance_squared(self.core_pos)
+    )
+    if not candidates:
+        return False
+    c.move(candidates[0])
+    self.return_planner = None
+    self.return_next_dir = None
+    return True
 
 
 def _ensure_return_planner(self: Harvester, c: Controller):
@@ -215,7 +376,9 @@ def _clear_return_tile(_: Harvester, c: Controller, pos: Position) -> bool:
     return entity_type in (EntityType.CONVEYOR, EntityType.SPLITTER, EntityType.BRIDGE)
 
 
-def _try_satisfy_remote_return_conveyor(self: Harvester, c: Controller, pos: Position, direction: Direction | None) -> bool:
+def _try_satisfy_remote_return_conveyor(
+    self: Harvester, c: Controller, pos: Position, direction: Direction | None
+) -> bool:
     if direction is None or direction not in DIRECTIONS_4:
         return False
     if self.current_pos.distance_squared(pos) > 2:
@@ -225,7 +388,11 @@ def _try_satisfy_remote_return_conveyor(self: Harvester, c: Controller, pos: Pos
     if bid is not None:
         etype = c.get_entity_type(bid)
         allied = c.get_team(bid) == c.get_team()
-        if allied and etype == EntityType.CONVEYOR and c.get_direction(bid) == direction:
+        if (
+            allied
+            and etype == EntityType.CONVEYOR
+            and c.get_direction(bid) == direction
+        ):
             return True
         if etype == EntityType.MARKER and c.can_destroy(pos):
             c.destroy(pos)
@@ -252,7 +419,9 @@ def _try_satisfy_remote_return_conveyor(self: Harvester, c: Controller, pos: Pos
     )
 
 
-def _remote_build_spots(self: Harvester, c: Controller, target: Position) -> list[Position]:
+def _remote_build_spots(
+    self: Harvester, c: Controller, target: Position
+) -> list[Position]:
     env = self.environment_map
     if env is None:
         return []
@@ -280,7 +449,12 @@ def _remote_build_spots(self: Harvester, c: Controller, target: Position) -> lis
                 continue
         spots.append(pos)
 
-    spots.sort(key=lambda p: (self.current_pos.distance_squared(p), p.distance_squared(self.core_pos)))
+    spots.sort(
+        key=lambda p: (
+            self.current_pos.distance_squared(p),
+            p.distance_squared(self.core_pos),
+        )
+    )
     return spots
 
 
@@ -299,7 +473,7 @@ def _move_toward_remote_build_spot(
 
     blockers = _body_dynamic_blockers(self, c)
     for goal in _remote_build_spots(self, c, target):
-        if goal == self.current_pos:
+        if _same_pos(goal, self.current_pos):
             return True
         planner = DStarLite(
             env,
@@ -322,12 +496,20 @@ def _move_toward_remote_build_spot(
             continue
 
         build_id = c.get_tile_building_id(move_pos)
-        if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER and c.can_destroy(move_pos):
+        if (
+            build_id is not None
+            and c.get_entity_type(build_id) == EntityType.MARKER
+            and c.can_destroy(move_pos)
+        ):
             c.destroy(move_pos)
             return True
 
         if not c.can_move(move_dir):
-            if not allow_build_road or c.get_tile_env(move_pos) != Environment.EMPTY or not c.can_build_road(move_pos):
+            if (
+                not allow_build_road
+                or c.get_tile_env(move_pos) != Environment.EMPTY
+                or not c.can_build_road(move_pos)
+            ):
                 continue
             c.build_road(move_pos)
 
@@ -338,7 +520,9 @@ def _move_toward_remote_build_spot(
     return False
 
 
-def _chain_step_from(self: Harvester, c: Controller, cursor: Position) -> Direction | None:
+def _chain_step_from(
+    self: Harvester, c: Controller, cursor: Position
+) -> Direction | None:
     step = _planner_step_at(self, c, cursor) or cursor.direction_to(self.core_pos)
     if step is None or step == Direction.CENTRE:
         return None
@@ -361,7 +545,11 @@ def _handle_remote_return_chain(self: Harvester, c: Controller) -> bool:
         return True
     target = cursor.add(chain_dir)
 
-    target_bid = c.get_tile_building_id(target) if _on_map(c, target) and c.is_in_vision(target) else None
+    target_bid = (
+        c.get_tile_building_id(target)
+        if _on_map(c, target) and c.is_in_vision(target)
+        else None
+    )
     if reached_core(target, self.core_pos) or (
         target_bid is not None and c.get_entity_type(target_bid) == EntityType.CORE
     ):
@@ -373,12 +561,13 @@ def _handle_remote_return_chain(self: Harvester, c: Controller) -> bool:
         if _try_satisfy_remote_return_conveyor(self, c, target, next_dir):
             self.return_chain_cursor = target
             if next_dir is not None:
-                _move_toward_remote_build_spot(self, c, target.add(next_dir), allow_build_road=False)
+                _move_toward_remote_build_spot(
+                    self, c, target.add(next_dir), allow_build_road=False
+                )
         return True
 
     _move_toward_remote_build_spot(self, c, target, allow_build_road=True)
     return True
-
 
 
 def _allied_transport_at(c: Controller, pos: Position) -> int | None:
@@ -438,7 +627,9 @@ def _update_chain_memory(self: Harvester, c: Controller) -> None:
                 ),
                 "resource": stored,
                 "resource_id": c.get_stored_resource_id(bid),
-                "dist_core": max(abs(pos.x - self.core_pos.x), abs(pos.y - self.core_pos.y)),
+                "dist_core": max(
+                    abs(pos.x - self.core_pos.x), abs(pos.y - self.core_pos.y)
+                ),
             }
         )
         self.chain_memory[(pos.x, pos.y)] = entry
@@ -462,9 +653,17 @@ def _chain_reaches_core(c: Controller, pos: Position, core_pos: Position) -> boo
         etype = c.get_entity_type(bid)
         if etype == EntityType.CORE:
             return True
-        if etype in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.SPLITTER):
+        if etype in (
+            EntityType.CONVEYOR,
+            EntityType.ARMOURED_CONVEYOR,
+            EntityType.SPLITTER,
+        ):
             direction = c.get_direction(bid)
-            if direction is None or direction == Direction.CENTRE or direction not in DIRECTIONS_4:
+            if (
+                direction is None
+                or direction == Direction.CENTRE
+                or direction not in DIRECTIONS_4
+            ):
                 return False
             nxt = current.add(direction)
             if reached_core(nxt, core_pos):
@@ -500,12 +699,14 @@ def _try_chain_shortcut(self: Harvester, c: Controller) -> bool:
     return False
 
 
-
-
-def _next_dir_after_move(self: Harvester, c: Controller, move_dir: Direction) -> Direction | None:
+def _next_dir_after_move(
+    self: Harvester, c: Controller, move_dir: Direction
+) -> Direction | None:
     """Conveyor direction to place on the tile we're about to step onto."""
     move_pos = self.current_pos.add(move_dir)
-    follow_dir = _planner_step_at(self, c, move_pos) or move_pos.direction_to(self.core_pos)
+    follow_dir = _planner_step_at(self, c, move_pos) or move_pos.direction_to(
+        self.core_pos
+    )
     if follow_dir is None or follow_dir == Direction.CENTRE:
         return None
     if follow_dir in DIRECTIONS_4:
@@ -544,7 +745,9 @@ def _handle_post_bridge_conveyor(self: Harvester, c: Controller) -> bool:
                 c.destroy(self.current_pos)
             return True
         if etype == EntityType.ROAD:
-            if c.get_tile_env(self.current_pos) == Environment.EMPTY and c.can_destroy(self.current_pos):
+            if c.get_tile_env(self.current_pos) == Environment.EMPTY and c.can_destroy(
+                self.current_pos
+            ):
                 c.destroy(self.current_pos)
             else:
                 self.return_next_dir = conveyor_dir
@@ -555,14 +758,23 @@ def _handle_post_bridge_conveyor(self: Harvester, c: Controller) -> bool:
         tile_empty = c.get_tile_env(self.current_pos) == Environment.EMPTY
         ti, _ = c.get_global_resources()
         conveyor_cost_ti, _ = c.get_conveyor_cost()
-        if tile_empty and ti >= conveyor_cost_ti and c.can_build_conveyor(self.current_pos, conveyor_dir):
+        if (
+            tile_empty
+            and ti >= conveyor_cost_ti
+            and c.can_build_conveyor(self.current_pos, conveyor_dir)
+        ):
             c.build_conveyor(self.current_pos, conveyor_dir)
 
         bid = c.get_tile_building_id(self.current_pos)
-        connected = bid is not None and c.get_team(bid) == c.get_team() and c.get_entity_type(bid) in (
-            EntityType.CONVEYOR,
-            EntityType.SPLITTER,
-            EntityType.BRIDGE,
+        connected = (
+            bid is not None
+            and c.get_team(bid) == c.get_team()
+            and c.get_entity_type(bid)
+            in (
+                EntityType.CONVEYOR,
+                EntityType.SPLITTER,
+                EntityType.BRIDGE,
+            )
         )
         if connected:
             self.return_next_dir = conveyor_dir
@@ -585,11 +797,19 @@ def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) ->
     entity_type = c.get_entity_type(bid) if bid is not None else None
     allied = bid is not None and c.get_team(bid) == c.get_team()
 
-    if allied and entity_type == EntityType.BRIDGE and _bridge_target_matches(c, bid, target_pos):
+    if (
+        allied
+        and entity_type == EntityType.BRIDGE
+        and _bridge_target_matches(c, bid, target_pos)
+    ):
         _start_bridge_walk(self, target_pos)
         return _walk_toward_bridge_target(self, c)
 
-    if allied and entity_type in (EntityType.ROAD, EntityType.CONVEYOR, EntityType.BRIDGE):
+    if allied and entity_type in (
+        EntityType.ROAD,
+        EntityType.CONVEYOR,
+        EntityType.BRIDGE,
+    ):
         ti, _ = c.get_global_resources()
         bridge_cost_ti, _ = c.get_bridge_cost()
         if ti < bridge_cost_ti or not c.can_destroy(bridge_pos):
@@ -609,7 +829,9 @@ def _handle_bridge_jump(self: Harvester, c: Controller, target_pos: Position) ->
     return True
 
 
-def _ensure_bridge_target_planner(self: Harvester, c: Controller, target: Position) -> DStarLite | None:
+def _ensure_bridge_target_planner(
+    self: Harvester, c: Controller, target: Position
+) -> DStarLite | None:
     if self.bridge_target_planner is None and self.environment_map is not None:
         self.bridge_target_planner = DStarLite(
             self.environment_map,
@@ -671,6 +893,7 @@ def _can_execute_bridge_walk_step(c: Controller, move_dir: Direction) -> bool:
         return True
     return c.can_build_road(move_pos)
 
+
 def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
     target = self.bridge_jump_target
     if target is None:
@@ -681,7 +904,7 @@ def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
             _complete_return_from_bridge(self, c)
             return True
 
-    if self.current_pos == target:
+    if _same_pos(self.current_pos, target):
         if reached_core(target, self.core_pos):
             _complete_return_from_bridge(self, c)
             return True
@@ -691,25 +914,39 @@ def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
 
     p = _ensure_bridge_target_planner(self, c, target)
     move_dir = (
-        p.step(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
-        if p is not None
-        else None
+        p.step(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed) if p is not None else None
     )
     if move_dir is None or move_dir == Direction.CENTRE:
         if p is not None and p.planning_pending():
             return True
-        key = ("bridge_walk", self.current_pos.x, self.current_pos.y, target.x, target.y)
+        key = (
+            "bridge_walk",
+            self.current_pos.x,
+            self.current_pos.y,
+            target.x,
+            target.y,
+        )
         _bridge_fail(self, key)
         return True
 
     if not _can_execute_bridge_walk_step(c, move_dir):
-        key = ("bridge_walk", self.current_pos.x, self.current_pos.y, target.x, target.y)
+        key = (
+            "bridge_walk",
+            self.current_pos.x,
+            self.current_pos.y,
+            target.x,
+            target.y,
+        )
         _bridge_fail(self, key)
         return True
 
     move_pos = self.current_pos.add(move_dir)
     build_id = c.get_tile_building_id(move_pos)
-    if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER and c.can_destroy(move_pos):
+    if (
+        build_id is not None
+        and c.get_entity_type(build_id) == EntityType.MARKER
+        and c.can_destroy(move_pos)
+    ):
         c.destroy(move_pos)
         return True
 
@@ -726,9 +963,18 @@ def _walk_toward_bridge_target(self: Harvester, c: Controller) -> bool:
 
 def _build_return_step(self: Harvester, c: Controller) -> bool:
     if self.bridge_jump_target is not None:
+        if self.current_pos.distance_squared(self.bridge_jump_target) == 0:
+            _clear_bridge_walk_state(self)
+            self.post_bridge_conveyor = True
+            return True
         return _walk_toward_bridge_target(self, c)
 
+    if _escape_foundry_input_chain(self, c):
+        return True
+
     if self.return_chain_cursor is not None:
+        if _escape_unproductive_transport_chain(self, c):
+            return True
         return _handle_remote_return_chain(self, c)
 
     if self.just_placed:
@@ -737,13 +983,24 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
             ns, ew = split_diagonal(self.current_pos, self.harvester_pos)
             m1 = self.current_pos.add(ns)  # type: ignore
             m2 = self.current_pos.add(ew)  # type: ignore
-            move_pos = m1 if m1.distance_squared(self.core_pos) < m2.distance_squared(self.core_pos) else m2
+            move_pos = (
+                m1
+                if m1.distance_squared(self.core_pos)
+                < m2.distance_squared(self.core_pos)
+                else m2
+            )
 
         build_id = c.get_tile_building_id(move_pos)
-        if build_id is not None and c.get_entity_type(build_id) in {EntityType.ROAD, EntityType.CONVEYOR} and c.can_destroy(move_pos):
+        if (
+            build_id is not None
+            and c.get_entity_type(build_id) in {EntityType.ROAD, EntityType.CONVEYOR}
+            and c.can_destroy(move_pos)
+        ):
             c.destroy(move_pos)
 
-        step = _planner_step_at(self, c, move_pos) or move_pos.direction_to(self.core_pos)
+        step = _planner_step_at(self, c, move_pos) or move_pos.direction_to(
+            self.core_pos
+        )
         if step is None or step == Direction.CENTRE:
             return False
         if step not in DIRECTIONS_4:
@@ -758,7 +1015,11 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
         if c.can_build_conveyor(move_pos, step):
             c.build_conveyor(move_pos, step)
 
-        step_dir = get_direction_4(self.current_pos, move_pos) if self.current_pos != move_pos else None
+        step_dir = (
+            get_direction_4(self.current_pos, move_pos)
+            if self.current_pos != move_pos
+            else None
+        )
         if step_dir and not c.can_move(step_dir):
             return False
         self.just_placed = False
@@ -795,10 +1056,21 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
             move_dir = self.current_pos.direction_to(self.core_pos)
         if move_dir is None or move_dir == Direction.CENTRE:
             return False
+        if move_dir not in DIRECTIONS_4:
+            move_dir = get_direction_4(self.current_pos, self.core_pos)
+            if move_dir is None:
+                return False
 
     next_dir = _next_dir_after_move(self, c, move_dir)
 
     move_pos = self.current_pos.add(move_dir)
+    if not c.can_move(move_dir) and c.get_tile_env(move_pos) != Environment.EMPTY:
+        direct_dir = get_direction_4(self.current_pos, self.core_pos)
+        if direct_dir is not None and direct_dir != move_dir and c.can_move(direct_dir):
+            self.return_planner = None
+            move_dir = direct_dir
+            next_dir = _next_dir_after_move(self, c, move_dir)
+            move_pos = self.current_pos.add(move_dir)
 
     if try_join_axionite_to_titanium_chain(self, c, move_pos):
         return True
@@ -844,13 +1116,30 @@ def _build_return_step(self: Harvester, c: Controller) -> bool:
         c.move(move_dir)
         return True
 
+    move_bid = c.get_tile_building_id(move_pos)
+    if (
+        not c.can_move(move_dir)
+        and move_bid is not None
+        and c.get_team(move_bid) == c.get_team()
+        and c.get_entity_type(move_bid) in _TRANSPORT_TYPES
+    ):
+        self.return_chain_cursor = move_pos
+        self.return_next_dir = None
+        if next_dir is not None:
+            _move_toward_remote_build_spot(
+                self, c, move_pos.add(next_dir), allow_build_road=False
+            )
+        return True
+
     bot_id = c.get_tile_builder_bot_id(move_pos)
     if bot_id is not None and bot_id != c.get_id():
         if _try_satisfy_remote_return_conveyor(self, c, move_pos, next_dir):
             self.return_chain_cursor = move_pos
             self.return_next_dir = None
             if next_dir is not None:
-                _move_toward_remote_build_spot(self, c, move_pos.add(next_dir), allow_build_road=False)
+                _move_toward_remote_build_spot(
+                    self, c, move_pos.add(next_dir), allow_build_road=False
+                )
         return True
 
     if not c.can_move(move_dir):

@@ -20,6 +20,25 @@ _DEGENERATE_ROOM = 3
 _EXPLORE_R_MIN = 4
 
 
+def _explore_info_score(self: Axioniter, x: int, y: int) -> int:
+    env = self.environment_map
+    if env is None:
+        return 0
+    if env.is_unknown(x, y):
+        return 40
+
+    score = 0
+    for nx, ny in (
+        (x + 1, y),
+        (x - 1, y),
+        (x, y + 1),
+        (x, y - 1),
+    ):
+        if env.in_bounds(nx, ny) and env.is_unknown(nx, ny):
+            score += 10
+    return score
+
+
 def _read_nearby_claims(c: Controller) -> set[tuple[int, int]]:
     claimed: set[tuple[int, int]] = set()
     my_team = c.get_team()
@@ -171,19 +190,9 @@ def _pick_explore_target(
                 if not env.is_seek_candidate(tx, ty):
                     continue
 
-                # Unknown / underexplored bonus
-                if env.is_unknown(tx, ty):
-                    u_score = 40
-                else:
-                    u_score = 0
-                    for nx, ny in (
-                        (tx + 1, ty),
-                        (tx - 1, ty),
-                        (tx, ty + 1),
-                        (tx, ty - 1),
-                    ):
-                        if env.in_bounds(nx, ny) and env.is_unknown(nx, ny):
-                            u_score += 10
+                u_score = _explore_info_score(self, tx, ty)
+                if u_score == 0:
+                    continue
 
                 # Lane bias — keeps two bots in different halves of the map
                 along = (dx * lane_sign) if lane_axis == "x" else (dy * lane_sign)
@@ -225,11 +234,7 @@ def _pick_seek_target(
         lane_sign,
         self.blacklisted_seek_targets | claimed,
     )
-    return (
-        (explore, False)
-        if explore is not None
-        else (pos.add(random_direction_4()), False)
-    )
+    return explore, False
 
 
 def _target_still_viable(
@@ -247,8 +252,64 @@ def _target_still_viable(
             if occupier is not None and occupier != c.get_id():
                 return False
         return env.tile(target.x, target.y) == ORE_AXIONITE
-    # Frontier target: keep it until we arrive; don't scan neighbors every turn.
+    if c is not None and c.is_in_vision(target):
+        return _explore_info_score(self, target.x, target.y) > 0
+    # Frontier target: keep it until we see it or arrive.
     return target != self.current_pos
+
+
+def _resume_patrol_if_possible(self: Axioniter) -> bool:
+    if self.patrol_tip is None and self.patrol_inner is None:
+        return False
+    self.state = type(self.state).PATROL
+    self.target_pos = None
+    self.seek_target_is_ore = False
+    self.seek_stall_target = None
+    self.seek_target_turns = 0
+    self.patrol_turns = 0
+    self.patrol_target = None
+    self.patrol_going_out = True
+    return True
+
+
+def _idle_rejoin_direction(self: Axioniter, c: Controller) -> Direction | None:
+    current_bid = c.get_tile_building_id(self.current_pos)
+    if (
+        current_bid is not None
+        and c.get_team(current_bid) == c.get_team()
+        and c.get_entity_type(current_bid) == EntityType.CONVEYOR
+    ):
+        conv_dir = c.get_direction(current_bid)
+        if conv_dir is not None and c.can_move(conv_dir):
+            return conv_dir
+
+    best_dir = None
+    best_score = float("-inf")
+    for direction in DIRECTIONS_4:
+        if not c.can_move(direction):
+            continue
+        pos = self.current_pos.add(direction)
+        score = 0
+        bid = c.get_tile_building_id(pos)
+        if bid is not None:
+            if c.get_team(bid) != c.get_team():
+                continue
+            entity_type = c.get_entity_type(bid)
+            if entity_type == EntityType.CONVEYOR:
+                score = 100
+            elif entity_type in (EntityType.BRIDGE, EntityType.SPLITTER):
+                score = 90
+            elif entity_type == EntityType.ROAD:
+                score = 70
+            elif entity_type in (EntityType.HARVESTER, EntityType.FOUNDRY):
+                score = 40
+        elif c.get_tile_env(pos) == Environment.EMPTY:
+            score = 10
+
+        if score > best_score:
+            best_score = score
+            best_dir = direction
+    return best_dir
 
 
 def _can_execute_seek_step(self: Axioniter, c: Controller, move_dir: Direction) -> bool:
@@ -346,6 +407,8 @@ def _seek(self: Axioniter, c: Controller):
             self, self.current_pos, c, claimed
         )
         if self.target_pos is None:
+            if not _resume_patrol_if_possible(self):
+                self._advance(c, _idle_rejoin_direction(self, c))
             return
 
     if self.seek_stall_target == self.target_pos:

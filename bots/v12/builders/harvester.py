@@ -22,9 +22,6 @@ from utils.harvester_states.placing_harvester import (
     STEP_ON as _PLACING_STEP_ON,
     _placing_harvester as _placing_harvester_state,
 )
-from utils.harvester_states.defend import (
-    _defend as _defend_state,
-)
 from utils.harvester_states.heal import (
     _heal as _heal_state,
     _try_enter_heal,
@@ -56,12 +53,9 @@ except ImportError:
     _PROFILE_ENABLED = False
 
 class HarvestState(Enum):
-    __slots__ = ()
-
     SEEK = "seek"
     PLACING_HARVESTER = "placing_harvester"
     RETURN = "return"
-    DEFEND = "defend"
     PATROL = "patrol"
     HEAL = "heal"
 
@@ -82,12 +76,9 @@ class Harvester:
         self.cost_scale = 100.0
         self._scale_initialized = False
         self.titanium_found = False
-        self.axionite_found = False
         self.foundry_prev_placed = False
-        self.foundry_curr_placed = False
-        self.splitter_for_foundry = False
-        self.foundry_placed_round: int = -1
-        
+
+
         self.environment_map: EnvironmentMap | None = None
         self.seek_planner: DStarLite | None = None
         self.seek_planner_goal: tuple[int, int] | None = None
@@ -126,10 +117,6 @@ class Harvester:
         self.placing_phase: str = _PLACING_STEP_ON
         self.placing_ring_turns: int = 0
         self.placing_is_titanium: bool = False
-
-        self.defend_prev_state: HarvestState | None = None
-        self.defend_target_tile: Position | None = None
-        self.defend_cleared_tiles: list[tuple[int, int, Direction]] = []
 
         self.heal_prev_state: HarvestState | None = None
         self.heal_interrupt_target: Position | None = None
@@ -187,16 +174,6 @@ class Harvester:
             or c.get_current_round() >= _AXIONITE_UNLOCK_ROUND
         )
 
-    def _clear_if_road(self, c: Controller, pos: Position):
-        """Safely clear road tiles"""
-        build_id = c.get_tile_building_id(pos)
-        if (
-            build_id is not None
-            and c.get_entity_type(build_id) == EntityType.ROAD
-            and c.can_destroy(pos)
-        ):
-            c.destroy(pos)
-
     def _advance(self, c: Controller, move_dir):
         """Move toward target and build a road on the tile stepped onto"""
         advance_with_road(c, self.current_pos, move_dir)
@@ -242,20 +219,14 @@ class Harvester:
         return True
 
     def _pick_adjacent_ore(self, c: Controller) -> tuple[Position | None, bool]:
-        if not self._axionite_unlocked(c):
-            for direction in DIRECTIONS_4:
-                ore_pos = self.current_pos.add(direction)
-                if self._is_valid_titanium_target(c, ore_pos):
-                    return ore_pos, True
-
-        if (
-            self._axionite_unlocked(c)
-        ):
-            for direction in DIRECTIONS_4:
-                ore_pos = self.current_pos.add(direction)
-                if self._is_valid_axionite_target(c, ore_pos):
-                    return ore_pos, False
-
+        if self._axionite_unlocked(c):
+            is_valid, is_titanium = self._is_valid_axionite_target, False
+        else:
+            is_valid, is_titanium = self._is_valid_titanium_target, True
+        for direction in DIRECTIONS_4:
+            ore_pos = self.current_pos.add(direction)
+            if is_valid(c, ore_pos):
+                return ore_pos, is_titanium
         return None, False
 
     def _draw_debug(self, c: Controller):
@@ -267,7 +238,6 @@ class Harvester:
             HarvestState.SEEK: (0, 0, 255),
             HarvestState.PLACING_HARVESTER: (200, 0, 200),
             HarvestState.RETURN: (255, 165, 0),
-            HarvestState.DEFEND: (255, 0, 0),
             HarvestState.PATROL: (0, 255, 200),
             HarvestState.HEAL: (0, 255, 80),
         }
@@ -281,9 +251,6 @@ class Harvester:
 
     def _placing_harvester(self, c: Controller):
         _placing_harvester_state(self, c)
-
-    def _defend(self, c: Controller):
-        _defend_state(self, c)
 
     def _heal(self, c: Controller):
         _heal_state(self, c)
@@ -359,8 +326,6 @@ class Harvester:
         if self.spawn_pos is None:
             self.spawn_pos = self.current_pos
         self.ti, self.ax = c.get_global_resources()
-        if self.ax > 0:
-            self.axionite_found = True
         if self.environment_map is None:
             self.environment_map = EnvironmentMap(c.get_map_width(), c.get_map_height())
         nearby_tiles = c.get_nearby_tiles()
@@ -398,7 +363,7 @@ class Harvester:
         try_heal_nearby_bot(c, self.current_pos)
         try_heal_nearby_building(c, self.current_pos)
 
-        if self.state not in (HarvestState.DEFEND, HarvestState.HEAL, HarvestState.PLACING_HARVESTER):
+        if self.state not in (HarvestState.HEAL, HarvestState.PLACING_HARVESTER):
             _try_enter_heal(self, c)
 
         match self.state:
@@ -408,8 +373,6 @@ class Harvester:
                 self._placing_harvester(c)
             case HarvestState.RETURN:
                 self._return(c)
-            case HarvestState.DEFEND:
-                self._defend(c)
             case HarvestState.PATROL:
                 self._patrol(c)
             case HarvestState.HEAL:
@@ -431,14 +394,6 @@ class Harvester:
 
         def _fmt_pos(pos: Position | None) -> str:
             return "-" if pos is None else f"({pos.x},{pos.y})"
-
-        def _fmt_symmetry() -> str:
-            env = self.environment_map
-            if env is None:
-                return "-"
-            if env.symmetry is None:
-                return "unresolved"
-            return env.symmetry.name
 
         under_id = c.get_tile_building_id(self.current_pos)
         under = "-"
@@ -476,7 +431,7 @@ class Harvester:
             f"bridge_fails={len(self.return_bridge_fail_counts)} failed_bridges={len(self.failed_bridge_targets)} "
             f"just_placed={self.just_placed} "
             f"ax_return={self.returning_from_axionite} "
-            f"heal_target={_fmt_pos(self.heal_target)} defend_target={_fmt_pos(self.defend_target_tile)} "
+            f"heal_target={_fmt_pos(self.heal_target)} "
             f"blacklist=ore:{len(self.blacklisted_ores)},seek:{len(self.blacklisted_seek_targets)} "
             f"foundry_seen={self.foundry_prev_placed} scale={self.cost_scale:.1f} "
             f"cpu={c.get_cpu_time_elapsed()}us"

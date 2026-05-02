@@ -19,8 +19,6 @@ from utils.comms.debug import DEBUG_PRINTS, debug_print
 
 
 class HealState(Enum):
-    __slots__ = ()
-
     PATROL = "patrol"
     FOLLOW = "follow"
 

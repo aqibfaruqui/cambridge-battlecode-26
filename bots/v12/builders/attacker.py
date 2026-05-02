@@ -12,6 +12,7 @@ from utils.pathfinding.d_star import (
 )
 from utils.map.raw_map_representation import CORE_ENEMY, EnvironmentMap, Symmetry, WALL
 from utils.comms.broadcaster import Broadcaster
+from utils.comms.debug import DEBUG_PRINTS, debug_print
 from utils.comms.for_builder_bot import BuilderBotMessages
 from utils.healing import try_heal_nearby_bot
 
@@ -131,21 +132,24 @@ class Attacker:
             if bld_id is None:
                 continue
             et = c.get_entity_type(bld_id)
+            if et == EntityType.LAUNCHER:
+                blockers.append((p.x, p.y))
+                # Enemy launchers throw adjacent builders — avoid the 3x3 pickup ring.
+                if c.get_team(bld_id) != my_team:
+                    blockers.extend(
+                        (p.x + dx, p.y + dy)
+                        for dx, dy in product((-1, 0, 1), repeat=2)
+                    )
+                continue
             if et in {
                 EntityType.HARVESTER,
                 EntityType.BARRIER,
                 EntityType.FOUNDRY,
-                EntityType.LAUNCHER,
                 EntityType.GUNNER,
                 EntityType.SENTINEL,
             }:
                 blockers.append((p.x, p.y))
                 continue
-            # Enemy launchers throw adjacent builders — avoid the 3x3 pickup ring.
-            if et == EntityType.LAUNCHER and c.get_team(bld_id) != my_team:
-                blockers.extend(
-                    (p.x + dx, p.y + dy) for dx, dy in product((-1, 0, 1), repeat=2)
-                )
 
         self._planner.set_position(pos.x, pos.y)
         self._planner.set_dynamic_blockers(
@@ -261,16 +265,17 @@ class Attacker:
             self._replace_commit_key = None
             self.state = AttackState.SCAN
 
-        print(
-            f"[attacker {my_id}] r={round_now} "
-            f"pos=({self.current_pos.x},{self.current_pos.y}) "
-            f"state={self.state.value} "
-            f"target={self.target_conveyor} "
-            f"ecore={self.enemy_core_pos} "
-            f"sym={self._env_map.symmetry} "
-            f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
-            f"hp={hp_now}/{c.get_max_hp(my_id)}"
-        )
+        if DEBUG_PRINTS:
+            debug_print(
+                f"[attacker {my_id}] r={round_now} "
+                f"pos=({self.current_pos.x},{self.current_pos.y}) "
+                f"state={self.state.value} "
+                f"target={self.target_conveyor} "
+                f"ecore={self.enemy_core_pos} "
+                f"sym={self._env_map.symmetry} "
+                f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
+                f"hp={hp_now}/{c.get_max_hp(my_id)}"
+            )
 
         # Sequential (not elif) so SCAN→APPROACH and APPROACH→REPLACE can
         # both fire in the same tick.

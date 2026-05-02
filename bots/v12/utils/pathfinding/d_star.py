@@ -158,9 +158,6 @@ class DStarLite:
 
     # ---------- Public API ----------
 
-    def set_goal(self, gx: int, gy: int) -> None:
-        self.__init__(self._env, gx, gy, block_mask=self._block_mask)
-
     def set_position(self, sx: int, sy: int) -> None:
         w = self._w
         new_start = sy * w + sx
@@ -483,78 +480,8 @@ class DStarLite:
             return None
         return (best_idx % w, best_idx // w)
 
-    def plan(
-        self,
-        deadline_us: int | None = None,
-        get_time_us: Callable[[], int] | None = None,
-    ) -> bool:
-        return self._compute_shortest_path(deadline_us, get_time_us)
-
     def planning_pending(self) -> bool:
         return self._compute_paused
-
-    def extract_path_lines(self) -> list[tuple[int, int, int, int]]:
-        """Return line segments [(x1,y1,x2,y2), ...] for rendering."""
-        pts = self.extract_path()
-        if len(pts) < 2:
-            return []
-
-        lines = []
-        for i in range(len(pts) - 1):
-            x1, y1 = pts[i]
-            x2, y2 = pts[i + 1]
-            lines.append((x1, y1, x2, y2))
-
-        return lines
-
-    def extract_path(self) -> list[tuple[int, int]]:
-        """Return full path from current start to goal as (x,y). Empty if unreachable."""
-        g = self._g
-        start = self._start
-        goal = self._goal
-        if g[start] == _INF:
-            return []
-
-        w = self._w
-        h = self._h
-        blocked = self._blocked
-
-        path: list[tuple[int, int]] = []
-        cur = start
-
-        visited = set()  # safety against rare inconsistency loops
-
-        while cur != goal:
-            x = cur % w
-            y = cur // w
-            path.append((x, y))
-            visited.add(cur)
-
-            best = None
-            best_cost = _INF
-
-            for dx, dy, cost, _ in _NEIGHBOURS:
-                xx = x + dx
-                if xx < 0 or xx >= w:
-                    continue
-                yy = y + dy
-                if yy < 0 or yy >= h:
-                    continue
-                nxt = yy * w + xx
-                if blocked[nxt]:
-                    continue
-                v = cost + g[nxt]
-                if v < best_cost:
-                    best_cost = v
-                    best = nxt
-
-            if best is None or best in visited:
-                return []  # no valid path
-
-            cur = best
-
-        path.append((goal % w, goal // w))
-        return path
 
     # ---------- Core D* Lite ----------
 
@@ -868,33 +795,5 @@ class DStarLite:
 
     # ---------- Helpers ----------
 
-    def _heuristic(self, a: int, b: int) -> float:
-        ax, ay = self._to_xy(a)
-        bx, by = self._to_xy(b)
-        dx = abs(ax - bx)
-        dy = abs(ay - by)
-        return (dx + dy) + _SQRT2_MINUS_2 * min(dx, dy)
-
-    def _succ(self, u: int):
-        x, y = self._to_xy(u)
-        for dx, dy, cost, _ in _NEIGHBOURS:
-            xx, yy = x + dx, y + dy
-            if self._in_bounds(xx, yy):
-                yield self._to_idx(xx, yy), cost
-
-    def _pred(self, u: int):
-        return (s for s, _ in self._succ(u))
-
-    def _blocked_idx(self, idx: int) -> bool:
-        if idx == self._start:
-            return False
-        return bool(self._blocked[idx])
-
     def _to_idx(self, x: int, y: int) -> int:
         return y * self._w + x
-
-    def _to_xy(self, idx: int) -> tuple[int, int]:
-        return idx % self._w, idx // self._w
-
-    def _in_bounds(self, x: int, y: int) -> bool:
-        return 0 <= x < self._w and 0 <= y < self._h

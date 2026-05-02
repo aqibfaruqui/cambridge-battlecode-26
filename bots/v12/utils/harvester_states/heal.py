@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 from cambc import Controller, EntityType, Position
 
+from utils.comms.debug import DEBUG_PRINTS, debug_print
 from utils.harvester_states.seek import _seek_direction
 
 if TYPE_CHECKING:
@@ -246,16 +247,17 @@ def _heal(self: Harvester, c: Controller) -> None:
             else:
                 self._advance(c, move_dir)
 
-    attacker_str = f"({attacker.x},{attacker.y})" if attacker is not None else "-"
-    committed_str = f"({committed.x},{committed.y})" if committed is not None else "-"
-    damaged_str = ",".join(f"({p.x},{p.y})" for p in damaged[:3]) or "-"
-    dest_str = f"({dest.x},{dest.y})" if dest is not None else "-"
-    print(
-        f"[heal {c.get_id()}] r={c.get_current_round()} "
-        f"pos=({me.x},{me.y}) "
-        f"attacker={attacker_str} "
-        f"committed={committed_str} "
-        f"dest={dest_str} "
-        f"damaged=[{damaged_str}] "
-        f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()}",
-    )
+    if DEBUG_PRINTS:
+        attacker_str = f"({attacker.x},{attacker.y})" if attacker is not None else "-"
+        committed_str = f"({committed.x},{committed.y})" if committed is not None else "-"
+        damaged_str = ",".join(f"({p.x},{p.y})" for p in damaged[:3]) or "-"
+        dest_str = f"({dest.x},{dest.y})" if dest is not None else "-"
+        debug_print(
+            f"[heal {c.get_id()}] r={c.get_current_round()} "
+            f"pos=({me.x},{me.y}) "
+            f"attacker={attacker_str} "
+            f"committed={committed_str} "
+            f"dest={dest_str} "
+            f"damaged=[{damaged_str}] "
+            f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()}",
+        )

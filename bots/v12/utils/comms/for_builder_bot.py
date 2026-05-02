@@ -17,28 +17,11 @@ class BuilderBotMessages(IntEnum):
     FOR_BUILDER_BOT = 0b0000
 
     @classmethod
-    def is_builder_bot_message(cls, data: int) -> bool:
-        decrypted = Encryption.decrypt(data)
-        return (decrypted >> 28) == cls.FOR_BUILDER_BOT
-
-    @classmethod
     def get_message_type(cls, data: int) -> Optional[BuilderBotMessageType]:
         decrypted = Encryption.decrypt(data)
         if (decrypted >> 28) != cls.FOR_BUILDER_BOT:
             return None
-        match BuilderBotMessageType((decrypted >> 24) & 0xF):
-            case BuilderBotMessageType.CLAIM_ORE:
-                return BuilderBotMessageType.CLAIM_ORE
-            case BuilderBotMessageType.CORE_POSITION:
-                return BuilderBotMessageType.CORE_POSITION
-            case BuilderBotMessageType.ENEMY_CORE_POSITION:
-                return BuilderBotMessageType.ENEMY_CORE_POSITION
-            case BuilderBotMessageType.CLAIM_POSITION:
-                return BuilderBotMessageType.CLAIM_POSITION
-            case BuilderBotMessageType.SYMMETRY:
-                return BuilderBotMessageType.SYMMETRY
-            case _:
-                return None
+        return BuilderBotMessageType._value2member_map_.get((decrypted >> 24) & 0xF)
 
     @classmethod
     def encode_claim_ore(cls, position: Position) -> int:
@@ -65,12 +48,6 @@ class BuilderBotMessages(IntEnum):
         return Encryption.encrypt(message)
 
     @classmethod
-    def decode_core_position(cls, data: int) -> Position:
-        data = Encryption.decrypt(data)
-        position = PositionEncoder.decode(data & 0x00000FFF)
-        return position
-
-    @classmethod
     def encode_enemy_core_position(cls, position: Position) -> int:
         message = (
             (cls.FOR_BUILDER_BOT << 28)
@@ -78,12 +55,6 @@ class BuilderBotMessages(IntEnum):
             | PositionEncoder.encode(position)
         )
         return Encryption.encrypt(message)
-
-    @classmethod
-    def decode_enemy_core_position(cls, data: int) -> Position:
-        data = Encryption.decrypt(data)
-        position = PositionEncoder.decode(data & 0x00000FFF)
-        return position
 
     @classmethod
     def encode_claim_position(cls, position: Position) -> int:

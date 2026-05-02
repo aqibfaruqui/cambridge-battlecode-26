@@ -14,11 +14,11 @@ from utils.harvester_states.seek import _seek_direction
 from utils.healing import try_heal_nearby_bot
 from utils.map.raw_map_representation import EnvironmentMap
 from utils.pathfinding.d_star import DStarLite
+from utils.pathfinding.movement import advance_with_road
+from utils.comms.debug import DEBUG_PRINTS, debug_print
 
 
 class HealState(Enum):
-    __slots__ = ()
-
     PATROL = "patrol"
     FOLLOW = "follow"
 
@@ -78,16 +78,7 @@ class Healer:
                 return
 
     def _advance(self, c: Controller, move_dir: Direction | None) -> None:
-        if move_dir is None:
-            return
-        move_pos = self.current_pos.add(move_dir)
-        build_id = c.get_tile_building_id(move_pos)
-        if build_id is not None and c.get_entity_type(build_id) == EntityType.MARKER and c.can_destroy(move_pos):
-            c.destroy(move_pos)
-        if c.get_tile_env(move_pos) == Environment.EMPTY and c.can_build_road(move_pos):
-            c.build_road(move_pos)
-        if c.can_move(move_dir):
-            c.move(move_dir)
+        advance_with_road(c, self.current_pos, move_dir)
 
     def _enemy_builder_pos(self, c: Controller, enemy_id: int) -> Position | None:
         for uid in c.get_nearby_units():
@@ -225,6 +216,9 @@ class Healer:
             c.build_road(step1_pos)
 
     def _draw_debug(self, c: Controller) -> None:
+        if not DEBUG_PRINTS:
+            return
+
         if self.heal_target is not None:
             c.draw_indicator_dot(self.current_pos, 60, 255, 100)
             c.draw_indicator_line(self.current_pos, self.heal_target, 60, 255, 100)
@@ -318,15 +312,16 @@ class Healer:
         committed = self._refresh_heal_target(c, damaged)
 
         me = self.current_pos
-        print(
-            f"[healer {my_id}] r={round_now} "
-            f"state={self.state.value} "
-            f"target={self.heal_target} "
-            f"follow={self.follow_enemy_id} "
-            f"last_enemy={self.follow_enemy_last_pos} "
-            f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
-            f"hp={c.get_hp(my_id)}/{c.get_max_hp(my_id)}"
-        )
+        if DEBUG_PRINTS:
+            debug_print(
+                f"[healer {my_id}] r={round_now} "
+                f"state={self.state.value} "
+                f"target={self.heal_target} "
+                f"follow={self.follow_enemy_id} "
+                f"last_enemy={self.follow_enemy_last_pos} "
+                f"acd={c.get_action_cooldown()} mcd={c.get_move_cooldown()} "
+                f"hp={c.get_hp(my_id)}/{c.get_max_hp(my_id)}"
+            )
 
         # Heal action: bots first (including self), then buildings in core-first
         # harvester priority order.

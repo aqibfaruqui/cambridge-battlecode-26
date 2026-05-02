@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from builders.harvester import Harvester
 
 _DEGENERATE_ROOM = 3
-_EXPLORE_R_MAX = 12
 _EXPLORE_R_MIN = 4
 
 
@@ -39,6 +38,13 @@ def _read_nearby_claims(c: Controller) -> set[tuple[int, int]]:
             continue
         claimed.add((target.x, target.y))
     return claimed
+
+
+def _explore_r_max(self: Harvester) -> int:
+    env = self.environment_map
+    if env is None:
+        return _EXPLORE_R_MIN
+    return max(_EXPLORE_R_MIN, (max(env.width, env.height) + 1) // 2)
 
 
 def _explore_lane(self: Harvester) -> tuple[str, int]:
@@ -149,13 +155,14 @@ def _pick_explore_target(
     ox, oy = self.core_pos.x, self.core_pos.y
     bx, by = self.current_pos.x, self.current_pos.y
     blocked = blocked or set()
+    explore_r_max = _explore_r_max(self)
 
-    for R in range(_EXPLORE_R_MAX, _EXPLORE_R_MIN - 1, -1):
+    for R in range(explore_r_max, _EXPLORE_R_MIN - 1, -1):
         best: Position | None = None
         best_score = float("-inf")
 
         for dx in range(-R, R + 1):
-            for dy in ((-R, R) if abs(dx) < R else range(-R, R + 1)):
+            for dy in (-R, R) if abs(dx) < R else range(-R, R + 1):
                 tx, ty = ox + dx, oy + dy
                 if (tx, ty) == (bx, by) or (tx, ty) in blocked:
                     continue
@@ -169,7 +176,12 @@ def _pick_explore_target(
                     u_score = 40
                 else:
                     u_score = 0
-                    for nx, ny in ((tx+1,ty),(tx-1,ty),(tx,ty+1),(tx,ty-1)):
+                    for nx, ny in (
+                        (tx + 1, ty),
+                        (tx - 1, ty),
+                        (tx, ty + 1),
+                        (tx, ty - 1),
+                    ):
                         if env.in_bounds(nx, ny) and env.is_unknown(nx, ny):
                             u_score += 10
 
@@ -216,7 +228,11 @@ def _pick_seek_target(
         lane_sign,
         self.blacklisted_seek_targets | claimed,
     )
-    return (explore, False) if explore is not None else (pos.add(random_direction_4()), False)
+    return (
+        (explore, False)
+        if explore is not None
+        else (pos.add(random_direction_4()), False)
+    )
 
 
 def _target_still_viable(
@@ -285,13 +301,9 @@ def _seek_direction(
         DSTAR_CPU_DEADLINE_US,
         c.get_cpu_time_elapsed,
     )
-    self.seek_planner.notify_map_changes(
-        DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed
-    )
+    self.seek_planner.notify_map_changes(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
 
-    move_dir = self.seek_planner.step(
-        DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed
-    )
+    move_dir = self.seek_planner.step(DSTAR_CPU_DEADLINE_US, c.get_cpu_time_elapsed)
     if (
         move_dir is not None
         and move_dir != Direction.CENTRE
@@ -313,7 +325,8 @@ def _seek(self: Harvester, c: Controller):
             if (
                 bid is None
                 or c.get_team(bid) != c.get_team()
-                or c.get_entity_type(bid) not in (EntityType.CONVEYOR, EntityType.BRIDGE)
+                or c.get_entity_type(bid)
+                not in (EntityType.CONVEYOR, EntityType.BRIDGE)
                 or c.get_hp(bid) >= c.get_max_hp(bid)
             ):
                 self.heal_target = None

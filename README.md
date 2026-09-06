@@ -1,4 +1,10 @@
-# Cambridge Battlecode 
+# Cambridge Battlecode '26
+
+https://battlecode.cam
+
+UK Ladder Rank #1 + Qualification Rank #3
+
+Sponsored by Jump Trading and Anthropic to compete in live finals at the Cambridge Union
 
 ## Trello Board
 
